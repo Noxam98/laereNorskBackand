@@ -19,8 +19,8 @@ json
             "ukr" ["переклад 1", "переклад 2"]
         },
         "part_of_speech": "часть речи (например, verb, substantiv, adjective, adverb, phrase)",
-            "articles": ["артикль (для существительных)", "артикль 2 (если применимо)"],
-            "inflection": ["indefinite singular","definite singular","indefinite plural", "definite plural"]
+            "articles": ["артикль (для существительных)"],
+            "inflection": ["ubestemt entall", "bestemt entall", "ubestemt flertall", "bestemt flertall"] (для существительных)
             "declension": {"infinitive": "ord i infinitiv", "present": "ord i presens", "past":"ord i preteritum", "present perfect": "ord i presens perfektum", "imperative": "ord i imperativ!"}
     },
     {

@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import asyncio
 from g4f.client import AsyncClient
-
+import json
+import re
 from task import task
 
 app = FastAPI()
@@ -46,22 +46,28 @@ async def generate_response(prompt: str, model: str = "gpt-4o", web_search: bool
             messages=[
                 {
                     "role": "user",
-                    "content": task + f"Слово для перевода от пользователя: {prompt}"
+                    "content": task + f"\nТекст запроса от пользователя: {prompt}"
                 }
             ],
             web_search=web_search
         )
 
         if response.choices:
+            match = re.search(r'```json\n(.*?)\n```', response.choices[0].message.content, re.DOTALL)
+            if match:
+                json_str = match.group(1)
+
+                # Преобразуем в объект Python
+                data = json.loads(json_str)
             return {
                 "status": "success",
-                "response": response.choices[0].message.content,
-                "model": model
+                "response": data
             }
         else:
             raise HTTPException(status_code=500, detail="Пустой ответ от модели")
 
     except Exception as e:
+
         raise HTTPException(status_code=500, detail=str(e))
 
 
