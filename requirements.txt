@@ -1,0 +1,4 @@
+uvicorn~=0.34.0
+fastapi~=0.115.12
+pydantic~=2.10.6
+g4f~=0.4.9.6
