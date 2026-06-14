@@ -183,6 +183,65 @@ async def ask_model(system_prompt, user_prompt, model=None):
         return extract_json(resp.choices[0].message.content)
     return None
 
+
+# Схемы для гарантированного формата ответа (structured output / JSON-schema).
+_STR_ARR = {"type": "array", "items": {"type": "string"}}
+WORDS_SCHEMA = {
+    "name": "words_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "words": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string", "description": "норвежское слово, без артикля, нейтральная форма"},
+                        "translate": {
+                            "type": "object",
+                            "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
+                        },
+                        "part_of_speech": {"type": "string"},
+                    },
+                    "required": ["word", "translate", "part_of_speech"],
+                },
+            }
+        },
+        "required": ["words"],
+    },
+}
+DESC_SCHEMA = {
+    "name": "description_response",
+    "schema": {
+        "type": "object",
+        "properties": {"ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"}, "pl": {"type": "string"}, "lt": {"type": "string"}},
+        "required": ["ru", "ukr", "en", "pl", "lt"],
+    },
+}
+
+
+async def ask_json(system_prompt, user_prompt, schema, model=None):
+    """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
+    try:
+        resp = await get_client().chat.completions.create(
+            model=model or LLM_MODEL,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            response_format={"type": "json_schema", "json_schema": schema},
+        )
+    except Exception as e:
+        logger.warning(f"structured output unsupported, fallback to plain: {e}")
+        resp = await get_client().chat.completions.create(
+            model=model or LLM_MODEL,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        )
+    content = resp.choices[0].message.content if resp.choices else None
+    if not content:
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return extract_json(content)
+
 def normalize_word_item(item):
     if not isinstance(item, dict) or item.get("error"):
         return item
@@ -200,12 +259,19 @@ async def generate_words(prompt, model):
         return cached, True
     if not LLM_API_KEY:
         raise HTTPException(status_code=503, detail="LLM is not configured (set LLM_API_KEY)")
-    data = await ask_model(task, f"Текст запроса от пользователя: >>{prompt}<<", model)
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model)
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+            raise HTTPException(status_code=429, detail="Translation provider quota exhausted")
+        logger.error(f"generation failed: {msg}")
+        raise HTTPException(status_code=502, detail="Translation provider error")
     if data is None:
         raise HTTPException(status_code=500, detail="No JSON found in the response")
-    if isinstance(data, dict):
-        data = [data]
-    normalized = [normalize_word_item(i) for i in data]
+    # гарантированный формат: { words: [...] }
+    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    normalized = [normalize_word_item(i) for i in items]
     await cache_query(prompt, normalized)
     return normalized, False
 
@@ -353,7 +419,7 @@ async def word_description(dw_id: int, model: str = None, user=Depends(get_curre
         raise HTTPException(status_code=404, detail="Not found")
     if dw["description"]:
         return {"description": json.loads(dw["description"])}
-    desc = await ask_model(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", model)
+    desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     description = desc.get("description", desc)
