@@ -113,6 +113,29 @@ async def fetch_tts(text: str):
     return r.content
 
 
+async def ensure_tts_bg(norwegian: str):
+    """Сгенерировать озвучку слова в фоне (через общую очередь), если её ещё нет."""
+    key = normalize_word(norwegian)
+    if not key or not LLM_API_KEY:
+        return
+    async with _tts_lock:
+        if await get_pool_tts(key):
+            return
+        try:
+            wav = await gemini_tts(key)
+        except Exception as e:
+            logger.warning(f"bg tts '{key}': {e}")
+            return
+        if wav and await get_pool_id(key):
+            await set_pool_tts(key, wav)
+            logger.info(f"bg tts ready: {key}")
+
+def schedule_tts(words):
+    for w in words:
+        if w:
+            asyncio.create_task(ensure_tts_bg(w))
+
+
 def cosine(a, b):
     s = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
@@ -467,7 +490,7 @@ async def remove_dict(dict_id: int, user=Depends(get_current_user)):
 async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)):
     mark_activity()
     normalized, cached = await generate_words(body.prompt, body.model)
-    added, errors = 0, []
+    added, errors, words = 0, [], []
     for item in normalized:
         if not isinstance(item, dict):
             continue
@@ -481,6 +504,8 @@ async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)
             res = await add_word_to_dict(user["id"], dict_id, pool_id)
             if res.get("id") and not res.get("duplicate"):
                 added += 1
+            words.append(item["word"])
+    schedule_tts(words)  # озвучку добавленных слов ставим в очередь сразу
     return {"added": added, "errors": errors, "cached": cached}
 
 @app.post("/dictionaries/{dict_id}/add_pool")
@@ -490,6 +515,7 @@ async def add_pool(dict_id: int, body: PoolAdd, user=Depends(get_current_user)):
     if not pid:
         raise HTTPException(status_code=404, detail="Word not in pool")
     res = await add_word_to_dict(user["id"], dict_id, pid)
+    schedule_tts([body.norwegian])  # на случай если у слова ещё нет озвучки
     return {"added": 1 if (res.get("id") and not res.get("duplicate")) else 0, "duplicate": res.get("duplicate", False)}
 
 
@@ -616,6 +642,7 @@ async def report_word(dw_id: int, user=Depends(get_current_user)):
                     if pid:
                         await add_word_to_dict(user["id"], dict_id, pid)
                         regenerated, new_word = True, it["word"]
+                        schedule_tts([it["word"]])
                         break
         except Exception as e:
             logger.warning(f"report regen failed: {e}")
