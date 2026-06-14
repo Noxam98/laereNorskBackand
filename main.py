@@ -85,6 +85,7 @@ async def embed_text(text):
         return None
     try:
         r = await get_embed_client().embeddings.create(model=EMBED_MODEL, input=text)
+        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # эмбеддинг — тоже вызов Gemini
         return list(r.data[0].embedding)
     except Exception as e:
         logger.warning(f"embed failed: {e}")
@@ -377,7 +378,7 @@ AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
 AUTOFILL_IDLE_SEC = int(os.getenv("AUTOFILL_IDLE_SEC", "300"))  # фон только после N сек простоя
 # Ночной режим — агрессивнее (когда никто не пользуется)
 AUTOFILL_NIGHT_INTERVAL_SEC = int(os.getenv("AUTOFILL_NIGHT_INTERVAL_SEC", "6"))   # ~10 операций/мин
-AUTOFILL_NIGHT_BUDGET = int(os.getenv("AUTOFILL_NIGHT_BUDGET", "100000"))          # без потолка — пока не упрётся в лимит
+AUTOFILL_NIGHT_BUDGET = int(os.getenv("AUTOFILL_NIGHT_BUDGET", "200"))             # потолок за день (оставляет запас квоты на день)
 AUTOFILL_NIGHT_START = int(os.getenv("AUTOFILL_NIGHT_START", "2"))    # локальный час начала ночи
 AUTOFILL_NIGHT_END = int(os.getenv("AUTOFILL_NIGHT_END", "7"))        # локальный час конца ночи
 AUTOFILL_TZ_OFFSET = int(os.getenv("AUTOFILL_TZ_OFFSET", "2"))        # сдвиг от UTC (Норвегия летом = +2)
