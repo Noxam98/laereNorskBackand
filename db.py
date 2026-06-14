@@ -215,6 +215,24 @@ async def set_pool_embedding(pool_id: int, vector: list):
         await db.close()
 
 
+async def pool_missing_embedding(limit: int = 1):
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian FROM word_pool WHERE embedding IS NULL LIMIT ?", (limit,)) as cur:
+            return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def pool_missing_tts(limit: int = 1):
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian FROM word_pool WHERE tts IS NULL LIMIT ?", (limit,)) as cur:
+            return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
 async def get_pool_candidates():
     """Все слова пула (id, norwegian, data, embedding) — для подбора дистракторов."""
     db = await _conn()
@@ -416,6 +434,7 @@ def _build_word(row):
         "part_of_speech": base.get("part_of_speech", ""),
         "description": {"description": desc} if desc else None,
         "descriptionState": "loaded" if desc else "empty",
+        "hasTts": bool(row["has_tts"]),
         "gameData": {"correctFirstTry": row["correct"], "incorrectFirstTry": row["incorrect"], "isChoosedToGame": False},
         "techData": {"isSelected": False},
     }
@@ -464,14 +483,14 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None):
         async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
             total = (await cur.fetchone())["c"]
         async with db.execute(
-            f"SELECT norwegian, data FROM word_pool {where} ORDER BY norwegian LIMIT ? OFFSET ?",
+            f"SELECT norwegian, data, (tts IS NOT NULL) AS has_tts FROM word_pool {where} ORDER BY norwegian LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ) as cur:
             rows = await cur.fetchall()
             words = []
             for r in rows:
                 d = json.loads(r["data"]) if r["data"] else {}
-                words.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", "")})
+                words.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", ""), "hasTts": bool(r["has_tts"])})
         return {"total": total, "words": words}
     finally:
         await db.close()
@@ -508,7 +527,7 @@ async def get_user_data(user_id: int):
         for d in dicts:
             async with db.execute("""
                 SELECT dw.id AS dw_id, dw.override, dw.correct, dw.incorrect,
-                       wp.data, wp.description
+                       wp.data, wp.description, (wp.tts IS NOT NULL) AS has_tts
                 FROM dict_words dw
                 JOIN word_pool wp ON wp.id = dw.pool_id
                 WHERE dw.dict_id = ?

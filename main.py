@@ -1,4 +1,5 @@
 import os
+import time
 import base64
 import struct
 import httpx
@@ -17,7 +18,7 @@ from db import (
     set_word_override, record_result, get_dict_word, get_user_data, search_pool,
     set_pool_embedding, get_pool_candidates,
     get_usage, incr_usage, delete_pool_word, get_pool_list,
-    get_pool_tts, set_pool_tts,
+    get_pool_tts, set_pool_tts, pool_missing_embedding, pool_missing_tts,
 )
 import math
 import random
@@ -34,6 +35,16 @@ app = FastAPI()
 _cors = os.getenv("CORS_ORIGINS", "*")
 allow_origins = ["*"] if _cors.strip() == "*" else [o.strip() for o in _cors.split(",")]
 app.add_middleware(CORSMiddleware, allow_origins=allow_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Активность пользователей (для фонового авто-заполнения «в простое») и очередь TTS.
+_last_activity = time.monotonic()
+_tts_lock = asyncio.Lock()
+
+@app.middleware("http")
+async def _track_activity(request, call_next):
+    global _last_activity
+    _last_activity = time.monotonic()
+    return await call_next(request)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -90,45 +101,18 @@ async def ensure_embedding(pool_id, norwegian):
     if vec:
         await set_pool_embedding(pool_id, vec)
 
-# --- TTS через Gemini ---
-TTS_MODEL = os.getenv("TTS_MODEL", "gemini-2.5-flash-preview-tts")
-TTS_VOICE = os.getenv("TTS_VOICE", "Kore")
-
-def pcm_to_wav(pcm: bytes, rate: int = 24000, ch: int = 1, bits: int = 16) -> bytes:
-    byte_rate = rate * ch * bits // 8
-    block = ch * bits // 8
-    n = len(pcm)
-    return (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVE" + b"fmt " +
-            struct.pack("<IHHIIHH", 16, 1, ch, rate, byte_rate, block, bits) +
-            b"data" + struct.pack("<I", n) + pcm)
-
-async def gemini_tts(text: str):
-    """Сгенерировать WAV-аудио норвежского слова через Gemini TTS."""
-    if not LLM_API_KEY:
-        return None
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent?key={LLM_API_KEY}"
-    payload = {
-        "contents": [{"parts": [{"text": text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": TTS_VOICE}}},
-        },
-    }
-    async with httpx.AsyncClient(timeout=40) as c:
-        r = await c.post(url, json=payload)
+# --- TTS: серверный Google Translate TTS (норвежский голос, бесплатно, без квоты Gemini) ---
+async def fetch_tts(text: str):
+    """Получить mp3 произношения норвежского слова с Google Translate TTS."""
+    url = "https://translate.google.com/translate_tts"
+    params = {"ie": "UTF-8", "client": "tw-ob", "tl": "no", "q": text[:200]}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.get(url, params=params, headers=headers)
     r.raise_for_status()
-    d = r.json()
-    cand = (d.get("candidates") or [{}])[0]
-    for p in (cand.get("content", {}) or {}).get("parts", []):
-        inline = p.get("inlineData") or p.get("inline_data")
-        if inline and inline.get("data"):
-            pcm = base64.b64decode(inline["data"])
-            rate = 24000
-            m = re.search(r"rate=(\d+)", inline.get("mimeType") or inline.get("mime_type") or "")
-            if m:
-                rate = int(m.group(1))
-            return pcm_to_wav(pcm, rate)
-    return None
+    if not r.content:
+        return None
+    return r.content
 
 
 def cosine(a, b):
@@ -339,8 +323,9 @@ async def persist_pool(normalized):
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
 AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
 AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
-AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "120"))
-AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "15"))
+AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "300"))  # одна операция раз в N сек
+AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
+AUTOFILL_IDLE_SEC = int(os.getenv("AUTOFILL_IDLE_SEC", "300"))  # фон только после N сек простоя
 AUTOFILL_TOPICS = [
     "семья", "еда", "дом", "одежда", "город", "транспорт", "погода", "работа",
     "школа", "тело человека", "животные", "эмоции", "время и даты", "покупки",
@@ -353,17 +338,48 @@ async def autofill_loop():
     i = 0
     while True:
         try:
+            # фон работает только в простое — после N секунд без активности юзеров
+            idle = time.monotonic() - _last_activity
+            if idle < AUTOFILL_IDLE_SEC:
+                await asyncio.sleep(min(AUTOFILL_IDLE_SEC - idle + 1, 60))
+                continue
             if LLM_API_KEY and AUTOFILL_DAILY_BUDGET > 0:
                 day = datetime.utcnow().strftime("%Y-%m-%d")
                 used = await get_usage(day)
                 if used < AUTOFILL_DAILY_BUDGET:
-                    topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
-                    i += 1
-                    normalized, cached = await generate_words(
-                        f"{AUTOFILL_BATCH} распространённых норвежских слов на тему: {topic}", None
-                    )
-                    await persist_pool(normalized)
-                    logger.info(f"autofill: topic='{topic}' words={len(normalized)} used~={used}")
+                    # Приоритет: сначала добить эмбеддинги и звук у ВСЕХ слов,
+                    # и только когда всё полно — генерить одно новое слово.
+                    miss_e = await pool_missing_embedding(1)
+                    miss_t = await pool_missing_tts(1)
+                    if miss_e:
+                        w = miss_e[0]
+                        pid = await get_pool_id(w)
+                        vec = await embed_text(w)
+                        if pid and vec:
+                            await set_pool_embedding(pid, vec)
+                        logger.info(f"autofill: embedding '{w}' ok={bool(vec)}")
+                    elif miss_t:
+                        w = miss_t[0]
+                        wav = None
+                        async with _tts_lock:
+                            try:
+                                wav = await gemini_tts(w)
+                            except Exception as e:
+                                logger.warning(f"autofill tts '{w}': {e}")
+                            if wav:
+                                await set_pool_tts(w, wav)
+                                await incr_usage(day)
+                        logger.info(f"autofill: tts '{w}' ok={bool(wav)}")
+                    else:
+                        topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
+                        i += 1
+                        normalized, _ = await generate_words(
+                            f"{AUTOFILL_BATCH} распространённое норвежское слово на тему: {topic}", None
+                        )
+                        for it in normalized:
+                            if isinstance(it, dict) and not it.get("error") and it.get("word"):
+                                await get_or_create_pool(it["word"], it)  # эмбеддинг/звук добьются в след. циклах
+                        logger.info(f"autofill: new word topic='{topic}'")
         except Exception as e:
             logger.warning(f"autofill error: {e}")
             await asyncio.sleep(600)  # бэкофф при ошибке/лимите
@@ -643,17 +659,32 @@ async def tts(word: str):
         return Response(content=bytes(cached), media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
     if not LLM_API_KEY:
         raise HTTPException(status_code=503, detail="TTS not configured")
-    try:
-        wav = await gemini_tts(key)
-    except Exception as e:
-        logger.warning(f"tts failed: {e}")
-        raise HTTPException(status_code=502, detail="TTS provider error")
-    if not wav:
-        raise HTTPException(status_code=500, detail="No audio")
-    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
-    if await get_pool_id(key):
-        await set_pool_tts(key, wav)
-    return Response(content=wav, media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
+
+    # Очередь: озвучка генерится строго по одной (новые ждут завершения предыдущих),
+    # чтобы не упираться в лимит TTS-модели (429).
+    async with _tts_lock:
+        cached = await get_pool_tts(key)  # могли сгенерить, пока ждали очередь
+        if cached:
+            return Response(content=bytes(cached), media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
+        wav = None
+        for attempt in range(3):
+            try:
+                wav = await gemini_tts(key)
+                break
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                logger.warning(f"tts failed: {e}")
+                break
+        if not wav:
+            raise HTTPException(status_code=503, detail="TTS temporarily unavailable")
+        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
+        if await get_pool_id(key):
+            await set_pool_tts(key, wav)
+        await asyncio.sleep(0.3)  # интервал между генерациями
+        return Response(content=wav, media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
 
 
 # --- Shared pool ---
