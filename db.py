@@ -1,8 +1,10 @@
 import aiosqlite
 import json
+import os
 from datetime import datetime
 
-DATABASE_URL = "users.db"
+# Путь к БД через env (на Fly указывает на смонтированный volume, напр. /data/users.db).
+DATABASE_URL = os.getenv("DATABASE_PATH", "users.db")
 
 
 async def init_db():
