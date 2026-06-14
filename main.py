@@ -36,15 +36,13 @@ _cors = os.getenv("CORS_ORIGINS", "*")
 allow_origins = ["*"] if _cors.strip() == "*" else [o.strip() for o in _cors.split(",")]
 app.add_middleware(CORSMiddleware, allow_origins=allow_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Активность пользователей (для фонового авто-заполнения «в простое») и очередь TTS.
+# Активность = последний ПОЛЬЗОВАТЕЛЬСКИЙ вызов Google (Gemini). Фон ждёт простоя по ней.
 _last_activity = time.monotonic()
 _tts_lock = asyncio.Lock()
 
-@app.middleware("http")
-async def _track_activity(request, call_next):
+def mark_activity():
     global _last_activity
     _last_activity = time.monotonic()
-    return await call_next(request)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -467,6 +465,7 @@ async def remove_dict(dict_id: int, user=Depends(get_current_user)):
 
 @app.post("/dictionaries/{dict_id}/words")
 async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)):
+    mark_activity()
     normalized, cached = await generate_words(body.prompt, body.model)
     added, errors = 0, []
     for item in normalized:
@@ -608,6 +607,7 @@ async def report_word(dw_id: int, user=Depends(get_current_user)):
     regenerated, new_word = False, None
     if LLM_API_KEY:
         try:
+            mark_activity()
             normalized, _ = await generate_words(norwegian, None)
             await persist_pool(normalized)
             for it in normalized:
@@ -680,6 +680,7 @@ async def tts(word: str):
                 break
         if not wav:
             raise HTTPException(status_code=503, detail="TTS temporarily unavailable")
+        mark_activity()
         await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
         if await get_pool_id(key):
             await set_pool_tts(key, wav)
