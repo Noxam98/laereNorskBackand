@@ -175,7 +175,7 @@ async def get_pool_by_id(pool_id: int):
             return {
                 "data": json.loads(row["data"]),
                 "description": json.loads(row["description"]) if row["description"] else None,
-                "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
+                "embedding": row["embedding"],  # сырые байты
             }
     finally:
         await db.close()
@@ -206,11 +206,22 @@ async def set_pool_tts(norwegian: str, data: bytes):
         await db.close()
 
 
-async def set_pool_embedding(pool_id: int, vector: list):
+async def set_pool_embedding(pool_id: int, data):
+    """data — бинарное представление вектора (float16 bytes)."""
     db = await _conn()
     try:
-        await db.execute("UPDATE word_pool SET embedding = ? WHERE id = ?", (json.dumps(vector), pool_id))
+        await db.execute("UPDATE word_pool SET embedding = ? WHERE id = ?", (data, pool_id))
         await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_pool_embeddings_raw():
+    """[(id, embedding_raw)] для миграции форматов."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id, embedding FROM word_pool WHERE embedding IS NOT NULL") as cur:
+            return [(r["id"], r["embedding"]) for r in await cur.fetchall()]
     finally:
         await db.close()
 
@@ -245,7 +256,7 @@ async def get_pool_candidates():
                     "id": r["id"],
                     "norwegian": r["norwegian"],
                     "data": json.loads(r["data"]) if r["data"] else {},
-                    "embedding": json.loads(r["embedding"]) if r["embedding"] else None,
+                    "embedding": r["embedding"],  # сырые байты (декодирует main)
                 })
             return out
     finally:

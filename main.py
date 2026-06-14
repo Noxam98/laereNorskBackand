@@ -19,10 +19,12 @@ from db import (
     set_pool_embedding, get_pool_candidates,
     get_usage, incr_usage, delete_pool_word, get_pool_list,
     get_pool_tts, set_pool_tts, pool_missing_embedding, pool_missing_tts,
+    get_pool_embeddings_raw,
 )
 import math
 import random
 import asyncio
+import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import re
@@ -97,7 +99,7 @@ async def ensure_embedding(pool_id, norwegian):
         return
     vec = await embed_text(norwegian)
     if vec:
-        await set_pool_embedding(pool_id, vec)
+        await set_pool_embedding(pool_id, encode_emb(vec))
 
 # --- TTS через Microsoft Edge (нейро-голоса, бесплатно, без ключа и без лимитов) ---
 TTS_VOICE = os.getenv("TTS_VOICE", "nb-NO-FinnNeural")  # норвежский нейро-голос; ещё: nb-NO-PernilleNeural
@@ -138,11 +140,35 @@ def schedule_tts(words):
             asyncio.create_task(ensure_tts_bg(w))
 
 
-def cosine(a, b):
-    s = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return s / (na * nb) if na and nb else 0.0
+# --- Эмбеддинги: бинарное хранение (float16) + матричный косинус (мало RAM/CPU) ---
+def encode_emb(vec):
+    return np.asarray(vec, dtype=np.float16).tobytes()
+
+def decode_emb(v):
+    if not v:
+        return None
+    if isinstance(v, (bytes, bytearray)) and not v[:1] == b"[":
+        return np.frombuffer(v, dtype=np.float16).astype(np.float32)
+    try:
+        return np.asarray(json.loads(v), dtype=np.float32)  # legacy JSON
+    except Exception:
+        return None
+
+def rank_by_similarity(target_raw, cands):
+    """Вернуть cands (с эмбеддингом) по убыванию близости к target. None — у target нет вектора."""
+    tv = decode_emb(target_raw)
+    if tv is None:
+        return None
+    rows, vecs = [], []
+    for c in cands:
+        ev = decode_emb(c.get("embedding"))
+        if ev is not None and ev.shape == tv.shape:
+            rows.append(c); vecs.append(ev)
+    if not rows:
+        return []
+    M = np.vstack(vecs)
+    sims = (M @ tv) / (np.linalg.norm(M, axis=1) * (np.linalg.norm(tv) + 1e-9) + 1e-9)
+    return [rows[i] for i in np.argsort(-sims)]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -379,7 +405,7 @@ async def autofill_loop():
                         pid = await get_pool_id(w)
                         vec = await embed_text(w)
                         if pid and vec:
-                            await set_pool_embedding(pid, vec)
+                            await set_pool_embedding(pid, encode_emb(vec))
                         logger.info(f"autofill: embedding '{w}' ok={bool(vec)}")
                     elif miss_t:
                         w = miss_t[0]
@@ -414,6 +440,19 @@ async def startup():
     await init_db()
     if SECRET_KEY == "your_secret_key":
         logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
+    # миграция эмбеддингов: legacy JSON -> бинарь float16
+    try:
+        migrated = 0
+        for pid, raw in await get_pool_embeddings_raw():
+            is_legacy = isinstance(raw, str) or (isinstance(raw, (bytes, bytearray)) and raw[:1] == b"[")
+            if is_legacy:
+                v = decode_emb(raw)
+                if v is not None:
+                    await set_pool_embedding(pid, encode_emb(v)); migrated += 1
+        if migrated:
+            logger.info(f"migrated {migrated} embeddings to binary float16")
+    except Exception as e:
+        logger.warning(f"embedding migration: {e}")
     if AUTOFILL_ENABLED:
         asyncio.create_task(autofill_loop())
         logger.info(f"autofill enabled: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
@@ -588,7 +627,6 @@ async def distractors(dw_id: int, n: int = 3, mode: str = "no2int", lang: str = 
     if dw["override"]:
         ov = json.loads(dw["override"]); target = {**target, **ov}
     target_pos = target.get("part_of_speech", "")
-    target_emb = json.loads(dw["embedding"]) if dw["embedding"] else None
 
     def answer_of(data, norwegian):
         if mode == "int2no":
@@ -601,10 +639,9 @@ async def distractors(dw_id: int, n: int = 3, mode: str = "no2int", lang: str = 
 
     cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"]]
 
-    if target_emb and any(c.get("embedding") for c in cands):
-        scored = [(cosine(target_emb, c["embedding"]), c) for c in cands if c.get("embedding")]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        ordered = [c for _, c in scored]
+    ranked = rank_by_similarity(dw["embedding"], cands)
+    if ranked:
+        ordered = ranked
     else:
         same = [c for c in cands if c["data"].get("part_of_speech") == target_pos]
         other = [c for c in cands if c["data"].get("part_of_speech") != target_pos]
@@ -656,17 +693,18 @@ async def synonyms(dw_id: int, n: int = 5, lang: str = "ru", user=Depends(get_cu
     dw = await get_dict_word(user["id"], dw_id)
     if not dw:
         raise HTTPException(status_code=404, detail="Not found")
-    target_emb = json.loads(dw["embedding"]) if dw["embedding"] else None
-    if not target_emb:
+    if not dw["embedding"]:
         return {"synonyms": []}
     target = json.loads(dw["data"]) if dw["data"] else {}
     target_pos = target.get("part_of_speech", "")
     cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"] and c.get("embedding")]
-    scored = [(cosine(target_emb, c["embedding"]), c) for c in cands]
-    # сначала та же часть речи
-    scored.sort(key=lambda x: (c2pos(x[1]) == target_pos, x[0]), reverse=True)
+    ranked = rank_by_similarity(dw["embedding"], cands)
+    if not ranked:
+        return {"synonyms": []}
+    # та же часть речи — выше (порядок по близости сохраняется внутри групп)
+    ordered = [c for c in ranked if c2pos(c) == target_pos] + [c for c in ranked if c2pos(c) != target_pos]
     out = []
-    for _, c in scored[:n]:
+    for c in ordered[:n]:
         tr = (c["data"].get("translate", {}) or {}).get(lang) or []
         out.append({"word": c["norwegian"], "translate": tr})
     return {"synonyms": out}

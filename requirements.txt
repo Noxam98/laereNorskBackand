@@ -7,3 +7,4 @@ aiosqlite
 python-multipart
 openai
 edge-tts
+numpy
