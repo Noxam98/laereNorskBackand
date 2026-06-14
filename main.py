@@ -19,7 +19,7 @@ from db import (
     set_pool_embedding, get_pool_candidates,
     get_usage, incr_usage, delete_pool_word, get_pool_list,
     get_pool_tts, set_pool_tts, pool_missing_embedding, pool_missing_tts,
-    get_pool_embeddings_raw,
+    get_pool_embeddings_raw, get_pool_sample, get_pool_letter,
 )
 import math
 import random
@@ -390,12 +390,41 @@ def _is_night():
     s, e = AUTOFILL_NIGHT_START, AUTOFILL_NIGHT_END
     return (s <= h < e) if s <= e else (h >= s or h < e)
 
+AUTOFILL_AVOID_SAMPLE = int(os.getenv("AUTOFILL_AVOID_SAMPLE", "60"))  # фикс-размер списка исключений в промпте
+
 AUTOFILL_TOPICS = [
-    "семья", "еда", "дом", "одежда", "город", "транспорт", "погода", "работа",
-    "школа", "тело человека", "животные", "эмоции", "время и даты", "покупки",
-    "путешествия", "природа", "кухня и посуда", "спорт", "числа", "цвета",
-    "профессии", "здоровье", "технологии", "музыка", "праздники",
+    "семья и родственники", "еда и блюда", "напитки", "фрукты и овощи", "дом и жильё",
+    "мебель", "кухня и посуда", "одежда и обувь", "аксессуары и украшения", "тело человека",
+    "здоровье и болезни", "медицина и аптека", "гигиена и косметика", "эмоции и чувства",
+    "черты характера", "отношения и любовь", "дружба и общение", "город и улицы",
+    "здания и места", "транспорт и машины", "дорога и движение", "путешествия и туризм",
+    "гостиница и отдых", "природа и ландшафт", "погода и климат", "времена года",
+    "животные", "птицы", "рыбы и морские", "насекомые", "растения и деревья", "цветы",
+    "сад и огород", "ферма и село", "море и пляж", "горы и лес", "небо и космос",
+    "цвета и оттенки", "числа и счёт", "время и даты", "дни и месяцы", "работа и офис",
+    "профессии", "школа и учёба", "наука", "технологии и компьютеры", "интернет и связь",
+    "телефон и гаджеты", "деньги и финансы", "покупки и магазин", "рынок и продукты",
+    "ресторан и кафе", "приготовление еды", "вкус и запах", "спорт и фитнес",
+    "хобби и досуг", "музыка и инструменты", "искусство", "книги и литература",
+    "кино и театр", "игры", "праздники и традиции", "религия", "политика и общество",
+    "закон и право", "армия и оружие", "география и страны", "языки и народы",
+    "инструменты и ремонт", "строительство и материалы", "энергия и экология",
+    "виды транспорта", "безопасность и чрезвычайные", "детство и дети", "возраст и жизнь",
+    "свадьба и события", "органы чувств", "ум и память", "сны и воображение",
+    "качества и свойства", "размеры и формы", "материалы и вещества", "звуки и шумы",
+    "свет и тьма", "движение и направление", "глаголы речи", "глаголы действия",
+    "повседневные дела", "приветствия и вежливость", "вопросы и сомнения",
+    "количество и меры", "абстрактные понятия", "бизнес и торговля", "экономика",
 ]
+
+# Буквы норвежского алфавита с весами по частоте слов-начал (частые буквы выпадают чаще).
+_LETTER_WEIGHTS = {
+    "s": 12, "f": 9, "b": 9, "k": 9, "m": 8, "t": 8, "h": 7, "v": 7, "d": 7, "a": 6,
+    "p": 6, "l": 6, "g": 5, "r": 5, "o": 4, "e": 4, "i": 4, "n": 4, "u": 3, "j": 3,
+    "å": 3, "y": 2, "ø": 2, "æ": 1, "c": 1,
+}
+AUTOFILL_LETTERS = list(_LETTER_WEIGHTS.keys())
+AUTOFILL_LETTER_W = list(_LETTER_WEIGHTS.values())
 
 async def complete_word(w):
     """Доделать слово целиком: эмбеддинг + озвучка (если ещё нет)."""
@@ -438,11 +467,22 @@ async def autofill_loop():
                     await complete_word(w)  # эмбеддинг + озвучка
                     logger.info(f"autofill: completed '{w}'")
                 else:
-                    topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
                     i += 1
                     nonce = random.randint(1000, 99999)
-                    prompt = (f"Дай {AUTOFILL_BATCH} случайных РАЗНЫХ распространённых норвежских слов "
-                              f"на тему: {topic}. Каждый раз выдавай разные слова. (вариант {nonce})")
+                    # 2 из 3 циклов — по букве (системно вычищаем алфавит), 1 из 3 — по теме.
+                    if i % 3 == 0:
+                        topic = AUTOFILL_TOPICS[(i // 3) % len(AUTOFILL_TOPICS)]
+                        avoid = await get_pool_sample(AUTOFILL_AVOID_SAMPLE)
+                        constraint = f"на тему: {topic}"
+                        label = f"topic='{topic}'"
+                    else:
+                        letter = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
+                        avoid = await get_pool_letter(letter, AUTOFILL_AVOID_SAMPLE)
+                        constraint = f"начинающихся на букву «{letter}»"
+                        label = f"letter='{letter}'"
+                    avoid_s = ", ".join(avoid)
+                    prompt = (f"Дай {AUTOFILL_BATCH} распространённых норвежских слов {constraint}. "
+                              f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
                     new_words = []
                     try:
                         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, None)
@@ -458,7 +498,7 @@ async def autofill_loop():
                         logger.warning(f"autofill generate: {e}")
                     for nw in new_words:
                         await complete_word(nw)  # перевод + эмбеддинг + озвучка — всё сразу
-                    logger.info(f"autofill: topic='{topic}' new={len(new_words)}")
+                    logger.info(f"autofill: {label} new={len(new_words)}")
         except Exception as e:
             logger.warning(f"autofill error: {e}")
             await asyncio.sleep(120)

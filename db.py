@@ -244,6 +244,32 @@ async def pool_missing_tts(limit: int = 1):
         await db.close()
 
 
+async def get_pool_sample(limit: int = 120):
+    """Случайная выборка норвежских слов из пула (исключения для генерации по теме)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian FROM word_pool ORDER BY RANDOM() LIMIT ?", (limit,)) as cur:
+            return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def get_pool_letter(letter: str, limit: int = 120):
+    """Норвежские слова пула, начинающиеся на букву (исключения для генерации по букве)."""
+    key = normalize_word(letter)
+    if not key:
+        return []
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT norwegian FROM word_pool WHERE norwegian LIKE ? ORDER BY RANDOM() LIMIT ?",
+            (key + "%", limit),
+        ) as cur:
+            return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
 async def get_pool_candidates():
     """Все слова пула (id, norwegian, data, embedding) — для подбора дистракторов."""
     db = await _conn()
