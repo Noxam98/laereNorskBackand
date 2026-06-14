@@ -1,5 +1,8 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, status
+import base64
+import struct
+import httpx
+from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 import bcrypt
@@ -13,7 +16,8 @@ from db import (
     create_dictionary, delete_dictionary, add_word_to_dict, delete_dict_word,
     set_word_override, record_result, get_dict_word, get_user_data, search_pool,
     set_pool_embedding, get_pool_candidates,
-    get_usage, incr_usage, delete_pool_word,
+    get_usage, incr_usage, delete_pool_word, get_pool_list,
+    get_pool_tts, set_pool_tts,
 )
 import math
 import random
@@ -85,6 +89,47 @@ async def ensure_embedding(pool_id, norwegian):
     vec = await embed_text(norwegian)
     if vec:
         await set_pool_embedding(pool_id, vec)
+
+# --- TTS через Gemini ---
+TTS_MODEL = os.getenv("TTS_MODEL", "gemini-2.5-flash-preview-tts")
+TTS_VOICE = os.getenv("TTS_VOICE", "Kore")
+
+def pcm_to_wav(pcm: bytes, rate: int = 24000, ch: int = 1, bits: int = 16) -> bytes:
+    byte_rate = rate * ch * bits // 8
+    block = ch * bits // 8
+    n = len(pcm)
+    return (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVE" + b"fmt " +
+            struct.pack("<IHHIIHH", 16, 1, ch, rate, byte_rate, block, bits) +
+            b"data" + struct.pack("<I", n) + pcm)
+
+async def gemini_tts(text: str):
+    """Сгенерировать WAV-аудио норвежского слова через Gemini TTS."""
+    if not LLM_API_KEY:
+        return None
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{TTS_MODEL}:generateContent?key={LLM_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": TTS_VOICE}}},
+        },
+    }
+    async with httpx.AsyncClient(timeout=40) as c:
+        r = await c.post(url, json=payload)
+    r.raise_for_status()
+    d = r.json()
+    cand = (d.get("candidates") or [{}])[0]
+    for p in (cand.get("content", {}) or {}).get("parts", []):
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            pcm = base64.b64decode(inline["data"])
+            rate = 24000
+            m = re.search(r"rate=(\d+)", inline.get("mimeType") or inline.get("mime_type") or "")
+            if m:
+                rate = int(m.group(1))
+            return pcm_to_wav(pcm, rate)
+    return None
+
 
 def cosine(a, b):
     s = sum(x * y for x, y in zip(a, b))
@@ -587,7 +632,36 @@ def c2pos(c):
     return c["data"].get("part_of_speech", "")
 
 
-# --- Shared pool (для будущего автокомплита) ---
+@app.get("/tts")
+async def tts(word: str):
+    """Аудио произношения норвежского слова (Gemini TTS, кэшируется в пуле). Публичный."""
+    key = normalize_word(word)
+    if not key:
+        raise HTTPException(status_code=400, detail="word is required")
+    cached = await get_pool_tts(key)
+    if cached:
+        return Response(content=bytes(cached), media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="TTS not configured")
+    try:
+        wav = await gemini_tts(key)
+    except Exception as e:
+        logger.warning(f"tts failed: {e}")
+        raise HTTPException(status_code=502, detail="TTS provider error")
+    if not wav:
+        raise HTTPException(status_code=500, detail="No audio")
+    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
+    if await get_pool_id(key):
+        await set_pool_tts(key, wav)
+    return Response(content=wav, media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
+
+
+# --- Shared pool ---
+@app.get("/pool")
+async def pool(q: str = None, limit: int = 60, offset: int = 0, user=Depends(get_current_user)):
+    return await get_pool_list(limit, offset, q)
+
+
 @app.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, user=Depends(get_current_user)):
     return {"results": await search_pool(q, limit)}

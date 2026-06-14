@@ -35,6 +35,10 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN embedding TEXT")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN tts BLOB")
+        except Exception:
+            pass
 
         # Кэш запросов генерации.
         await db.execute("""
@@ -173,6 +177,31 @@ async def get_pool_by_id(pool_id: int):
                 "description": json.loads(row["description"]) if row["description"] else None,
                 "embedding": json.loads(row["embedding"]) if row["embedding"] else None,
             }
+    finally:
+        await db.close()
+
+
+async def get_pool_tts(norwegian: str):
+    key = normalize_word(norwegian)
+    if not key:
+        return None
+    db = await _conn()
+    try:
+        async with db.execute("SELECT tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+            r = await cur.fetchone()
+            return r["tts"] if r and r["tts"] else None
+    finally:
+        await db.close()
+
+
+async def set_pool_tts(norwegian: str, data: bytes):
+    key = normalize_word(norwegian)
+    if not key:
+        return
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET tts = ? WHERE norwegian = ?", (data, key))
+        await db.commit()
     finally:
         await db.close()
 
@@ -421,6 +450,29 @@ async def clear_query_cache():
     try:
         await db.execute("DELETE FROM query_cache")
         await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None):
+    """Список слов из общего пула (с поиском и пагинацией)."""
+    key = normalize_word(q) if q else None
+    where = "WHERE norwegian LIKE ?" if key else ""
+    params = (f"%{key}%",) if key else ()
+    db = await _conn()
+    try:
+        async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
+            total = (await cur.fetchone())["c"]
+        async with db.execute(
+            f"SELECT norwegian, data FROM word_pool {where} ORDER BY norwegian LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ) as cur:
+            rows = await cur.fetchall()
+            words = []
+            for r in rows:
+                d = json.loads(r["data"]) if r["data"] else {}
+                words.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", "")})
+        return {"total": total, "words": words}
     finally:
         await db.close()
 
