@@ -46,6 +46,14 @@ async def init_db():
         )
         """)
 
+        # Дневной учёт обращений к LLM (для авто-заполнения пула в рамках бюджета).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS usage (
+            day TEXT PRIMARY KEY,
+            n INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+
         # Словари пользователя.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS dictionaries (
@@ -135,6 +143,20 @@ async def get_or_create_pool(norwegian: str, data: dict):
         )
         await db.commit()
         return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def get_pool_id(norwegian: str):
+    """id записи пула по норвежскому слову (без создания)."""
+    key = normalize_word(norwegian)
+    if not key:
+        return None
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+            r = await cur.fetchone()
+            return r["id"] if r else None
     finally:
         await db.close()
 
@@ -315,12 +337,30 @@ async def record_result(user_id: int, dw_id: int, correct: bool):
         await db.close()
 
 
+async def delete_pool_word(norwegian: str):
+    """Полностью удалить слово из общего пула (каскадом у всех) + почистить кэш запросов."""
+    key = normalize_word(norwegian)
+    if not key:
+        return
+    db = await _conn()
+    try:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("DELETE FROM word_pool WHERE norwegian = ?", (key,))
+        await db.execute(
+            "DELETE FROM query_cache WHERE query LIKE ? OR response LIKE ? OR response LIKE ?",
+            (f"%{key}%", f"%{key}%", f"%{norwegian}%"),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
 async def get_dict_word(user_id: int, dw_id: int):
-    """Вернуть (dw_id, pool_id, description) для слова пользователя."""
+    """Вернуть (dw_id, pool_id, dict_id, description, data, embedding) для слова пользователя."""
     db = await _conn()
     try:
         async with db.execute("""
-            SELECT dw.id, dw.pool_id, dw.override, wp.norwegian, wp.description, wp.data, wp.embedding
+            SELECT dw.id, dw.pool_id, dw.dict_id, dw.override, wp.norwegian, wp.description, wp.data, wp.embedding
             FROM dict_words dw
             JOIN dictionaries d ON d.id = dw.dict_id
             JOIN word_pool wp ON wp.id = dw.pool_id
@@ -350,6 +390,39 @@ def _build_word(row):
         "gameData": {"correctFirstTry": row["correct"], "incorrectFirstTry": row["incorrect"], "isChoosedToGame": False},
         "techData": {"isSelected": False},
     }
+
+
+async def get_usage(day: str) -> int:
+    db = await _conn()
+    try:
+        async with db.execute("SELECT n FROM usage WHERE day = ?", (day,)) as cur:
+            r = await cur.fetchone()
+            return r["n"] if r else 0
+    finally:
+        await db.close()
+
+
+async def incr_usage(day: str, by: int = 1) -> int:
+    db = await _conn()
+    try:
+        await db.execute(
+            "INSERT INTO usage (day, n) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET n = n + ?",
+            (day, by, by),
+        )
+        await db.commit()
+        async with db.execute("SELECT n FROM usage WHERE day = ?", (day,)) as cur:
+            return (await cur.fetchone())["n"]
+    finally:
+        await db.close()
+
+
+async def clear_query_cache():
+    db = await _conn()
+    try:
+        await db.execute("DELETE FROM query_cache")
+        await db.commit()
+    finally:
+        await db.close()
 
 
 async def search_pool(prefix: str, limit: int = 10):

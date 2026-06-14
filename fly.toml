@@ -1,4 +1,4 @@
-app = "laere-norsk-api"
+app = "learn-norsk-backend"
 primary_region = "arn"
 
 [build]

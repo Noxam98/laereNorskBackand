@@ -8,14 +8,16 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from db import (
     init_db, get_user, create_user,
-    get_or_create_pool, get_pool_by_id, set_pool_description,
+    get_or_create_pool, get_pool_by_id, get_pool_id, set_pool_description,
     get_cached_query, cache_query, normalize_word,
     create_dictionary, delete_dictionary, add_word_to_dict, delete_dict_word,
     set_word_override, record_result, get_dict_word, get_user_data, search_pool,
     set_pool_embedding, get_pool_candidates,
+    get_usage, incr_usage, delete_pool_word,
 )
 import math
 import random
+import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import re
@@ -120,6 +122,9 @@ class AddWords(BaseModel):
 class ImportDict(BaseModel):
     name: str
     words: List[dict] = []
+
+class PoolAdd(BaseModel):
+    norwegian: str
 
 class WordOverride(BaseModel):
     translate: Optional[dict] = None
@@ -270,10 +275,55 @@ async def generate_words(prompt, model):
     if data is None:
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     # гарантированный формат: { words: [...] }
+    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # учёт реального обращения к LLM
     items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     normalized = [normalize_word_item(i) for i in items]
     await cache_query(prompt, normalized)
     return normalized, False
+
+
+async def persist_pool(normalized):
+    """Сохранить слова в общий пул + посчитать эмбеддинги (для авто-заполнения)."""
+    for item in normalized:
+        if isinstance(item, dict) and not item.get("error") and item.get("word"):
+            pid = await get_or_create_pool(item["word"], item)
+            if pid:
+                await ensure_embedding(pid, item["word"])
+
+
+# --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
+AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
+AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
+AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "120"))
+AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "15"))
+AUTOFILL_TOPICS = [
+    "семья", "еда", "дом", "одежда", "город", "транспорт", "погода", "работа",
+    "школа", "тело человека", "животные", "эмоции", "время и даты", "покупки",
+    "путешествия", "природа", "кухня и посуда", "спорт", "числа", "цвета",
+    "профессии", "здоровье", "технологии", "музыка", "праздники",
+]
+
+async def autofill_loop():
+    await asyncio.sleep(15)
+    i = 0
+    while True:
+        try:
+            if LLM_API_KEY and AUTOFILL_DAILY_BUDGET > 0:
+                day = datetime.utcnow().strftime("%Y-%m-%d")
+                used = await get_usage(day)
+                if used < AUTOFILL_DAILY_BUDGET:
+                    topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
+                    i += 1
+                    normalized, cached = await generate_words(
+                        f"{AUTOFILL_BATCH} распространённых норвежских слов на тему: {topic}", None
+                    )
+                    await persist_pool(normalized)
+                    logger.info(f"autofill: topic='{topic}' words={len(normalized)} used~={used}")
+        except Exception as e:
+            logger.warning(f"autofill error: {e}")
+            await asyncio.sleep(600)  # бэкофф при ошибке/лимите
+            continue
+        await asyncio.sleep(AUTOFILL_INTERVAL_SEC)
 
 
 @app.on_event("startup")
@@ -281,6 +331,9 @@ async def startup():
     await init_db()
     if SECRET_KEY == "your_secret_key":
         logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
+    if AUTOFILL_ENABLED:
+        asyncio.create_task(autofill_loop())
+        logger.info(f"autofill enabled: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
 
 
 # --- Auth ---
@@ -369,6 +422,16 @@ async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)
             if res.get("id") and not res.get("duplicate"):
                 added += 1
     return {"added": added, "errors": errors, "cached": cached}
+
+@app.post("/dictionaries/{dict_id}/add_pool")
+async def add_pool(dict_id: int, body: PoolAdd, user=Depends(get_current_user)):
+    """Добавить в словарь уже существующее в общем пуле слово (автокомплит) — без ИИ."""
+    pid = await get_pool_id(body.norwegian)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    res = await add_word_to_dict(user["id"], dict_id, pid)
+    return {"added": 1 if (res.get("id") and not res.get("duplicate")) else 0, "duplicate": res.get("duplicate", False)}
+
 
 @app.post("/dictionaries/import")
 async def import_dict(body: ImportDict, user=Depends(get_current_user)):
@@ -469,6 +532,33 @@ async def distractors(dw_id: int, n: int = 3, mode: str = "no2int", lang: str = 
         if len(out) >= n:
             break
     return {"distractors": out}
+
+
+@app.post("/words/{dw_id}/report")
+async def report_word(dw_id: int, user=Depends(get_current_user)):
+    """Пометить слово как неправильное: удалить из общего пула (у всех) и перегенерировать заново."""
+    dw = await get_dict_word(user["id"], dw_id)
+    if not dw:
+        raise HTTPException(status_code=404, detail="Not found")
+    norwegian = dw["norwegian"]
+    dict_id = dw["dict_id"]
+    await delete_pool_word(norwegian)  # убираем из пула у всех + чистим кэш
+
+    regenerated, new_word = False, None
+    if LLM_API_KEY:
+        try:
+            normalized, _ = await generate_words(norwegian, None)
+            await persist_pool(normalized)
+            for it in normalized:
+                if isinstance(it, dict) and not it.get("error") and it.get("word"):
+                    pid = await get_pool_id(it["word"])
+                    if pid:
+                        await add_word_to_dict(user["id"], dict_id, pid)
+                        regenerated, new_word = True, it["word"]
+                        break
+        except Exception as e:
+            logger.warning(f"report regen failed: {e}")
+    return {"removed": True, "regenerated": regenerated, "word": new_word}
 
 
 @app.get("/words/{dw_id}/synonyms")
