@@ -39,7 +39,9 @@ allow_origins = ["*"] if _cors.strip() == "*" else [o.strip() for o in _cors.spl
 app.add_middleware(CORSMiddleware, allow_origins=allow_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Активность = последний ПОЛЬЗОВАТЕЛЬСКИЙ вызов Google (Gemini). Фон ждёт простоя по ней.
-_last_activity = time.monotonic()
+# Изначально считаем, что простой уже наступил (после рестарта фон стартует сразу,
+# 5-минутная пауза включается только после реальной активности пользователя).
+_last_activity = time.monotonic() - 86400
 _tts_lock = asyncio.Lock()
 
 def mark_activity():
@@ -437,13 +439,20 @@ async def autofill_loop():
                     else:
                         topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
                         i += 1
-                        normalized, _ = await generate_words(
-                            f"{AUTOFILL_BATCH} распространённое норвежское слово на тему: {topic}", None
-                        )
-                        for it in normalized:
+                        nonce = random.randint(1000, 99999)
+                        prompt = (f"Дай {AUTOFILL_BATCH} случайных РАЗНЫХ распространённых норвежских слов "
+                                  f"на тему: {topic}. Каждый раз выдавай разные слова. (вариант {nonce})")
+                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, None)
+                        await incr_usage(day)  # реальный вызов Gemini (мимо кэша)
+                        items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                        added = 0
+                        for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
-                                await get_or_create_pool(it["word"], it)  # эмбеддинг/звук добьются в след. циклах
-                        logger.info(f"autofill: new word topic='{topic}'")
+                                existed = await get_pool_id(it["word"])
+                                await get_or_create_pool(it["word"], normalize_word_item(it))  # эмбеддинг/звук добьются позже
+                                if not existed:
+                                    added += 1
+                        logger.info(f"autofill: topic='{topic}' new={added}")
         except Exception as e:
             logger.warning(f"autofill error: {e}")
             await asyncio.sleep(600)  # бэкофф при ошибке/лимите
