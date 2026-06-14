@@ -6,3 +6,4 @@ bcrypt
 aiosqlite
 python-multipart
 openai
+edge-tts

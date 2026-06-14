@@ -99,35 +99,37 @@ async def ensure_embedding(pool_id, norwegian):
     if vec:
         await set_pool_embedding(pool_id, vec)
 
-# --- TTS: серверный Google Translate TTS (норвежский голос, бесплатно, без квоты Gemini) ---
-async def fetch_tts(text: str):
-    """Получить mp3 произношения норвежского слова с Google Translate TTS."""
-    url = "https://translate.google.com/translate_tts"
-    params = {"ie": "UTF-8", "client": "tw-ob", "tl": "no", "q": text[:200]}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        r = await c.get(url, params=params, headers=headers)
-    r.raise_for_status()
-    if not r.content:
-        return None
-    return r.content
+# --- TTS через Microsoft Edge (нейро-голоса, бесплатно, без ключа и без лимитов) ---
+TTS_VOICE = os.getenv("TTS_VOICE", "nb-NO-FinnNeural")  # норвежский нейро-голос; ещё: nb-NO-PernilleNeural
+TTS_RATE = os.getenv("TTS_RATE", "-5%")    # скорость, напр. "-15%", "+10%"
+TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")  # высота, напр. "+5Hz", "-5Hz"
+
+async def synth_tts(text: str):
+    """MP3-аудио норвежского слова через Microsoft Edge TTS."""
+    import edge_tts
+    comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+    audio = bytearray()
+    async for ch in comm.stream():
+        if ch.get("type") == "audio" and ch.get("data"):
+            audio += ch["data"]
+    return bytes(audio) if audio else None
 
 
 async def ensure_tts_bg(norwegian: str):
     """Сгенерировать озвучку слова в фоне (через общую очередь), если её ещё нет."""
     key = normalize_word(norwegian)
-    if not key or not LLM_API_KEY:
+    if not key:
         return
     async with _tts_lock:
         if await get_pool_tts(key):
             return
         try:
-            wav = await gemini_tts(key)
+            mp3 = await synth_tts(key)
         except Exception as e:
             logger.warning(f"bg tts '{key}': {e}")
             return
-        if wav and await get_pool_id(key):
-            await set_pool_tts(key, wav)
+        if mp3 and await get_pool_id(key):
+            await set_pool_tts(key, mp3)
             logger.info(f"bg tts ready: {key}")
 
 def schedule_tts(words):
@@ -384,12 +386,11 @@ async def autofill_loop():
                         wav = None
                         async with _tts_lock:
                             try:
-                                wav = await gemini_tts(w)
+                                wav = await synth_tts(w)
                             except Exception as e:
                                 logger.warning(f"autofill tts '{w}': {e}")
                             if wav:
                                 await set_pool_tts(w, wav)
-                                await incr_usage(day)
                         logger.info(f"autofill: tts '{w}' ok={bool(wav)}")
                     else:
                         topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
@@ -683,36 +684,22 @@ async def tts(word: str):
         raise HTTPException(status_code=400, detail="word is required")
     cached = await get_pool_tts(key)
     if cached:
-        return Response(content=bytes(cached), media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
-    if not LLM_API_KEY:
-        raise HTTPException(status_code=503, detail="TTS not configured")
+        return Response(content=bytes(cached), media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=604800"})
 
-    # Очередь: озвучка генерится строго по одной (новые ждут завершения предыдущих),
-    # чтобы не упираться в лимит TTS-модели (429).
     async with _tts_lock:
         cached = await get_pool_tts(key)  # могли сгенерить, пока ждали очередь
         if cached:
-            return Response(content=bytes(cached), media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
-        wav = None
-        for attempt in range(3):
-            try:
-                wav = await gemini_tts(key)
-                break
-            except Exception as e:
-                msg = str(e)
-                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    await asyncio.sleep(2 * (attempt + 1))
-                    continue
-                logger.warning(f"tts failed: {e}")
-                break
-        if not wav:
-            raise HTTPException(status_code=503, detail="TTS temporarily unavailable")
-        mark_activity()
-        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
+            return Response(content=bytes(cached), media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=604800"})
+        try:
+            mp3 = await synth_tts(key)
+        except Exception as e:
+            logger.warning(f"tts failed: {e}")
+            raise HTTPException(status_code=502, detail="TTS provider error")
+        if not mp3:
+            raise HTTPException(status_code=502, detail="No audio")
         if await get_pool_id(key):
-            await set_pool_tts(key, wav)
-        await asyncio.sleep(0.3)  # интервал между генерациями
-        return Response(content=wav, media_type="audio/wav", headers={"Cache-Control": "public, max-age=604800"})
+            await set_pool_tts(key, mp3)
+        return Response(content=mp3, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=604800"})
 
 
 # --- Shared pool ---
