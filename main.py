@@ -375,7 +375,7 @@ async def persist_pool(normalized):
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
 AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
 AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
-AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "300"))  # одна операция раз в N сек
+AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "150"))  # одно слово целиком раз в N сек (день)
 AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
 AUTOFILL_IDLE_SEC = int(os.getenv("AUTOFILL_IDLE_SEC", "300"))  # фон только после N сек простоя
 # Ночной режим — агрессивнее (когда никто не пользуется)
@@ -397,65 +397,71 @@ AUTOFILL_TOPICS = [
     "профессии", "здоровье", "технологии", "музыка", "праздники",
 ]
 
+async def complete_word(w):
+    """Доделать слово целиком: эмбеддинг + озвучка (если ещё нет)."""
+    pid = await get_pool_id(w)
+    if pid:
+        p = await get_pool_by_id(pid)
+        if p and not p.get("embedding"):
+            vec = await embed_text(w)
+            if vec:
+                await set_pool_embedding(pid, encode_emb(vec))
+    if not await get_pool_tts(w):
+        async with _tts_lock:
+            try:
+                mp3 = await synth_tts(w)
+            except Exception as e:
+                mp3 = None
+                logger.warning(f"complete_word tts '{w}': {e}")
+            if mp3:
+                await set_pool_tts(w, mp3)
+
+
 async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
     while True:
         night = _is_night()
         interval = AUTOFILL_NIGHT_INTERVAL_SEC if night else AUTOFILL_INTERVAL_SEC
-        budget = AUTOFILL_NIGHT_BUDGET if night else AUTOFILL_DAILY_BUDGET
         try:
             # фон работает только в простое — после N секунд без активности юзеров
             idle = time.monotonic() - _last_activity
             if idle < AUTOFILL_IDLE_SEC:
                 await asyncio.sleep(min(AUTOFILL_IDLE_SEC - idle + 1, 60))
                 continue
-            if LLM_API_KEY and budget > 0:
-                day = datetime.utcnow().strftime("%Y-%m-%d")
-                used = await get_usage(day)
-                if used < budget:
-                    # Приоритет: сначала добить эмбеддинги и звук у ВСЕХ слов,
-                    # и только когда всё полно — генерить одно новое слово.
-                    miss_e = await pool_missing_embedding(1)
-                    miss_t = await pool_missing_tts(1)
-                    if miss_e:
-                        w = miss_e[0]
-                        pid = await get_pool_id(w)
-                        vec = await embed_text(w)
-                        if pid and vec:
-                            await set_pool_embedding(pid, encode_emb(vec))
-                        logger.info(f"autofill: embedding '{w}' ok={bool(vec)}")
-                    elif miss_t:
-                        w = miss_t[0]
-                        wav = None
-                        async with _tts_lock:
-                            try:
-                                wav = await synth_tts(w)
-                            except Exception as e:
-                                logger.warning(f"autofill tts '{w}': {e}")
-                            if wav:
-                                await set_pool_tts(w, wav)
-                        logger.info(f"autofill: tts '{w}' ok={bool(wav)}")
-                    else:
-                        topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
-                        i += 1
-                        nonce = random.randint(1000, 99999)
-                        prompt = (f"Дай {AUTOFILL_BATCH} случайных РАЗНЫХ распространённых норвежских слов "
-                                  f"на тему: {topic}. Каждый раз выдавай разные слова. (вариант {nonce})")
+            if LLM_API_KEY:
+                # Лимиты Gemini раздельные (текст/эмбеддинг), TTS (edge) безлимитный —
+                # каждый шаг падает независимо. Каждый цикл доводит ОДНО слово до полного.
+                miss = (await pool_missing_embedding(1)) or (await pool_missing_tts(1))
+                if miss:
+                    w = miss[0]
+                    await complete_word(w)  # эмбеддинг + озвучка
+                    logger.info(f"autofill: completed '{w}'")
+                else:
+                    topic = AUTOFILL_TOPICS[i % len(AUTOFILL_TOPICS)]
+                    i += 1
+                    nonce = random.randint(1000, 99999)
+                    prompt = (f"Дай {AUTOFILL_BATCH} случайных РАЗНЫХ распространённых норвежских слов "
+                              f"на тему: {topic}. Каждый раз выдавай разные слова. (вариант {nonce})")
+                    new_words = []
+                    try:
                         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, None)
-                        await incr_usage(day)  # реальный вызов Gemini (мимо кэша)
+                        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
                         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                        added = 0
                         for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
                                 existed = await get_pool_id(it["word"])
-                                await get_or_create_pool(it["word"], normalize_word_item(it))  # эмбеддинг/звук добьются позже
+                                await get_or_create_pool(it["word"], normalize_word_item(it))
                                 if not existed:
-                                    added += 1
-                        logger.info(f"autofill: topic='{topic}' new={added}")
+                                    new_words.append(it["word"])
+                    except Exception as e:
+                        logger.warning(f"autofill generate: {e}")
+                    for nw in new_words:
+                        await complete_word(nw)  # перевод + эмбеддинг + озвучка — всё сразу
+                    logger.info(f"autofill: topic='{topic}' new={len(new_words)}")
         except Exception as e:
             logger.warning(f"autofill error: {e}")
-            await asyncio.sleep(600)  # бэкофф при ошибке/лимите
+            await asyncio.sleep(120)
             continue
         await asyncio.sleep(interval)
 
