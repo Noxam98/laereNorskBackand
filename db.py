@@ -508,15 +508,18 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None):
 
 
 async def search_pool(prefix: str, limit: int = 10):
-    """Поиск по общему пулу слов (для будущего автокомплита)."""
+    """Автокомплит по общему пулу: по норвежскому слову И по переводам (любой язык).
+    Норвежские совпадения по префиксу — выше."""
     key = normalize_word(prefix)
     if not key:
         return []
     db = await _conn()
     try:
         async with db.execute(
-            "SELECT norwegian, data FROM word_pool WHERE norwegian LIKE ? ORDER BY norwegian LIMIT ?",
-            (key + "%", limit),
+            "SELECT norwegian, data FROM word_pool "
+            "WHERE norwegian LIKE ? OR data LIKE ? "
+            "ORDER BY (CASE WHEN norwegian LIKE ? THEN 0 ELSE 1 END), norwegian LIMIT ?",
+            (key + "%", "%" + key + "%", key + "%", limit),
         ) as cur:
             rows = await cur.fetchall()
             out = []
