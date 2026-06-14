@@ -375,6 +375,18 @@ AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
 AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "300"))  # одна операция раз в N сек
 AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
 AUTOFILL_IDLE_SEC = int(os.getenv("AUTOFILL_IDLE_SEC", "300"))  # фон только после N сек простоя
+# Ночной режим — агрессивнее (когда никто не пользуется)
+AUTOFILL_NIGHT_INTERVAL_SEC = int(os.getenv("AUTOFILL_NIGHT_INTERVAL_SEC", "6"))   # ~10 операций/мин
+AUTOFILL_NIGHT_BUDGET = int(os.getenv("AUTOFILL_NIGHT_BUDGET", "100000"))          # без потолка — пока не упрётся в лимит
+AUTOFILL_NIGHT_START = int(os.getenv("AUTOFILL_NIGHT_START", "2"))    # локальный час начала ночи
+AUTOFILL_NIGHT_END = int(os.getenv("AUTOFILL_NIGHT_END", "7"))        # локальный час конца ночи
+AUTOFILL_TZ_OFFSET = int(os.getenv("AUTOFILL_TZ_OFFSET", "2"))        # сдвиг от UTC (Норвегия летом = +2)
+
+def _is_night():
+    h = (datetime.utcnow().hour + AUTOFILL_TZ_OFFSET) % 24
+    s, e = AUTOFILL_NIGHT_START, AUTOFILL_NIGHT_END
+    return (s <= h < e) if s <= e else (h >= s or h < e)
+
 AUTOFILL_TOPICS = [
     "семья", "еда", "дом", "одежда", "город", "транспорт", "погода", "работа",
     "школа", "тело человека", "животные", "эмоции", "время и даты", "покупки",
@@ -386,16 +398,19 @@ async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
     while True:
+        night = _is_night()
+        interval = AUTOFILL_NIGHT_INTERVAL_SEC if night else AUTOFILL_INTERVAL_SEC
+        budget = AUTOFILL_NIGHT_BUDGET if night else AUTOFILL_DAILY_BUDGET
         try:
             # фон работает только в простое — после N секунд без активности юзеров
             idle = time.monotonic() - _last_activity
             if idle < AUTOFILL_IDLE_SEC:
                 await asyncio.sleep(min(AUTOFILL_IDLE_SEC - idle + 1, 60))
                 continue
-            if LLM_API_KEY and AUTOFILL_DAILY_BUDGET > 0:
+            if LLM_API_KEY and budget > 0:
                 day = datetime.utcnow().strftime("%Y-%m-%d")
                 used = await get_usage(day)
-                if used < AUTOFILL_DAILY_BUDGET:
+                if used < budget:
                     # Приоритет: сначала добить эмбеддинги и звук у ВСЕХ слов,
                     # и только когда всё полно — генерить одно новое слово.
                     miss_e = await pool_missing_embedding(1)
@@ -432,7 +447,7 @@ async def autofill_loop():
             logger.warning(f"autofill error: {e}")
             await asyncio.sleep(600)  # бэкофф при ошибке/лимите
             continue
-        await asyncio.sleep(AUTOFILL_INTERVAL_SEC)
+        await asyncio.sleep(interval)
 
 
 @app.on_event("startup")
