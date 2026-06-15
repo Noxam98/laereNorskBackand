@@ -118,6 +118,11 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN level TEXT")
         except Exception:
             pass
+        # флаг: озвучка всех переводов слова сгенерирована (в Tigris). 0/NULL = нет.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN tts_tr_done INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""

@@ -117,6 +117,28 @@ async def pool_missing_tts(limit: int = 1):
         await _release(db)
 
 
+async def tr_tts_pending(limit: int = 5):
+    """Слова, у которых озвучка переводов ещё не сгенерирована (tts_tr_done = 0).
+    Возвращает [(id, data_dict)] — переводы берём из data.translate."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, data FROM word_pool WHERE COALESCE(tts_tr_done, 0) = 0 LIMIT ?", (limit,)
+        ) as cur:
+            return [(r["id"], json.loads(r["data"])) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def mark_tr_tts_done(pool_id: int):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET tts_tr_done = 1 WHERE id = ?", (pool_id,))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def get_pool_sample(limit: int = 120):
     """Случайная выборка норвежских слов из пула (исключения для генерации по теме)."""
     db = await _conn()

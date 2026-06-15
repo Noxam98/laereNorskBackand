@@ -14,7 +14,7 @@ from .users import get_user, create_user, set_user_theme
 from .pool import (
     get_or_create_pool, get_pool_id, get_pool_by_id,
     get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,
-    pool_missing_embedding, pool_missing_tts, get_pool_sample, get_pool_letter,
+    pool_missing_embedding, pool_missing_tts, tr_tts_pending, mark_tr_tts_done, get_pool_sample, get_pool_letter,
     set_pool_meta, pool_missing_meta, pool_missing_description, get_pool_topics_counts, get_pool_level_counts,
     get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,

@@ -1,7 +1,8 @@
 import os
 import asyncio
 from config import logger
-from db import normalize_word, get_pool_tts, set_pool_tts, get_pool_id
+from db import normalize_word, get_pool_tts, set_pool_tts, get_pool_id, tr_tts_pending, mark_tr_tts_done
+import storage
 
 # --- TTS через Microsoft Edge (нейро-голоса, бесплатно, без ключа и без лимитов) ---
 TTS_VOICE = os.getenv("TTS_VOICE", "nb-NO-FinnNeural")  # норвежский нейро-голос; ещё: nb-NO-PernilleNeural
@@ -56,3 +57,50 @@ def schedule_tts(words):
     for w in words:
         if w:
             asyncio.create_task(ensure_tts_bg(w))
+
+
+# --- Фоновая озвучка переводов: все имеющиеся переводы каждого слова → Tigris ---
+TTS_TR_LANGS = ["ru", "uk", "en", "pl", "lt"]
+TTS_TR_BATCH = int(os.getenv("TTS_TR_BATCH", "5"))        # слов за тик
+TTS_TR_CHECK_SEC = int(os.getenv("TTS_TR_CHECK_SEC", "15"))  # период проверки очереди
+
+
+async def tts_translation_loop():
+    """Раз в TTS_TR_CHECK_SEC берём пачку слов без озвучки переводов, генерим
+    озвучку всех их переводов (ru/uk/en/pl/lt, что есть в data.translate) и
+    кладём в Tigris. Уже существующие в хранилище пропускаем. Лёгкий троттлинг."""
+    if not storage.enabled():
+        logger.info("tts translation loop: хранилище не настроено — пропуск")
+        return
+    await asyncio.sleep(20)
+    while True:
+        try:
+            batch = await tr_tts_pending(TTS_TR_BATCH)
+            if not batch:
+                await asyncio.sleep(60)  # очередь пуста — ждём дольше
+                continue
+            made = 0
+            for pid, data in batch:
+                tr = (data or {}).get("translate", {}) or {}
+                for lang in TTS_TR_LANGS:
+                    text = ", ".join([v for v in (tr.get(lang) or []) if v]).strip()
+                    if not text:
+                        continue
+                    okey = storage.key_for(lang, text)
+                    if await storage.get_object(okey):  # уже озвучено
+                        continue
+                    try:
+                        async with _tts_lock:
+                            mp3 = await synth_tts(text, lang)
+                        if mp3:
+                            await storage.put_object(okey, mp3)
+                            made += 1
+                    except Exception as e:
+                        logger.warning(f"tts_tr '{text}'[{lang}]: {e}")
+                    await asyncio.sleep(0.3)  # мягкий троттлинг edge-tts
+                await mark_tr_tts_done(pid)
+            if made:
+                logger.info(f"tts_tr: +{made} клипов ({len(batch)} слов)")
+        except Exception as e:
+            logger.warning(f"tts_translation_loop: {e}")
+        await asyncio.sleep(TTS_TR_CHECK_SEC)

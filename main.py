@@ -49,6 +49,12 @@ async def startup():
     if LLM_API_KEY:
         asyncio.create_task(describe_loop())
         logger.info("describe queue enabled: новые слова получают описание пачками")
+    # Очередь озвучки переводов в Tigris (если хранилище настроено).
+    import storage
+    from tts import tts_translation_loop
+    if storage.enabled():
+        asyncio.create_task(tts_translation_loop())
+        logger.info("tts translation queue enabled: озвучка переводов → Tigris")
 
 
 if __name__ == "__main__":
