@@ -403,7 +403,9 @@ async def autofill_loop():
                 elif unclassified:
                     done = await classify_batch(unclassified, model=text_model)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
-                elif text_model:
+                elif text_model and not await sem_embed_pending(1):
+                    # Пока не пересчитаны ВСЕ эмбеддинги по смыслу — новые слова не добавляем
+                    # (чтобы пул не рос во время пере-эмбеддинга и статистика была понятной).
                     i += 1
                     # Генерация новых слов — основной приоритет. Описания не догоняем
                     # фоном (генерятся по запросу при открытии), чтобы пул рос быстрее.
