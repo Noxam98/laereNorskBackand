@@ -172,6 +172,7 @@ async def classify_batch(items, model=None):
 
 
 DESCRIBE_BATCH = int(os.getenv("DESCRIBE_BATCH", "10"))
+DESCRIBE_CHECK_SEC = int(os.getenv("DESCRIBE_CHECK_SEC", "10"))  # как часто проверять очередь описаний
 _DESCRIBE_SYS = (
     "Ты — преподаватель норвежского. Для каждого норвежского слова дай краткое "
     "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt. "
@@ -222,6 +223,27 @@ async def describe_all_task():
         if done == 0:
             break
         await asyncio.sleep(5)  # ≤12 пачек/мин — держимся под лимитом 15 RPM
+
+
+async def describe_loop():
+    """Очередь описаний: раз в DESCRIBE_CHECK_SEC проверяем слова без description
+    и генерируем одну пачку до DESCRIBE_BATCH (10) слов. Размер пачки = min(кол-во, 10):
+    1 слово без описания → 1, 20 → 10 (остаток добьётся на следующих тиках).
+    Нагрузка лёгкая (≤6 запросов/мин), чтобы новые слова быстро получали описание.
+    Когда очередь пуста — только дешёвый запрос к БД, без обращения к LLM."""
+    await asyncio.sleep(15)
+    while True:
+        try:
+            if LLM_API_KEY:
+                batch = await pool_missing_description(DESCRIBE_BATCH)
+                if batch:
+                    model = await _pick_model(TEXT_MODELS, "text")
+                    if model:
+                        done = await describe_batch(batch, model)
+                        logger.info(f"describe_loop: +{done}/{len(batch)} via {model}")
+        except Exception as e:
+            logger.warning(f"describe_loop: {e}")
+        await asyncio.sleep(DESCRIBE_CHECK_SEC)
 
 
 async def autofill_loop():

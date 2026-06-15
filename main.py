@@ -5,12 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import logger, CORS_ORIGINS
 from db import init_db, get_pool_embeddings_raw, set_pool_embedding
-from llm import decode_emb, encode_emb
+from llm import decode_emb, encode_emb, LLM_API_KEY
 from auth import SECRET_KEY, router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
 from autofill import (
-    autofill_loop, AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
+    autofill_loop, describe_loop, AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
 )
 
 app = FastAPI()
@@ -45,6 +45,10 @@ async def startup():
     if AUTOFILL_ENABLED:
         asyncio.create_task(autofill_loop())
         logger.info(f"autofill enabled: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
+    # Очередь описаний — независимо от autofill: новые слова должны быстро получать описание.
+    if LLM_API_KEY:
+        asyncio.create_task(describe_loop())
+        logger.info("describe queue enabled: новые слова получают описание пачками")
 
 
 if __name__ == "__main__":
