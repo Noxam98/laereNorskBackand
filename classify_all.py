@@ -9,7 +9,7 @@ import argparse
 import asyncio
 
 from db import init_db, pool_missing_meta
-from main import classify_batch, CLASSIFY_BATCH
+from autofill import classify_batch, CLASSIFY_BATCH
 
 
 async def run(limit: int, batch: int, sleep: float):

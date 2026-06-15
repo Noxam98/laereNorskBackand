@@ -1,0 +1,236 @@
+import json
+import random
+from fastapi import APIRouter, Depends, HTTPException
+from config import logger
+from db import (
+    get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
+    delete_dict_word, set_word_override, record_result, get_dict_word,
+    get_or_create_pool, get_pool_id, get_pool_candidates, delete_pool_word,
+    set_pool_description,
+)
+from auth import get_current_user
+from activity import mark_activity
+from llm import (
+    generate_words, ensure_embedding, persist_pool, ask_json, DESC_SCHEMA,
+    rank_by_similarity, LLM_API_KEY,
+)
+from tts import schedule_tts
+from task import description_task
+from models import DictCreate, AddWords, ImportDict, PoolAdd, WordOverride, ResultBody
+
+router = APIRouter()
+
+
+def c2pos(c):
+    return c["data"].get("part_of_speech", "")
+
+
+# --- User data (server-backed) ---
+@router.get("/data")
+async def data(user=Depends(get_current_user)):
+    return await get_user_data(user["id"])
+
+
+@router.post("/dictionaries")
+async def create_dict(body: DictCreate, user=Depends(get_current_user)):
+    res = await create_dictionary(user["id"], body.name)
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@router.delete("/dictionaries/{dict_id}")
+async def remove_dict(dict_id: int, user=Depends(get_current_user)):
+    res = await delete_dictionary(user["id"], dict_id)
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@router.post("/dictionaries/{dict_id}/words")
+async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)):
+    mark_activity()
+    normalized, cached = await generate_words(body.prompt, body.model)
+    added, errors, words = 0, [], []
+    for item in normalized:
+        if not isinstance(item, dict):
+            continue
+        if item.get("error"):
+            errors.append(item["error"]); continue
+        if not item.get("word"):
+            continue
+        pool_id = await get_or_create_pool(item["word"], item)
+        if pool_id:
+            await ensure_embedding(pool_id, item["word"])
+            res = await add_word_to_dict(user["id"], dict_id, pool_id)
+            if res.get("id") and not res.get("duplicate"):
+                added += 1
+            words.append(item["word"])
+    schedule_tts(words)  # озвучку добавленных слов ставим в очередь сразу
+    return {"added": added, "errors": errors, "cached": cached}
+
+
+@router.post("/dictionaries/{dict_id}/add_pool")
+async def add_pool(dict_id: int, body: PoolAdd, user=Depends(get_current_user)):
+    """Добавить в словарь уже существующее в общем пуле слово (автокомплит) — без ИИ."""
+    pid = await get_pool_id(body.norwegian)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    res = await add_word_to_dict(user["id"], dict_id, pid)
+    schedule_tts([body.norwegian])  # на случай если у слова ещё нет озвучки
+    return {"added": 1 if (res.get("id") and not res.get("duplicate")) else 0, "duplicate": res.get("duplicate", False)}
+
+
+@router.post("/dictionaries/import")
+async def import_dict(body: ImportDict, user=Depends(get_current_user)):
+    res = await create_dictionary(user["id"], body.name)
+    dict_id = res.get("id")
+    if not dict_id:
+        # словарь существует — найдём его через данные
+        data = await get_user_data(user["id"])
+        match = next((d for d in data["dictList"] if d["dictName"] == body.name.strip()), None)
+        if not match:
+            raise HTTPException(status_code=400, detail=res.get("error", "Import failed"))
+        dict_id = match["id"]
+    added = 0
+    for w in body.words:
+        tr = w.get("translate", {})
+        no = (tr.get("no") or [w.get("word")])[0] if (tr.get("no") or w.get("word")) else None
+        if not no:
+            continue
+        item = {"word": no, "translate": {**tr, "no": [no]}, "part_of_speech": w.get("part_of_speech", "")}
+        pool_id = await get_or_create_pool(no, item)
+        if pool_id:
+            r = await add_word_to_dict(user["id"], dict_id, pool_id)
+            if r.get("id") and not r.get("duplicate"):
+                added += 1
+    return {"added": added, "dict_id": dict_id}
+
+
+@router.delete("/words/{dw_id}")
+async def remove_word(dw_id: int, user=Depends(get_current_user)):
+    return await delete_dict_word(user["id"], dw_id)
+
+
+@router.patch("/words/{dw_id}")
+async def edit_word(dw_id: int, body: WordOverride, user=Depends(get_current_user)):
+    override = {}
+    if body.translate is not None:
+        override["translate"] = body.translate
+    if body.part_of_speech is not None:
+        override["part_of_speech"] = body.part_of_speech
+    return await set_word_override(user["id"], dw_id, override)
+
+
+@router.post("/words/{dw_id}/result")
+async def word_result(dw_id: int, body: ResultBody, user=Depends(get_current_user)):
+    return await record_result(user["id"], dw_id, body.correct)
+
+
+@router.get("/words/{dw_id}/description")
+async def word_description(dw_id: int, model: str = None, user=Depends(get_current_user)):
+    dw = await get_dict_word(user["id"], dw_id)
+    if not dw:
+        raise HTTPException(status_code=404, detail="Not found")
+    if dw["description"]:
+        return {"description": json.loads(dw["description"])}
+    desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model)
+    if not isinstance(desc, dict):
+        raise HTTPException(status_code=500, detail="No JSON found in the response")
+    description = desc.get("description", desc)
+    await set_pool_description(dw["pool_id"], description)
+    return {"description": description}
+
+
+@router.get("/words/{dw_id}/distractors")
+async def distractors(dw_id: int, n: int = 3, mode: str = "no2int", lang: str = "ru", user=Depends(get_current_user)):
+    """Неправильные варианты для режима «выбор»: семантически близкие (по эмбеддингам),
+    иначе — той же части речи. mode: no2int (ответ — перевод на lang) | int2no (ответ — норвежское)."""
+    dw = await get_dict_word(user["id"], dw_id)
+    if not dw:
+        raise HTTPException(status_code=404, detail="Not found")
+    target = json.loads(dw["data"]) if dw["data"] else {}
+    if dw["override"]:
+        ov = json.loads(dw["override"]); target = {**target, **ov}
+    target_pos = target.get("part_of_speech", "")
+
+    def answer_of(data, norwegian):
+        if mode == "int2no":
+            return norwegian
+        tr = (data.get("translate", {}) or {}).get(lang) or []
+        return tr[0] if tr else None
+
+    correct = (dw["norwegian"] if mode == "int2no" else answer_of(target, dw["norwegian"]))
+    correct_l = (correct or "").strip().lower()
+
+    cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"]]
+
+    ranked = rank_by_similarity(dw["embedding"], cands)
+    if ranked:
+        ordered = ranked
+    else:
+        same = [c for c in cands if c["data"].get("part_of_speech") == target_pos]
+        other = [c for c in cands if c["data"].get("part_of_speech") != target_pos]
+        random.shuffle(same); random.shuffle(other)
+        ordered = same + other
+
+    out, seen = [], {correct_l}
+    for c in ordered:
+        a = answer_of(c["data"], c["norwegian"])
+        if a and a.strip().lower() not in seen:
+            out.append(a); seen.add(a.strip().lower())
+        if len(out) >= n:
+            break
+    return {"distractors": out}
+
+
+@router.post("/words/{dw_id}/report")
+async def report_word(dw_id: int, user=Depends(get_current_user)):
+    """Пометить слово как неправильное: удалить из общего пула (у всех) и перегенерировать заново."""
+    dw = await get_dict_word(user["id"], dw_id)
+    if not dw:
+        raise HTTPException(status_code=404, detail="Not found")
+    norwegian = dw["norwegian"]
+    dict_id = dw["dict_id"]
+    await delete_pool_word(norwegian)  # убираем из пула у всех + чистим кэш
+
+    regenerated, new_word = False, None
+    if LLM_API_KEY:
+        try:
+            mark_activity()
+            normalized, _ = await generate_words(norwegian, None)
+            await persist_pool(normalized)
+            for it in normalized:
+                if isinstance(it, dict) and not it.get("error") and it.get("word"):
+                    pid = await get_pool_id(it["word"])
+                    if pid:
+                        await add_word_to_dict(user["id"], dict_id, pid)
+                        regenerated, new_word = True, it["word"]
+                        schedule_tts([it["word"]])
+                        break
+        except Exception as e:
+            logger.warning(f"report regen failed: {e}")
+    return {"removed": True, "regenerated": regenerated, "word": new_word}
+
+
+@router.get("/words/{dw_id}/synonyms")
+async def synonyms(dw_id: int, n: int = 5, lang: str = "ru", user=Depends(get_current_user)):
+    """Близкие по смыслу слова из общего пула (по эмбеддингам). Без ключа эмбеддингов — пусто."""
+    dw = await get_dict_word(user["id"], dw_id)
+    if not dw:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not dw["embedding"]:
+        return {"synonyms": []}
+    target = json.loads(dw["data"]) if dw["data"] else {}
+    target_pos = target.get("part_of_speech", "")
+    cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"] and c.get("embedding")]
+    ranked = rank_by_similarity(dw["embedding"], cands)
+    if not ranked:
+        return {"synonyms": []}
+    # та же часть речи — выше (порядок по близости сохраняется внутри групп)
+    ordered = [c for c in ranked if c2pos(c) == target_pos] + [c for c in ranked if c2pos(c) != target_pos]
+    out = []
+    for c in ordered[:n]:
+        tr = (c["data"].get("translate", {}) or {}).get(lang) or []
+        out.append({"word": c["norwegian"], "translate": tr})
+    return {"synonyms": out}

@@ -1,0 +1,296 @@
+import os
+import re
+import json
+from datetime import datetime
+import numpy as np
+from fastapi import HTTPException
+from config import logger
+from db import (
+    get_cached_query, cache_query, incr_usage,
+    get_pool_by_id, set_pool_embedding, get_or_create_pool, set_pool_meta,
+)
+from task import task
+
+# --- LLM-провайдер (OpenAI-совместимый): Gemini / Groq / OpenRouter / любой через env ---
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek/deepseek-r1:free")
+
+_llm_client = None
+
+
+def get_client():
+    global _llm_client
+    if _llm_client is None:
+        from openai import AsyncOpenAI
+        _llm_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "not-needed")
+    return _llm_client
+
+
+# --- Эмбеддинги (Gemini по умолчанию, OpenAI-совместимый эндпоинт; провайдер через env) ---
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
+
+_embed_client = None
+
+
+def get_embed_client():
+    global _embed_client
+    if _embed_client is None:
+        from openai import AsyncOpenAI
+        _embed_client = AsyncOpenAI(base_url=EMBED_BASE_URL, api_key=EMBED_API_KEY or "not-needed")
+    return _embed_client
+
+
+async def embed_text(text):
+    if not EMBED_API_KEY:
+        return None
+    try:
+        r = await get_embed_client().embeddings.create(model=EMBED_MODEL, input=text)
+        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # эмбеддинг — тоже вызов Gemini
+        return list(r.data[0].embedding)
+    except Exception as e:
+        logger.warning(f"embed failed: {e}")
+        return None
+
+
+async def ensure_embedding(pool_id, norwegian):
+    """Best-effort: посчитать и сохранить эмбеддинг слова, если его ещё нет и есть ключ."""
+    if not EMBED_API_KEY:
+        return
+    p = await get_pool_by_id(pool_id)
+    if p and p.get("embedding"):
+        return
+    vec = await embed_text(norwegian)
+    if vec:
+        await set_pool_embedding(pool_id, encode_emb(vec))
+
+
+# --- Эмбеддинги: бинарное хранение (float16) + матричный косинус (мало RAM/CPU) ---
+def encode_emb(vec):
+    return np.asarray(vec, dtype=np.float16).tobytes()
+
+
+def decode_emb(v):
+    if not v:
+        return None
+    if isinstance(v, (bytes, bytearray)) and not v[:1] == b"[":
+        return np.frombuffer(v, dtype=np.float16).astype(np.float32)
+    try:
+        return np.asarray(json.loads(v), dtype=np.float32)  # legacy JSON
+    except Exception:
+        return None
+
+
+def rank_by_similarity(target_raw, cands):
+    """Вернуть cands (с эмбеддингом) по убыванию близости к target. None — у target нет вектора."""
+    tv = decode_emb(target_raw)
+    if tv is None:
+        return None
+    rows, vecs = [], []
+    for c in cands:
+        ev = decode_emb(c.get("embedding"))
+        if ev is not None and ev.shape == tv.shape:
+            rows.append(c); vecs.append(ev)
+    if not rows:
+        return []
+    M = np.vstack(vecs)
+    sims = (M @ tv) / (np.linalg.norm(M, axis=1) * (np.linalg.norm(tv) + 1e-9) + 1e-9)
+    return [rows[i] for i in np.argsort(-sims)]
+
+
+def extract_json(content: str):
+    if not content:
+        return None
+    m = re.search(r'```json\s*\n(.*?)\n```', content, re.DOTALL)
+    candidate = m.group(1) if m else None
+    if candidate is None:
+        arr = re.search(r'(\[.*\])', content, re.DOTALL)
+        obj = re.search(r'(\{.*\})', content, re.DOTALL)
+        found = arr or obj
+        candidate = found.group(1) if found else None
+    if candidate is None:
+        return None
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+async def ask_model(system_prompt, user_prompt, model=None):
+    resp = await get_client().chat.completions.create(
+        model=model or LLM_MODEL,
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+    )
+    if resp.choices and resp.choices[0].message.content:
+        return extract_json(resp.choices[0].message.content)
+    return None
+
+
+# Канонические темы-теги пула (стабильные ключи; UI-подписи — во фронтовом i18n).
+# Значение — рус. подсказка для LLM-классификатора и генерации.
+TOPIC_TAGS = {
+    "family": "семья и родственники",
+    "food": "еда, напитки, продукты",
+    "home": "дом, мебель, быт, посуда",
+    "work": "работа, профессии, офис, бизнес",
+    "school": "школа, учёба, образование, наука",
+    "travel": "путешествия, туризм, отдых, гостиница",
+    "health": "здоровье, болезни, медицина, аптека",
+    "body": "тело человека, органы чувств",
+    "clothing": "одежда, обувь, аксессуары",
+    "nature": "природа, ландшафт, растения, деревья",
+    "animals": "животные, птицы, рыбы, насекомые",
+    "weather": "погода, климат, времена года",
+    "city": "город, здания, места, улицы",
+    "transport": "транспорт, машины, дорога, движение",
+    "shopping": "деньги, покупки, магазин, финансы",
+    "time": "время, даты, дни, месяцы",
+    "sport": "спорт, фитнес, игры",
+    "hobby": "хобби, досуг, культура, искусство, музыка, кино",
+    "technology": "технологии, компьютеры, интернет, гаджеты",
+    "communication": "общение, речь, связь, приветствия",
+    "emotions": "эмоции, чувства, черты характера",
+    "holidays": "праздники, традиции, события",
+    "society": "общество, политика, право, экономика",
+    "other": "прочее, абстрактные понятия, качества, количества",
+}
+TOPIC_KEYS = list(TOPIC_TAGS.keys())
+CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
+
+# Схемы для гарантированного формата ответа (structured output / JSON-schema).
+_STR_ARR = {"type": "array", "items": {"type": "string"}}
+WORDS_SCHEMA = {
+    "name": "words_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "words": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string", "description": "норвежское слово, без артикля, нейтральная форма"},
+                        "translate": {
+                            "type": "object",
+                            "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
+                        },
+                        "part_of_speech": {"type": "string"},
+                        "level": {"type": "string", "enum": CEFR_LEVELS},
+                        "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}},
+                    },
+                    "required": ["word", "translate", "part_of_speech"],
+                },
+            }
+        },
+        "required": ["words"],
+    },
+}
+DESC_SCHEMA = {
+    "name": "description_response",
+    "schema": {
+        "type": "object",
+        "properties": {"ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"}, "pl": {"type": "string"}, "lt": {"type": "string"}},
+        "required": ["ru", "ukr", "en", "pl", "lt"],
+    },
+}
+# Пакетная классификация слов: уровень CEFR + 1-3 темы из канонического списка.
+CLASSIFY_SCHEMA = {
+    "name": "classify_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string"},
+                        "level": {"type": "string", "enum": CEFR_LEVELS},
+                        "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}, "minItems": 1, "maxItems": 3},
+                    },
+                    "required": ["word", "level", "topics"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+
+async def ask_json(system_prompt, user_prompt, schema, model=None):
+    """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
+    try:
+        resp = await get_client().chat.completions.create(
+            model=model or LLM_MODEL,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            response_format={"type": "json_schema", "json_schema": schema},
+        )
+    except Exception as e:
+        logger.warning(f"structured output unsupported, fallback to plain: {e}")
+        resp = await get_client().chat.completions.create(
+            model=model or LLM_MODEL,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        )
+    content = resp.choices[0].message.content if resp.choices else None
+    if not content:
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return extract_json(content)
+
+
+def normalize_word_item(item):
+    if not isinstance(item, dict) or item.get("error"):
+        return item
+    w = item.get("word")
+    if w:
+        tr = item.setdefault("translate", {})
+        if not tr.get("no"):
+            tr["no"] = [w]
+    return item
+
+
+async def generate_words(prompt, model):
+    """Возвращает нормализованный список слов (из кэша или AI)."""
+    cached = await get_cached_query(prompt)
+    if cached is not None:
+        return cached, True
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="LLM is not configured (set LLM_API_KEY)")
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model)
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+            raise HTTPException(status_code=429, detail="Translation provider quota exhausted")
+        logger.error(f"generation failed: {msg}")
+        raise HTTPException(status_code=502, detail="Translation provider error")
+    if data is None:
+        raise HTTPException(status_code=500, detail="No JSON found in the response")
+    # гарантированный формат: { words: [...] }
+    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # учёт реального обращения к LLM
+    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    normalized = [normalize_word_item(i) for i in items]
+    await cache_query(prompt, normalized)
+    return normalized, False
+
+
+async def apply_item_meta(pid, item):
+    """Проставить уровень/темы из сгенерированного слова, если пришли валидными."""
+    level = item.get("level") if item.get("level") in CEFR_LEVELS else None
+    topics = [t for t in (item.get("topics") or []) if t in TOPIC_KEYS]
+    if level or topics:
+        await set_pool_meta(pid, level=level, topics=topics or None)
+
+
+async def persist_pool(normalized):
+    """Сохранить слова в общий пул + посчитать эмбеддинги (для авто-заполнения)."""
+    for item in normalized:
+        if isinstance(item, dict) and not item.get("error") and item.get("word"):
+            pid = await get_or_create_pool(item["word"], item)
+            if pid:
+                await ensure_embedding(pid, item["word"])
+                await apply_item_meta(pid, item)
