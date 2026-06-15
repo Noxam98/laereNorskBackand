@@ -350,6 +350,7 @@ async def reembed_loop():
                 await asyncio.sleep(600)  # бюджет эмбеддингов исчерпан на сегодня
                 continue
             done = 0
+            failed = False
             for pid, data in batch:
                 text = semantic_embed_text(data)
                 if not text:
@@ -361,13 +362,16 @@ async def reembed_loop():
                     await mark_sem_embed(pid)
                     done += 1
                 else:
-                    break  # нет ключа/ошибка — прервёмся, повторим позже (не помечаем)
+                    failed = True  # ключ/квота (429) — отступаем надолго, повторим позже
+                    break
                 await asyncio.sleep(0.2)
             if done:
                 logger.info(f"reembed: +{done}/{len(batch)} via {model}")
+            # при исчерпании дневной квоты эмбеддингов (free-tier 1000/день) — длинный бэкофф
+            await asyncio.sleep(900 if failed else EMB_SEM_CHECK_SEC)
         except Exception as e:
             logger.warning(f"reembed_loop: {e}")
-        await asyncio.sleep(EMB_SEM_CHECK_SEC)
+            await asyncio.sleep(EMB_SEM_CHECK_SEC)
 
 
 async def autofill_loop():
