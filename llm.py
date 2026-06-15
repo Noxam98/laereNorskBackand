@@ -81,7 +81,9 @@ async def embed_texts(texts, model=None):
     try:
         r = await get_embed_client().embeddings.create(model=m, input=texts)
         await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)
-        data = sorted(r.data, key=lambda d: d.index)  # гарантируем порядок
+        data = list(r.data)  # API возвращает в порядке входа
+        if all(getattr(d, "index", None) is not None for d in data):
+            data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
         return [list(d.embedding) for d in data]
     except Exception as e:
         logger.warning(f"embed_texts failed ({m}): {e}")
