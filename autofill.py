@@ -221,7 +221,7 @@ async def describe_all_task():
         logger.info(f"describe_all: +{done} (всего {total}) via {model}")
         if done == 0:
             break
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)  # ≤12 пачек/мин — держимся под лимитом 15 RPM
 
 
 async def autofill_loop():
