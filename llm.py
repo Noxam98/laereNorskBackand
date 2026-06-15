@@ -43,15 +43,16 @@ def get_embed_client():
     return _embed_client
 
 
-async def embed_text(text):
+async def embed_text(text, model=None):
     if not EMBED_API_KEY:
         return None
+    m = model or EMBED_MODEL
     try:
-        r = await get_embed_client().embeddings.create(model=EMBED_MODEL, input=text)
-        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # эмбеддинг — тоже вызов Gemini
+        r = await get_embed_client().embeddings.create(model=m, input=text)
+        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)  # учёт по модели
         return list(r.data[0].embedding)
     except Exception as e:
-        logger.warning(f"embed failed: {e}")
+        logger.warning(f"embed failed ({m}): {e}")
         return None
 
 
@@ -271,7 +272,7 @@ async def generate_words(prompt, model):
     if data is None:
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     # гарантированный формат: { words: [...] }
-    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))  # учёт реального обращения к LLM
+    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":text:" + (model or LLM_MODEL))  # учёт по модели
     items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     normalized = [normalize_word_item(i) for i in items]
     await cache_query(prompt, normalized)
