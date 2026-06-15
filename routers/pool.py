@@ -12,18 +12,48 @@ from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, ranked_pool
 from task import description_task
+import storage
 
 router = APIRouter()
 
 _TTS_HEADERS = {"Cache-Control": "public, max-age=604800"}
+_TRANSLATION_LANGS = {"ru", "uk", "en", "pl", "lt"}  # языки озвучки переводов
+
+
+async def _tts_translation(text: str, lang: str):
+    """Озвучка перевода нужным голосом, кэш в объектном хранилище (Tigris)."""
+    okey = storage.key_for(lang, text)
+    data = await storage.get_object(okey)
+    if data:
+        return Response(content=data, media_type="audio/mpeg", headers=_TTS_HEADERS)
+    async with _tts_lock:
+        data = await storage.get_object(okey)  # могли сгенерить, пока ждали очередь
+        if data:
+            return Response(content=data, media_type="audio/mpeg", headers=_TTS_HEADERS)
+        try:
+            mp3 = await synth_tts(text, lang)
+        except Exception as e:
+            logger.warning(f"tts({lang}) failed: {e}")
+            raise HTTPException(status_code=502, detail="TTS provider error")
+        if not mp3:
+            raise HTTPException(status_code=502, detail="No audio")
+        await storage.put_object(okey, mp3)
+        return Response(content=mp3, media_type="audio/mpeg", headers=_TTS_HEADERS)
 
 
 @router.get("/tts")
-async def tts(word: str):
-    """Аудио произношения норвежского слова (Edge TTS, кэшируется в пуле). Публичный."""
-    key = normalize_word(word)
-    if not key:
+async def tts(word: str, lang: str = None):
+    """Аудио произношения. Без lang (или nb) — норвежское слово (кэш в пуле БД).
+    lang=ru/uk/en/pl/lt — озвучка перевода нужным голосом (кэш в Tigris). Публичный."""
+    text = (word or "").strip()
+    if not text:
         raise HTTPException(status_code=400, detail="word is required")
+
+    if lang and lang in _TRANSLATION_LANGS:
+        return await _tts_translation(text, lang)
+
+    # Норвежский — как было.
+    key = normalize_word(text)
     cached = await get_pool_tts(key)
     if cached:
         return Response(content=bytes(cached), media_type="audio/mpeg", headers=_TTS_HEADERS)

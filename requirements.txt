@@ -9,3 +9,4 @@ openai
 edge-tts
 numpy
 sqlite-vec
+boto3
