@@ -339,6 +339,7 @@ async def reembed_loop():
     чтобы «похожие» искались по значению, а не по написанию. Пакетами, под бюджет
     эмбеддингов; set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
     await asyncio.sleep(30)
+    fails = 0  # подряд неудачных запросов (для отличия RPM-всплеска от дневной квоты)
     while True:
         try:
             batch = await sem_embed_pending(EMB_SEM_BATCH)
@@ -347,10 +348,9 @@ async def reembed_loop():
                 continue
             model = await _pick_model(EMBED_MODELS, "emb")
             if not model:
-                await asyncio.sleep(600)  # бюджет эмбеддингов исчерпан на сегодня
+                await asyncio.sleep(900)  # внутренний дневной бюджет исчерпан
                 continue
             done = 0
-            failed = False
             for pid, data in batch:
                 text = semantic_embed_text(data)
                 if not text:
@@ -361,16 +361,21 @@ async def reembed_loop():
                     await set_pool_embedding(pid, encode_emb(vec))  # обновляет и vec-индекс
                     await mark_sem_embed(pid)
                     done += 1
+                    fails = 0
+                    await asyncio.sleep(0.8)  # ~75/мин — с запасом под лимит RPM (100/мин)
                 else:
-                    failed = True  # 429 (RPM/квота) — короткая пауза и продолжим
-                    break
-                await asyncio.sleep(0.6)  # ~100 генераций/мин (лимит RPM модели)
+                    fails += 1
+                    if fails >= 8:           # серия отказов = дневная квота исчерпана
+                        logger.info("reembed: похоже на дневную квоту, пауза")
+                        fails = 0
+                        await asyncio.sleep(1800)
+                        break
+                    await asyncio.sleep(5)   # транзиентный 429 (RPM) — не помечаем, повторим
             if done:
                 logger.info(f"reembed: +{done}/{len(batch)} via {model}")
-            await asyncio.sleep(60 if failed else EMB_SEM_CHECK_SEC)
         except Exception as e:
             logger.warning(f"reembed_loop: {e}")
-            await asyncio.sleep(EMB_SEM_CHECK_SEC)
+            await asyncio.sleep(30)
 
 
 async def autofill_loop():
