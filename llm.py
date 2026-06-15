@@ -72,6 +72,22 @@ def semantic_embed_text(data):
     return ", ".join(p for p in parts if p).strip()
 
 
+async def embed_texts(texts, model=None):
+    """Батч-эмбеддинг списка текстов одним запросом (до 100). Возвращает список
+    векторов в исходном порядке или None при ошибке. Один запрос = одна единица квоты."""
+    if not EMBED_API_KEY or not texts:
+        return None
+    m = model or EMBED_MODEL
+    try:
+        r = await get_embed_client().embeddings.create(model=m, input=texts)
+        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)
+        data = sorted(r.data, key=lambda d: d.index)  # гарантируем порядок
+        return [list(d.embedding) for d in data]
+    except Exception as e:
+        logger.warning(f"embed_texts failed ({m}): {e}")
+        return None
+
+
 async def ensure_embedding(pool_id, norwegian):
     """Best-effort: посчитать и сохранить эмбеддинг слова по смыслу, если его ещё нет."""
     if not EMBED_API_KEY:

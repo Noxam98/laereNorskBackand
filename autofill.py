@@ -13,7 +13,7 @@ from db import (
     get_pool_sample, get_pool_letter, incr_usage, get_usage,
 )
 from llm import (
-    LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, encode_emb, ask_json, WORDS_SCHEMA,
+    LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, embed_texts, encode_emb, ask_json, WORDS_SCHEMA,
     CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
     normalize_word_item, apply_item_meta, semantic_embed_text,
 )
@@ -329,16 +329,16 @@ async def translate_loop():
         await asyncio.sleep(TRANSLATE_CHECK_SEC)
 
 
-# --- Пере-эмбеддинг пула по смыслу (слово+переводы) с обновлением vec-индекса ---
-EMB_SEM_BATCH = int(os.getenv("EMB_SEM_BATCH", "20"))
-EMB_SEM_CHECK_SEC = int(os.getenv("EMB_SEM_CHECK_SEC", "10"))
+# --- Пере-эмбеддинг пула по смыслу (слово+переводы) батчами, с обновлением vec-индекса ---
+EMB_SEM_BATCH = min(int(os.getenv("EMB_SEM_BATCH", "100")), 100)  # до 100 текстов за запрос (лимит API)
+EMB_SEM_CHECK_SEC = int(os.getenv("EMB_SEM_CHECK_SEC", "2"))
 
 
 async def reembed_loop():
-    """Пересчитываем эмбеддинги пула по смысловому тексту (слово + все переводы),
-    чтобы «похожие» искались по значению, а не по написанию. Пакетами, под бюджет
-    эмбеддингов; set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
-    await asyncio.sleep(30)
+    """Пересчитываем эмбеддинги пула по смысловому тексту (слово + все переводы) —
+    БАТЧАМИ до 100 за один запрос (1 запрос = 1 единица квоты, лимит 1000/день по
+    запросам). set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
+    await asyncio.sleep(20)
     while True:
         try:
             batch = await sem_embed_pending(EMB_SEM_BATCH)
@@ -347,26 +347,27 @@ async def reembed_loop():
                 continue
             model = await _pick_model(EMBED_MODELS, "emb")
             if not model:
-                await asyncio.sleep(900)  # внутренний дневной бюджет исчерпан
+                await asyncio.sleep(900)
                 continue
-            done = 0
+            # слова без текста (нет переводов) — просто помечаем
+            items = []
             for pid, data in batch:
                 text = semantic_embed_text(data)
-                if not text:
+                if text:
+                    items.append((pid, text))
+                else:
                     await mark_sem_embed(pid)
-                    continue
-                vec = await embed_text(text, model=model)
-                if vec:
+            if not items:
+                continue
+            vecs = await embed_texts([t for _, t in items], model)
+            if vecs and len(vecs) == len(items):
+                for (pid, _), vec in zip(items, vecs):
                     await set_pool_embedding(pid, encode_emb(vec))  # обновляет и vec-индекс
                     await mark_sem_embed(pid)
-                    done += 1
-                    await asyncio.sleep(0.7)  # ~85/мин — под лимит RPM (100/мин)
-                else:
-                    await asyncio.sleep(10)   # 429 (всплеск RPM) — переждём окно, слово повторится
-            if done:
-                logger.info(f"reembed: +{done}/{len(batch)} via {model}")
-            # вся пачка мимо (устойчивый лимит) — пауза подольше; иначе короткий тик
-            await asyncio.sleep(EMB_SEM_CHECK_SEC if done else 120)
+                logger.info(f"reembed batch: +{len(items)} via {model}")
+                await asyncio.sleep(EMB_SEM_CHECK_SEC)
+            else:
+                await asyncio.sleep(60)  # 429/ошибка батча — переждём (RPM/квота), повторим
         except Exception as e:
             logger.warning(f"reembed_loop: {e}")
             await asyncio.sleep(30)
