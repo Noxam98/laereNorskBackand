@@ -6,16 +6,17 @@ from config import logger
 from activity import seconds_idle
 from db import (
     get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
-    get_or_create_pool, set_pool_meta, pool_missing_embedding, pool_missing_tts,
-    pool_missing_meta, get_pool_sample, get_pool_letter, incr_usage, get_usage,
+    get_or_create_pool, set_pool_meta, set_pool_description,
+    pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
+    get_pool_sample, get_pool_letter, incr_usage, get_usage,
 )
 from llm import (
     LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, encode_emb, ask_json, WORDS_SCHEMA,
-    CLASSIFY_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
+    CLASSIFY_SCHEMA, DESC_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
     normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
-from task import task
+from task import task, description_task
 
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
 AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
@@ -170,6 +171,23 @@ async def classify_batch(items, model=None):
     return done
 
 
+async def describe_word(word, model=None):
+    """Сгенерировать и сохранить описание слова (1 текстовый вызов). Кешируется в БД."""
+    pid = await get_pool_id(word)
+    if not pid:
+        return False
+    try:
+        desc = await ask_json(description_task, f"Слово на норвежском: >>{word}<<", DESC_SCHEMA, model)
+    except Exception as e:
+        logger.warning(f"describe '{word}': {e}")
+        return False
+    if not isinstance(desc, dict):
+        return False
+    await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
+    await set_pool_description(pid, desc.get("description", desc))
+    return True
+
+
 async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
@@ -201,6 +219,10 @@ async def autofill_loop():
                 elif unclassified:
                     done = await classify_batch(unclassified, model=text_model)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
+                elif text_model and (await pool_missing_description(1)):
+                    w = (await pool_missing_description(1))[0]
+                    ok = await describe_word(w, model=text_model)
+                    logger.info(f"autofill: described '{w}' ok={ok} via {text_model}")
                 elif text_model:
                     i += 1
                     nonce = random.randint(1000, 99999)

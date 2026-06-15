@@ -159,6 +159,16 @@ async def set_pool_meta(pool_id: int, level: str = None, topics=None):
         await _release(db)
 
 
+async def pool_missing_description(limit: int = 1):
+    """Слова без описания — для фоновой догенерации."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian FROM word_pool WHERE description IS NULL LIMIT ?", (limit,)) as cur:
+            return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
 async def pool_missing_meta(limit: int = 50):
     """Слова без уровня (level IS NULL) + их переводы — для пакетной классификации."""
     db = await _conn()
