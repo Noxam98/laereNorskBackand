@@ -9,12 +9,13 @@ from db import (
     get_or_create_pool, set_pool_meta, set_pool_description,
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
+    sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, incr_usage, get_usage,
 )
 from llm import (
     LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, encode_emb, ask_json, WORDS_SCHEMA,
     CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
-    normalize_word_item, apply_item_meta,
+    normalize_word_item, apply_item_meta, semantic_embed_text,
 )
 from tts import synth_tts, _tts_lock
 from task import task
@@ -116,9 +117,10 @@ async def complete_word(w, emb_model=None):
     if emb_model and pid:
         p = await get_pool_by_id(pid)
         if p and not p.get("embedding"):
-            vec = await embed_text(w, model=emb_model)
+            vec = await embed_text(semantic_embed_text(p["data"]) or w, model=emb_model)
             if vec:
                 await set_pool_embedding(pid, encode_emb(vec))
+                await mark_sem_embed(pid)
     if not await get_pool_tts(w):
         async with _tts_lock:
             try:
@@ -325,6 +327,47 @@ async def translate_loop():
         except Exception as e:
             logger.warning(f"translate_loop: {e}")
         await asyncio.sleep(TRANSLATE_CHECK_SEC)
+
+
+# --- Пере-эмбеддинг пула по смыслу (слово+переводы) с обновлением vec-индекса ---
+EMB_SEM_BATCH = int(os.getenv("EMB_SEM_BATCH", "20"))
+EMB_SEM_CHECK_SEC = int(os.getenv("EMB_SEM_CHECK_SEC", "10"))
+
+
+async def reembed_loop():
+    """Пересчитываем эмбеддинги пула по смысловому тексту (слово + все переводы),
+    чтобы «похожие» искались по значению, а не по написанию. Пакетами, под бюджет
+    эмбеддингов; set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            batch = await sem_embed_pending(EMB_SEM_BATCH)
+            if not batch:
+                await asyncio.sleep(300)  # всё пересчитано — ждём дольше
+                continue
+            model = await _pick_model(EMBED_MODELS, "emb")
+            if not model:
+                await asyncio.sleep(600)  # бюджет эмбеддингов исчерпан на сегодня
+                continue
+            done = 0
+            for pid, data in batch:
+                text = semantic_embed_text(data)
+                if not text:
+                    await mark_sem_embed(pid)
+                    continue
+                vec = await embed_text(text, model=model)
+                if vec:
+                    await set_pool_embedding(pid, encode_emb(vec))  # обновляет и vec-индекс
+                    await mark_sem_embed(pid)
+                    done += 1
+                else:
+                    break  # нет ключа/ошибка — прервёмся, повторим позже (не помечаем)
+                await asyncio.sleep(0.2)
+            if done:
+                logger.info(f"reembed: +{done}/{len(batch)} via {model}")
+        except Exception as e:
+            logger.warning(f"reembed_loop: {e}")
+        await asyncio.sleep(EMB_SEM_CHECK_SEC)
 
 
 async def autofill_loop():

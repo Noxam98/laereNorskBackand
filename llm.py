@@ -58,14 +58,28 @@ async def embed_text(text, model=None):
         return None
 
 
+_EMB_LANGS = ["ru", "ukr", "en", "pl", "lt"]
+
+
+def semantic_embed_text(data):
+    """Текст для эмбеддинга по СМЫСЛУ: норвежское слово + все переводы.
+    Так вектор отражает значение, а не написание (соседи — по смыслу)."""
+    data = data or {}
+    tr = data.get("translate", {}) or {}
+    parts = [data.get("word") or (tr.get("no") or [""])[0]]
+    for l in _EMB_LANGS:
+        parts.extend(v for v in (tr.get(l) or []) if v)
+    return ", ".join(p for p in parts if p).strip()
+
+
 async def ensure_embedding(pool_id, norwegian):
-    """Best-effort: посчитать и сохранить эмбеддинг слова, если его ещё нет и есть ключ."""
+    """Best-effort: посчитать и сохранить эмбеддинг слова по смыслу, если его ещё нет."""
     if not EMBED_API_KEY:
         return
     p = await get_pool_by_id(pool_id)
-    if p and p.get("embedding"):
+    if not p or p.get("embedding"):
         return
-    vec = await embed_text(norwegian)
+    vec = await embed_text(semantic_embed_text(p["data"]) or norwegian)
     if vec:
         await set_pool_embedding(pool_id, encode_emb(vec))
 

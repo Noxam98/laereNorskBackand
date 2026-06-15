@@ -132,6 +132,11 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN translate_done INTEGER DEFAULT 0")
         except Exception:
             pass
+        # флаг: эмбеддинг построен по СМЫСЛУ (слово+переводы). 0/NULL = нужно пере-эмбеддить.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN emb_sem INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""
