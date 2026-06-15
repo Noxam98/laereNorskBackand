@@ -268,6 +268,29 @@ DESCRIBE_BATCH_SCHEMA = {
 }
 
 
+# Пакетный перевод: для каждого норвежского слова — варианты перевода на 5 языков.
+TRANSLATE_BATCH_SCHEMA = {
+    "name": "translate_batch_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string"},
+                        "ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR,
+                    },
+                    "required": ["word", "ru", "ukr", "en", "pl", "lt"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+
 async def ask_json(system_prompt, user_prompt, schema, model=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
     try:

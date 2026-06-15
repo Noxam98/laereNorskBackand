@@ -10,7 +10,7 @@ from auth import SECRET_KEY, router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
 from autofill import (
-    autofill_loop, describe_loop, AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
+    autofill_loop, describe_loop, translate_loop, AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
 )
 
 app = FastAPI()
@@ -49,6 +49,8 @@ async def startup():
     if LLM_API_KEY:
         asyncio.create_task(describe_loop())
         logger.info("describe queue enabled: новые слова получают описание пачками")
+        asyncio.create_task(translate_loop())
+        logger.info("translate queue enabled: догенерация недостающих переводов")
     # Очередь озвучки переводов в Tigris (если хранилище настроено).
     import storage
     from tts import tts_translation_loop

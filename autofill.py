@@ -8,11 +8,12 @@ from db import (
     get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
     get_or_create_pool, set_pool_meta, set_pool_description,
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
+    translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     get_pool_sample, get_pool_letter, incr_usage, get_usage,
 )
 from llm import (
     LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, encode_emb, ask_json, WORDS_SCHEMA,
-    CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
+    CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
     normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
@@ -244,6 +245,86 @@ async def describe_loop():
         except Exception as e:
             logger.warning(f"describe_loop: {e}")
         await asyncio.sleep(DESCRIBE_CHECK_SEC)
+
+
+# --- Догенерация недостающих переводов (на все 5 языков) ---
+TRANSLATE_LANGS = ["ru", "ukr", "en", "pl", "lt"]
+TRANSLATE_BATCH = int(os.getenv("TRANSLATE_BATCH", "10"))
+TRANSLATE_CHECK_SEC = int(os.getenv("TRANSLATE_CHECK_SEC", "15"))
+_TRANSLATE_SYS = (
+    "Ты — переводчик с норвежского (bokmål). Для каждого норвежского слова дай перевод "
+    "на 5 языков: ru, ukr, en, pl, lt — по 1-3 варианта (массив строк), без пояснений. "
+    "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
+)
+
+
+async def translate_batch(words, model=None):
+    """Пакетный перевод списка норвежских слов на 5 языков. Возвращает {norm_word: result}."""
+    if not words:
+        return {}
+    user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
+    try:
+        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model)
+    except Exception as e:
+        logger.warning(f"translate_batch: {e}")
+        return {}
+    await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
+    out = {}
+    for r in ((data or {}).get("results", []) if isinstance(data, dict) else []):
+        if isinstance(r, dict) and r.get("word"):
+            out[normalize_word(r["word"])] = r
+    return out
+
+
+async def translate_loop():
+    """Раз в TRANSLATE_CHECK_SEC берём пачку слов без отметки translate_done.
+    Полные (есть все 5 языков) сразу помечаем; неполным догенерируем недостающие
+    языки одним LLM-вызовом и обновляем data.translate."""
+    await asyncio.sleep(25)
+    while True:
+        try:
+            pend = await translate_pending(TRANSLATE_BATCH)
+            if not pend:
+                await asyncio.sleep(120)  # очередь пуста — ждём дольше
+                continue
+            need = []  # (id, norwegian, data, missing_langs)
+            for pid, nw, data in pend:
+                tr = (data.get("translate") or {})
+                missing = [l for l in TRANSLATE_LANGS if not tr.get(l)]
+                if not missing:
+                    await mark_translate_done(pid)
+                else:
+                    need.append((pid, nw, data, missing))
+            if not need:
+                await asyncio.sleep(0.5)  # быстро добиваем «полные»
+                continue
+
+            model = await _pick_model(TEXT_MODELS, "text")
+            if not model:
+                logger.info("translate_loop: бюджет моделей исчерпан")
+                await asyncio.sleep(300)
+                continue
+            res = await translate_batch([nw for _, nw, _, _ in need], model)
+            if not res:
+                await asyncio.sleep(TRANSLATE_CHECK_SEC)  # провал запроса — повторим позже
+                continue
+            done = 0
+            for pid, nw, data, missing in need:
+                r = res.get(normalize_word(nw))
+                if r:
+                    tr = dict(data.get("translate") or {})
+                    for l in missing:
+                        vals = [v for v in (r.get(l) or []) if v]
+                        if vals:
+                            tr[l] = vals
+                    if tr != (data.get("translate") or {}):
+                        await update_pool_translate(pid, tr)
+                        done += 1
+                await mark_translate_done(pid)  # попытка сделана — не зацикливаемся
+            logger.info(f"translate_loop: дополнено {done}/{len(need)} via {model}")
+        except Exception as e:
+            logger.warning(f"translate_loop: {e}")
+        await asyncio.sleep(TRANSLATE_CHECK_SEC)
 
 
 async def autofill_loop():

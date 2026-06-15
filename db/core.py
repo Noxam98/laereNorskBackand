@@ -123,6 +123,11 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN tts_tr_done INTEGER DEFAULT 0")
         except Exception:
             pass
+        # флаг: у слова есть переводы на все 5 языков. 0/NULL = нужно догенерировать.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN translate_done INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""

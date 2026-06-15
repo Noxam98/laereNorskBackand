@@ -60,7 +60,8 @@ def schedule_tts(words):
 
 
 # --- Фоновая озвучка переводов: все имеющиеся переводы каждого слова → Tigris ---
-TTS_TR_LANGS = ["ru", "uk", "en", "pl", "lt"]
+# (ключ в data.translate, код голоса озвучки). Украинский в данных — "ukr", голос — "uk".
+TTS_TR_LANGS = [("ru", "ru"), ("ukr", "uk"), ("en", "en"), ("pl", "pl"), ("lt", "lt")]
 TTS_TR_BATCH = int(os.getenv("TTS_TR_BATCH", "5"))        # слов за тик
 TTS_TR_CHECK_SEC = int(os.getenv("TTS_TR_CHECK_SEC", "15"))  # период проверки очереди
 
@@ -82,21 +83,21 @@ async def tts_translation_loop():
             made = 0
             for pid, data in batch:
                 tr = (data or {}).get("translate", {}) or {}
-                for lang in TTS_TR_LANGS:
-                    text = ", ".join([v for v in (tr.get(lang) or []) if v]).strip()
+                for dkey, vlang in TTS_TR_LANGS:
+                    text = ", ".join([v for v in (tr.get(dkey) or []) if v]).strip()
                     if not text:
                         continue
-                    okey = storage.key_for(lang, text)
+                    okey = storage.key_for(vlang, text)
                     if await storage.get_object(okey):  # уже озвучено
                         continue
                     try:
                         async with _tts_lock:
-                            mp3 = await synth_tts(text, lang)
+                            mp3 = await synth_tts(text, vlang)
                         if mp3:
                             await storage.put_object(okey, mp3)
                             made += 1
                     except Exception as e:
-                        logger.warning(f"tts_tr '{text}'[{lang}]: {e}")
+                        logger.warning(f"tts_tr '{text}'[{vlang}]: {e}")
                     await asyncio.sleep(0.3)  # мягкий троттлинг edge-tts
                 await mark_tr_tts_done(pid)
             if made:

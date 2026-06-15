@@ -117,6 +117,48 @@ async def pool_missing_tts(limit: int = 1):
         await _release(db)
 
 
+async def translate_pending(limit: int = 10):
+    """Слова без отметки translate_done — кандидаты на догенерацию переводов.
+    Возвращает [(id, norwegian, data_dict)]."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, norwegian, data FROM word_pool WHERE COALESCE(translate_done, 0) = 0 LIMIT ?", (limit,)
+        ) as cur:
+            return [(r["id"], r["norwegian"], json.loads(r["data"])) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def mark_translate_done(pool_id: int):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET translate_done = 1 WHERE id = ?", (pool_id,))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def update_pool_translate(pool_id: int, translate: dict):
+    """Записать обновлённый словарь translate в data слова; сбросить tts_tr_done,
+    чтобы фон озвучил новые языки."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT data FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return
+        data = json.loads(row["data"])
+        data["translate"] = translate
+        await db.execute(
+            "UPDATE word_pool SET data = ?, tts_tr_done = 0 WHERE id = ?",
+            (json.dumps(data, ensure_ascii=False), pool_id),
+        )
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def tr_tts_pending(limit: int = 5):
     """Слова, у которых озвучка переводов ещё не сгенерирована (tts_tr_done = 0).
     Возвращает [(id, data_dict)] — переводы берём из data.translate."""
