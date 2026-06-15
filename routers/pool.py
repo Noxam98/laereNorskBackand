@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
+import asyncio
 from datetime import datetime
 from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
-    set_pool_description, get_pool_list,
+    set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_stats, get_usage_like,
 )
 from auth import get_current_user, get_admin_user
@@ -57,6 +58,22 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
 @router.get("/pool/topics")
 async def pool_topics(user=Depends(get_current_user)):
     return {"topics": await get_pool_topics_counts(), "levels": await get_pool_level_counts()}
+
+
+@router.delete("/admin/pool/{word}")
+async def admin_delete_word(word: str, user=Depends(get_admin_user)):
+    """Полностью удалить слово из общего пула (у всех + кэш + ANN-индекс). Только админ."""
+    await delete_pool_word(word)
+    return {"ok": True}
+
+
+@router.post("/admin/describe_all")
+async def admin_describe_all(user=Depends(get_admin_user)):
+    """Запустить фоновую пакетную догенерацию описаний для всех слов без описания."""
+    from autofill import describe_all_task
+    pending = len(await pool_missing_description(1000000))
+    asyncio.create_task(describe_all_task())
+    return {"pending": pending, "started": True}
 
 
 @router.get("/admin/stats")

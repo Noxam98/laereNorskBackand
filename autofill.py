@@ -12,11 +12,11 @@ from db import (
 )
 from llm import (
     LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, encode_emb, ask_json, WORDS_SCHEMA,
-    CLASSIFY_SCHEMA, DESC_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
+    CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
     normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
-from task import task, description_task
+from task import task
 
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
 AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
@@ -171,21 +171,57 @@ async def classify_batch(items, model=None):
     return done
 
 
-async def describe_word(word, model=None):
-    """Сгенерировать и сохранить описание слова (1 текстовый вызов). Кешируется в БД."""
-    pid = await get_pool_id(word)
-    if not pid:
-        return False
+DESCRIBE_BATCH = int(os.getenv("DESCRIBE_BATCH", "10"))
+_DESCRIBE_SYS = (
+    "Ты — преподаватель норвежского. Для каждого норвежского слова дай краткое "
+    "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt. "
+    "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
+)
+
+
+async def describe_batch(words, model=None):
+    """Пакетные описания (≤DESCRIBE_BATCH слов за один LLM-вызов). Кешируется в БД."""
+    if not words:
+        return 0
+    user = "Опиши слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        desc = await ask_json(description_task, f"Слово на норвежском: >>{word}<<", DESC_SCHEMA, model)
+        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model)
     except Exception as e:
-        logger.warning(f"describe '{word}': {e}")
-        return False
-    if not isinstance(desc, dict):
-        return False
+        logger.warning(f"describe_batch: {e}")
+        return 0
     await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
-    await set_pool_description(pid, desc.get("description", desc))
-    return True
+    results = (data or {}).get("results", []) if isinstance(data, dict) else []
+    done = 0
+    for r in results:
+        if not isinstance(r, dict) or not r.get("word"):
+            continue
+        pid = await get_pool_id(r["word"])
+        if not pid:
+            continue
+        desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt")}
+        await set_pool_description(pid, desc)
+        done += 1
+    return done
+
+
+async def describe_all_task():
+    """Добить описания у всех слов без description — пачками, пока есть слова и бюджет моделей."""
+    total = 0
+    while True:
+        batch = await pool_missing_description(DESCRIBE_BATCH)
+        if not batch:
+            logger.info(f"describe_all: готово, всего {total}")
+            break
+        model = await _pick_model(TEXT_MODELS, "text")
+        if not model:
+            logger.info(f"describe_all: бюджет исчерпан, всего {total}")
+            break
+        done = await describe_batch(batch, model)
+        total += done
+        logger.info(f"describe_all: +{done} (всего {total}) via {model}")
+        if done == 0:
+            break
+        await asyncio.sleep(1)
 
 
 async def autofill_loop():

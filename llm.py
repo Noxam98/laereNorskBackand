@@ -245,6 +245,29 @@ CLASSIFY_SCHEMA = {
 }
 
 
+DESCRIBE_BATCH_SCHEMA = {
+    "name": "describe_batch_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string"},
+                        "ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"},
+                        "pl": {"type": "string"}, "lt": {"type": "string"},
+                    },
+                    "required": ["word", "ru", "ukr", "en", "pl", "lt"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+
 async def ask_json(system_prompt, user_prompt, schema, model=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
     try:
