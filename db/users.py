@@ -12,6 +12,15 @@ async def get_user(username: str):
         await _release(db)
 
 
+async def set_user_theme(user_id: int, theme: str):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET theme = ? WHERE id = ?", (theme, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def create_user(username: str, hashed_password: str):
     db = await _conn()
     try:

@@ -10,7 +10,7 @@ from .core import (
     DATABASE_URL, init_db, normalize_word, normalize_query,
     SQLITE_VEC_OK, vec_upsert, vec_delete, vec_nearest_rows,
 )
-from .users import get_user, create_user
+from .users import get_user, create_user, set_user_theme
 from .pool import (
     get_or_create_pool, get_pool_id, get_pool_by_id,
     get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,

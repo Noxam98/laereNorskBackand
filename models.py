@@ -49,3 +49,7 @@ class WordOverride(BaseModel):
 
 class ResultBody(BaseModel):
     correct: bool
+
+
+class ThemeBody(BaseModel):
+    theme: str

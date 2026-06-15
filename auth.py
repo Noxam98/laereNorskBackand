@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 import bcrypt
 import jwt
-from db import get_user, create_user
-from models import UserAuth, Token, RefreshRequest
+from db import get_user, create_user, set_user_theme
+from models import UserAuth, Token, RefreshRequest, ThemeBody
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -98,4 +98,11 @@ async def refresh_token(payload: RefreshRequest = None, refresh_token: str = Non
 
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
-    return {"username": user["username"]}
+    return {"username": user["username"], "theme": user.get("theme")}
+
+
+@router.post("/me/theme")
+async def set_theme(body: ThemeBody, user=Depends(get_current_user)):
+    theme = body.theme if body.theme in ("light", "dark") else "light"
+    await set_user_theme(user["id"], theme)
+    return {"theme": theme}
