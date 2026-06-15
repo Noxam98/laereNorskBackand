@@ -6,17 +6,17 @@ from db import (
     get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
     delete_dict_word, set_word_override, record_result, get_dict_word,
     get_or_create_pool, get_pool_id, get_pool_candidates, delete_pool_word,
-    set_pool_description,
+    set_pool_description, get_pool_ids,
 )
 from auth import get_current_user
 from activity import mark_activity
 from llm import (
     generate_words, ensure_embedding, persist_pool, ask_json, DESC_SCHEMA,
-    rank_by_similarity, LLM_API_KEY,
+    rank_by_similarity, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS,
 )
 from tts import schedule_tts
 from task import description_task
-from models import DictCreate, AddWords, ImportDict, PoolAdd, WordOverride, ResultBody
+from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody
 
 router = APIRouter()
 
@@ -79,6 +79,27 @@ async def add_pool(dict_id: int, body: PoolAdd, user=Depends(get_current_user)):
     res = await add_word_to_dict(user["id"], dict_id, pid)
     schedule_tts([body.norwegian])  # на случай если у слова ещё нет озвучки
     return {"added": 1 if (res.get("id") and not res.get("duplicate")) else 0, "duplicate": res.get("duplicate", False)}
+
+
+@router.post("/dictionaries/from_pool")
+async def dict_from_pool(body: PoolToDict, user=Depends(get_current_user)):
+    """Создать новый словарь и добавить в него ВСЕ слова пула, подходящие под фильтр."""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Empty name")
+    res = await create_dictionary(user["id"], name)
+    dict_id = res.get("id")
+    if not dict_id:
+        raise HTTPException(status_code=400, detail=res.get("error", "Dictionary already exists"))
+    topic_list = [t for t in (body.topics or []) if t in TOPIC_KEYS]
+    lvl = body.level if body.level in CEFR_LEVELS else None
+    ids = await get_pool_ids(body.q, topic_list, lvl)
+    added = 0
+    for pid in ids:
+        r = await add_word_to_dict(user["id"], dict_id, pid)
+        if r.get("id") and not r.get("duplicate"):
+            added += 1
+    return {"dict_id": dict_id, "name": name, "added": added, "total": len(ids)}
 
 
 @router.post("/dictionaries/import")

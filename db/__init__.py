@@ -1,0 +1,27 @@
+"""Слой данных, разнесённый по доменам. Реэкспорт — чтобы `from db import X`
+работал как раньше.
+  core         — соединение, схема (init_db), нормализация
+  users        — пользователи
+  pool         — общий пул слов + темы/уровни + поиск
+  cache        — кэш запросов генерации + дневной учёт обращений
+  dictionaries — словари пользователя и слова в них
+"""
+from .core import (
+    DATABASE_URL, init_db, normalize_word, normalize_query,
+)
+from .users import get_user, create_user
+from .pool import (
+    get_or_create_pool, get_pool_id, get_pool_by_id,
+    get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,
+    pool_missing_embedding, pool_missing_tts, get_pool_sample, get_pool_letter,
+    set_pool_meta, pool_missing_meta, get_pool_topics_counts, get_pool_level_counts,
+    get_pool_candidates, set_pool_description, delete_pool_word,
+    get_pool_list, get_pool_ids, search_pool,
+)
+from .cache import (
+    get_cached_query, cache_query, clear_query_cache, get_usage, incr_usage,
+)
+from .dictionaries import (
+    create_dictionary, delete_dictionary, add_word_to_dict, delete_dict_word,
+    set_word_override, record_result, get_dict_word, get_user_data,
+)

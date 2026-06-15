@@ -35,6 +35,13 @@ class PoolAdd(BaseModel):
     norwegian: str
 
 
+class PoolToDict(BaseModel):
+    name: str
+    q: Optional[str] = None
+    topics: List[str] = []
+    level: Optional[str] = None
+
+
 class WordOverride(BaseModel):
     translate: Optional[dict] = None
     part_of_speech: Optional[str] = None
