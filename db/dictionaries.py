@@ -1,6 +1,6 @@
 import json
 import aiosqlite
-from .core import _conn, _now
+from .core import _conn, _release, _now
 
 
 async def create_dictionary(user_id: int, name: str):
@@ -15,7 +15,7 @@ async def create_dictionary(user_id: int, name: str):
     except aiosqlite.IntegrityError:
         return {"error": "Dictionary already exists"}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def delete_dictionary(user_id: int, dict_id: int):
@@ -29,7 +29,7 @@ async def delete_dictionary(user_id: int, dict_id: int):
         await db.commit()
         return {"ok": True}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def _owns_dict(db, user_id, dict_id):
@@ -52,7 +52,7 @@ async def add_word_to_dict(user_id: int, dict_id: int, pool_id: int):
                 row = await cur.fetchone()
                 return {"id": row["id"] if row else None, "duplicate": True}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def delete_dict_word(user_id: int, dw_id: int):
@@ -64,7 +64,7 @@ async def delete_dict_word(user_id: int, dw_id: int):
         await db.commit()
         return {"ok": True}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def set_word_override(user_id: int, dw_id: int, override: dict):
@@ -77,7 +77,7 @@ async def set_word_override(user_id: int, dw_id: int, override: dict):
         await db.commit()
         return {"ok": True}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def record_result(user_id: int, dw_id: int, correct: bool):
@@ -91,7 +91,7 @@ async def record_result(user_id: int, dw_id: int, correct: bool):
         await db.commit()
         return {"ok": True}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_dict_word(user_id: int, dw_id: int):
@@ -108,7 +108,7 @@ async def get_dict_word(user_id: int, dw_id: int):
             row = await cur.fetchone()
             return dict(row) if row else None
     finally:
-        await db.close()
+        await _release(db)
 
 
 def _build_word(row):
@@ -152,4 +152,4 @@ async def get_user_data(user_id: int):
             result.append({"id": d["id"], "dictName": d["name"], "words": words})
         return {"dictList": result, "dictNames": [d["name"] for d in dicts]}
     finally:
-        await db.close()
+        await _release(db)

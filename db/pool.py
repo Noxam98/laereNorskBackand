@@ -1,5 +1,5 @@
 import json
-from .core import _conn, _now, normalize_word
+from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
 async def get_or_create_pool(norwegian: str, data: dict):
@@ -20,7 +20,7 @@ async def get_or_create_pool(norwegian: str, data: dict):
         await db.commit()
         return cur.lastrowid
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_id(norwegian: str):
@@ -34,7 +34,7 @@ async def get_pool_id(norwegian: str):
             r = await cur.fetchone()
             return r["id"] if r else None
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_by_id(pool_id: int):
@@ -50,7 +50,7 @@ async def get_pool_by_id(pool_id: int):
                 "embedding": row["embedding"],  # сырые байты
             }
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_tts(norwegian: str):
@@ -63,7 +63,7 @@ async def get_pool_tts(norwegian: str):
             r = await cur.fetchone()
             return r["tts"] if r and r["tts"] else None
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def set_pool_tts(norwegian: str, data: bytes):
@@ -75,7 +75,7 @@ async def set_pool_tts(norwegian: str, data: bytes):
         await db.execute("UPDATE word_pool SET tts = ? WHERE norwegian = ?", (data, key))
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def set_pool_embedding(pool_id: int, data):
@@ -85,7 +85,8 @@ async def set_pool_embedding(pool_id: int, data):
         await db.execute("UPDATE word_pool SET embedding = ? WHERE id = ?", (data, pool_id))
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
+    await vec_upsert(pool_id, data)  # держим ANN-индекс в синхроне
 
 
 async def get_pool_embeddings_raw():
@@ -95,7 +96,7 @@ async def get_pool_embeddings_raw():
         async with db.execute("SELECT id, embedding FROM word_pool WHERE embedding IS NOT NULL") as cur:
             return [(r["id"], r["embedding"]) for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def pool_missing_embedding(limit: int = 1):
@@ -104,7 +105,7 @@ async def pool_missing_embedding(limit: int = 1):
         async with db.execute("SELECT norwegian FROM word_pool WHERE embedding IS NULL LIMIT ?", (limit,)) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def pool_missing_tts(limit: int = 1):
@@ -113,7 +114,7 @@ async def pool_missing_tts(limit: int = 1):
         async with db.execute("SELECT norwegian FROM word_pool WHERE tts IS NULL LIMIT ?", (limit,)) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_sample(limit: int = 120):
@@ -123,7 +124,7 @@ async def get_pool_sample(limit: int = 120):
         async with db.execute("SELECT norwegian FROM word_pool ORDER BY RANDOM() LIMIT ?", (limit,)) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_letter(letter: str, limit: int = 120):
@@ -139,7 +140,7 @@ async def get_pool_letter(letter: str, limit: int = 120):
         ) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def set_pool_meta(pool_id: int, level: str = None, topics=None):
@@ -155,7 +156,7 @@ async def set_pool_meta(pool_id: int, level: str = None, topics=None):
                 await db.executemany("INSERT OR IGNORE INTO word_topics (pool_id, topic) VALUES (?, ?)", rows)
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def pool_missing_meta(limit: int = 50):
@@ -171,7 +172,7 @@ async def pool_missing_meta(limit: int = 50):
                 out.append({"word": r["norwegian"], "translate": d.get("translate", {})})
             return out
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_topics_counts():
@@ -183,7 +184,7 @@ async def get_pool_topics_counts():
         ) as cur:
             return [{"topic": r["topic"], "count": r["c"]} for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_level_counts():
@@ -195,7 +196,7 @@ async def get_pool_level_counts():
         ) as cur:
             return [{"level": r["level"], "count": r["c"]} for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_candidates():
@@ -214,7 +215,7 @@ async def get_pool_candidates():
                 })
             return out
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def set_pool_description(pool_id: int, description: dict):
@@ -223,7 +224,7 @@ async def set_pool_description(pool_id: int, description: dict):
         await db.execute("UPDATE word_pool SET description = ? WHERE id = ?", (json.dumps(description, ensure_ascii=False), pool_id))
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def delete_pool_word(norwegian: str):
@@ -232,8 +233,12 @@ async def delete_pool_word(norwegian: str):
     if not key:
         return
     db = await _conn()
+    pid = None
     try:
         await db.execute("PRAGMA foreign_keys = ON")
+        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+            r = await cur.fetchone()
+            pid = r["id"] if r else None
         await db.execute("DELETE FROM word_pool WHERE norwegian = ?", (key,))
         await db.execute(
             "DELETE FROM query_cache WHERE query LIKE ? OR response LIKE ? OR response LIKE ?",
@@ -241,7 +246,8 @@ async def delete_pool_word(norwegian: str):
         )
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
+    await vec_delete(pid)  # убрать из ANN-индекса
 
 
 _POOL_SORTS = {
@@ -311,7 +317,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             })
         return {"total": total, "words": words}
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def get_pool_ids(q: str = None, topics=None, level: str = None):
@@ -334,7 +340,7 @@ async def get_pool_ids(q: str = None, topics=None, level: str = None):
         async with db.execute(f"SELECT id FROM word_pool {where}", params) as cur:
             return [r["id"] for r in await cur.fetchall()]
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def search_pool(prefix: str, limit: int = 10):
@@ -358,4 +364,4 @@ async def search_pool(prefix: str, limit: int = 10):
                 out.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", "")})
             return out
     finally:
-        await db.close()
+        await _release(db)

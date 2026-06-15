@@ -2,13 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
 from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
-    set_pool_description, get_pool_candidates, get_pool_list,
+    set_pool_description, get_pool_list,
     search_pool, get_pool_topics_counts, get_pool_level_counts,
 )
 from auth import get_current_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, rank_by_similarity
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, ranked_pool
 from task import description_task
 
 router = APIRouter()
@@ -90,13 +90,9 @@ async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", user=Depends(ge
     p = await get_pool_by_id(pid)
     if not p or not p.get("embedding"):
         return {"synonyms": []}
-    key = normalize_word(word)
-    cands = [c for c in await get_pool_candidates() if c["norwegian"] != key and c.get("embedding")]
-    ranked = rank_by_similarity(p["embedding"], cands)
-    if not ranked:
-        return {"synonyms": []}
+    ordered = await ranked_pool(p["embedding"], normalize_word(word), n)
     out = []
-    for c in ranked[:n]:
+    for c in ordered[:n]:
         tr = (c["data"].get("translate", {}) or {}).get(lang) or []
         out.append({"word": c["norwegian"], "translate": tr})
     return {"synonyms": out}

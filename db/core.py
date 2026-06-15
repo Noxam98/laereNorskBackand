@@ -1,20 +1,72 @@
 import aiosqlite
 import os
+import asyncio
+import logging
 from datetime import datetime
+
+logger = logging.getLogger("learnnorsk")
 
 # Путь к БД через env (на Fly указывает на смонтированный volume, напр. /data/users.db).
 DATABASE_URL = os.getenv("DATABASE_PATH", "users.db")
+EMBED_DIM = int(os.getenv("EMBED_DIM", "3072"))  # размерность векторов в индексе sqlite-vec
+
+# sqlite-vec (ANN-индекс). Если пакет/расширение недоступны — работаем на brute-force.
+try:
+    import sqlite_vec
+    _HAS_VEC_PKG = True
+except Exception:
+    _HAS_VEC_PKG = False
+SQLITE_VEC_OK = False  # станет True, если расширение реально загрузилось и таблица создана
 
 
 def _now():
     return datetime.utcnow().isoformat()
 
 
-async def _conn():
+# --- Пул соединений (переиспользуем, чтобы не плодить потоки aiosqlite на каждый вызов) ---
+_POOL = []
+_POOL_LOCK = asyncio.Lock()
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+
+
+async def _make_conn():
     db = await aiosqlite.connect(DATABASE_URL)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA foreign_keys = ON")
+    await db.execute("PRAGMA busy_timeout = 5000")   # ждать блокировку до 5с вместо мгновенной ошибки
+    await db.execute("PRAGMA synchronous = NORMAL")  # быстрее, безопасно в режиме WAL
+    if _HAS_VEC_PKG:
+        try:
+            await db.enable_load_extension(True)
+            await db.load_extension(sqlite_vec.loadable_path())
+            await db.enable_load_extension(False)
+        except Exception:
+            pass  # расширение не загрузилось — этому соединению vec-запросы недоступны
     return db
+
+
+async def _conn():
+    async with _POOL_LOCK:
+        if _POOL:
+            return _POOL.pop()
+    return await _make_conn()
+
+
+async def _release(db):
+    # сбрасываем возможную незавершённую транзакцию перед возвратом в пул
+    try:
+        await db.rollback()
+    except Exception:
+        try:
+            await db.close()
+        except Exception:
+            pass
+        return
+    async with _POOL_LOCK:
+        if len(_POOL) < _POOL_SIZE:
+            _POOL.append(db)
+            return
+    await db.close()
 
 
 def normalize_word(norwegian: str) -> str:
@@ -120,4 +172,112 @@ async def init_db():
             FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
         )
         """)
+        await db.execute("PRAGMA journal_mode = WAL")  # параллельные чтения + один писатель
         await db.commit()
+
+    # ANN-индекс sqlite-vec (если расширение доступно). Иначе — brute-force.
+    await _init_vec()
+
+
+async def _init_vec():
+    """Создать vec-таблицу и наполнить её из существующих эмбеддингов. Безопасно при отсутствии расширения."""
+    global SQLITE_VEC_OK
+    if not _HAS_VEC_PKG:
+        logger.info("sqlite-vec package not installed — similarity falls back to brute-force")
+        return
+    import numpy as np
+    db = await _make_conn()
+    try:
+        # косинусная метрика (эмбеддинги не нормированы — L2 даёт плохих соседей)
+        await db.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_words USING vec0(embedding float[{EMBED_DIM}] distance_metric=cosine)")
+        await db.execute("DROP TABLE IF EXISTS vec_pool")  # снести старый L2-индекс, если был
+        await db.commit()
+        # бэкфилл: добавить векторы слов, которых ещё нет в индексе
+        async with db.execute(
+            "SELECT id, embedding FROM word_pool WHERE embedding IS NOT NULL "
+            "AND id NOT IN (SELECT rowid FROM vec_words)"
+        ) as cur:
+            rows = await cur.fetchall()
+        added = 0
+        for r in rows:
+            v = _f16_to_f32_bytes(r["embedding"], np)
+            if v is not None:
+                await db.execute("INSERT OR REPLACE INTO vec_words(rowid, embedding) VALUES (?, ?)", (r["id"], v))
+                added += 1
+        if added:
+            await db.commit()
+        SQLITE_VEC_OK = True
+        logger.info(f"sqlite-vec ready (cosine, dim={EMBED_DIM}); backfilled {added} vectors")
+    except Exception as e:
+        SQLITE_VEC_OK = False
+        logger.warning(f"sqlite-vec unavailable, brute-force fallback: {e}")
+    finally:
+        await db.close()
+
+
+def _f16_to_f32_bytes(raw, np):
+    """Хранимый эмбеддинг (float16 bytes / legacy JSON) → float32 bytes для sqlite-vec."""
+    try:
+        if isinstance(raw, (bytes, bytearray)) and raw[:1] != b"[":
+            v = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
+        else:
+            import json
+            v = np.asarray(json.loads(raw), dtype=np.float32)
+        if v.shape[0] != EMBED_DIM:
+            return None
+        return v.tobytes()
+    except Exception:
+        return None
+
+
+async def vec_upsert(pool_id, raw):
+    """Добавить/обновить вектор слова в ANN-индексе."""
+    if not SQLITE_VEC_OK:
+        return
+    import numpy as np
+    v = _f16_to_f32_bytes(raw, np)
+    if v is None:
+        return
+    db = await _conn()
+    try:
+        await db.execute("INSERT OR REPLACE INTO vec_words(rowid, embedding) VALUES (?, ?)", (pool_id, v))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def vec_delete(pool_id):
+    if not SQLITE_VEC_OK or pool_id is None:
+        return
+    db = await _conn()
+    try:
+        await db.execute("DELETE FROM vec_words WHERE rowid = ?", (pool_id,))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def vec_nearest_rows(target_raw, k):
+    """Top-k ближайших слов пула через ANN-индекс. None — индекс недоступен."""
+    if not SQLITE_VEC_OK:
+        return None
+    import numpy as np
+    q = _f16_to_f32_bytes(target_raw, np)
+    if q is None:
+        return None
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT rowid, distance FROM vec_words WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+            (q, k),
+        ) as cur:
+            knn = await cur.fetchall()
+        ids = [r["rowid"] for r in knn]
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", ids) as cur:
+            by_id = {r["id"]: r for r in await cur.fetchall()}
+        return [{"id": i, "norwegian": by_id[i]["norwegian"], "data": by_id[i]["data"]} for i in ids if i in by_id]
+    finally:
+        await _release(db)

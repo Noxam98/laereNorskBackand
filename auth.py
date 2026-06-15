@@ -1,4 +1,5 @@
 import os
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -66,13 +67,14 @@ async def register(user: UserAuth):
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
     if await get_user(user.username):
         raise HTTPException(status_code=400, detail="Username already exists")
-    return await create_user(user.username, hash_password(user.password))
+    hashed = await asyncio.to_thread(hash_password, user.password)  # bcrypt CPU — в треде
+    return await create_user(user.username, hashed)
 
 
 @router.post("/login", response_model=Token)
 async def login(creds: UserAuth):
     user = await get_user(creds.username)
-    if not user or not verify_password(creds.password, user["password"]):
+    if not user or not await asyncio.to_thread(verify_password, creds.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return _token_pair(creds.username)
 

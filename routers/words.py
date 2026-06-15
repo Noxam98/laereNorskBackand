@@ -12,7 +12,7 @@ from auth import get_current_user
 from activity import mark_activity
 from llm import (
     generate_words, ensure_embedding, persist_pool, ask_json, DESC_SCHEMA,
-    rank_by_similarity, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS,
+    ranked_pool, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS,
 )
 from tts import schedule_tts
 from task import description_task
@@ -184,12 +184,10 @@ async def distractors(dw_id: int, n: int = 3, mode: str = "no2int", lang: str = 
     correct = (dw["norwegian"] if mode == "int2no" else answer_of(target, dw["norwegian"]))
     correct_l = (correct or "").strip().lower()
 
-    cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"]]
-
-    ranked = rank_by_similarity(dw["embedding"], cands)
-    if ranked:
-        ordered = ranked
-    else:
+    ordered = await ranked_pool(dw["embedding"], dw["norwegian"], 40)  # семантически близкие (ANN/brute)
+    if not ordered:
+        # нет эмбеддинга/индекса — случайные той же части речи
+        cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"]]
         same = [c for c in cands if c["data"].get("part_of_speech") == target_pos]
         other = [c for c in cands if c["data"].get("part_of_speech") != target_pos]
         random.shuffle(same); random.shuffle(other)
@@ -242,14 +240,7 @@ async def synonyms(dw_id: int, n: int = 5, lang: str = "ru", user=Depends(get_cu
         raise HTTPException(status_code=404, detail="Not found")
     if not dw["embedding"]:
         return {"synonyms": []}
-    target = json.loads(dw["data"]) if dw["data"] else {}
-    target_pos = target.get("part_of_speech", "")
-    cands = [c for c in await get_pool_candidates() if c["norwegian"] != dw["norwegian"] and c.get("embedding")]
-    ranked = rank_by_similarity(dw["embedding"], cands)
-    if not ranked:
-        return {"synonyms": []}
-    # та же часть речи — выше (порядок по близости сохраняется внутри групп)
-    ordered = [c for c in ranked if c2pos(c) == target_pos] + [c for c in ranked if c2pos(c) != target_pos]
+    ordered = await ranked_pool(dw["embedding"], dw["norwegian"], n)
     out = []
     for c in ordered[:n]:
         tr = (c["data"].get("translate", {}) or {}).get(lang) or []

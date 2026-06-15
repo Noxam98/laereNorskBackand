@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 from datetime import datetime
 import numpy as np
 from fastapi import HTTPException
@@ -8,6 +9,7 @@ from config import logger
 from db import (
     get_cached_query, cache_query, incr_usage, get_usage,
     get_pool_by_id, set_pool_embedding, get_or_create_pool, set_pool_meta,
+    vec_nearest_rows, get_pool_candidates,
 )
 from task import task
 
@@ -99,6 +101,29 @@ def rank_by_similarity(target_raw, cands):
     M = np.vstack(vecs)
     sims = (M @ tv) / (np.linalg.norm(M, axis=1) * (np.linalg.norm(tv) + 1e-9) + 1e-9)
     return [rows[i] for i in np.argsort(-sims)]
+
+
+async def ranked_pool(target_raw, exclude_norwegian, n):
+    """Ближайшие по смыслу слова пула [{norwegian, data(dict)}], исключая exclude.
+    Использует ANN-индекс (sqlite-vec) если доступен, иначе brute-force в отдельном потоке."""
+    if not target_raw:
+        return []
+    rows = await vec_nearest_rows(target_raw, n + 5)  # None — индекс недоступен
+    if rows is not None:
+        out = []
+        for r in rows:
+            if r["norwegian"] == exclude_norwegian:
+                continue
+            out.append({"norwegian": r["norwegian"], "data": json.loads(r["data"]) if r["data"] else {}})
+            if len(out) >= n:
+                break
+        return out
+    # фолбэк: перебор всех кандидатов (CPU — в треде, чтобы не блокировать event loop)
+    cands = [c for c in await get_pool_candidates() if c["norwegian"] != exclude_norwegian and c.get("embedding")]
+    ranked = await asyncio.to_thread(rank_by_similarity, target_raw, cands)
+    if not ranked:
+        return []
+    return [{"norwegian": c["norwegian"], "data": c["data"]} for c in ranked[:n]]
 
 
 def extract_json(content: str):

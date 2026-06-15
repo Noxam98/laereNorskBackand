@@ -1,5 +1,5 @@
 import aiosqlite
-from .core import _conn, _now
+from .core import _conn, _release, _now
 
 
 async def get_user(username: str):
@@ -9,7 +9,7 @@ async def get_user(username: str):
             row = await cur.fetchone()
             return dict(row) if row else None
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def create_user(username: str, hashed_password: str):
@@ -24,4 +24,4 @@ async def create_user(username: str, hashed_password: str):
     except aiosqlite.IntegrityError:
         return {"error": "Username already exists"}
     finally:
-        await db.close()
+        await _release(db)

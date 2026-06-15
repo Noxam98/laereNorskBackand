@@ -8,6 +8,7 @@
 """
 from .core import (
     DATABASE_URL, init_db, normalize_word, normalize_query,
+    SQLITE_VEC_OK, vec_upsert, vec_delete, vec_nearest_rows,
 )
 from .users import get_user, create_user
 from .pool import (

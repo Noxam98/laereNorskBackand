@@ -1,5 +1,5 @@
 import json
-from .core import _conn, _now, normalize_query
+from .core import _conn, _release, _now, normalize_query
 
 
 # --- Кэш запросов генерации ---
@@ -13,7 +13,7 @@ async def get_cached_query(query: str):
             row = await cur.fetchone()
             return json.loads(row["response"]) if row else None
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def cache_query(query: str, response):
@@ -26,7 +26,7 @@ async def cache_query(query: str, response):
                          (key, json.dumps(response, ensure_ascii=False), _now()))
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def clear_query_cache():
@@ -35,7 +35,7 @@ async def clear_query_cache():
         await db.execute("DELETE FROM query_cache")
         await db.commit()
     finally:
-        await db.close()
+        await _release(db)
 
 
 # --- Дневной учёт обращений к LLM ---
@@ -46,7 +46,7 @@ async def get_usage(day: str) -> int:
             r = await cur.fetchone()
             return r["n"] if r else 0
     finally:
-        await db.close()
+        await _release(db)
 
 
 async def incr_usage(day: str, by: int = 1) -> int:
@@ -60,4 +60,4 @@ async def incr_usage(day: str, by: int = 1) -> int:
         async with db.execute("SELECT n FROM usage WHERE day = ?", (day,)) as cur:
             return (await cur.fetchone())["n"]
     finally:
-        await db.close()
+        await _release(db)
