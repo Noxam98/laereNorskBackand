@@ -1,12 +1,13 @@
 import os
+import json
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 import bcrypt
 import jwt
-from db import get_user, create_user, set_user_theme
-from models import UserAuth, Token, RefreshRequest, ThemeBody
+from db import get_user, create_user, set_user_theme, set_user_game_prefs
+from models import UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -109,9 +110,19 @@ async def refresh_token(payload: RefreshRequest = None, refresh_token: str = Non
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
+def _parse_game_prefs(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
-    return {"username": user["username"], "theme": user.get("theme"), "is_admin": is_admin(user)}
+    return {
+        "username": user["username"], "theme": user.get("theme"), "is_admin": is_admin(user),
+        "gamePrefs": _parse_game_prefs(user.get("game_prefs")),
+    }
 
 
 @router.post("/me/theme")
@@ -119,3 +130,17 @@ async def set_theme(body: ThemeBody, user=Depends(get_current_user)):
     theme = body.theme if body.theme in ("light", "dark") else "light"
     await set_user_theme(user["id"], theme)
     return {"theme": theme}
+
+
+@router.post("/me/game_prefs")
+async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
+    """Запоминаем последние настройки игры (режим/направление/звук)."""
+    prefs = {}
+    if body.type in ("study", "input", "choice"):
+        prefs["type"] = body.type
+    if body.dir in ("no2int", "int2no"):
+        prefs["dir"] = body.dir
+    if body.sound is not None:
+        prefs["sound"] = bool(body.sound)
+    await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))
+    return {"gamePrefs": prefs}

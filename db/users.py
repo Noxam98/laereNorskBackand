@@ -21,6 +21,15 @@ async def set_user_theme(user_id: int, theme: str):
         await _release(db)
 
 
+async def set_user_game_prefs(user_id: int, prefs_json: str):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET game_prefs = ? WHERE id = ?", (prefs_json, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def create_user(username: str, hashed_password: str):
     db = await _conn()
     try:

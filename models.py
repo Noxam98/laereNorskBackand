@@ -53,3 +53,9 @@ class ResultBody(BaseModel):
 
 class ThemeBody(BaseModel):
     theme: str
+
+
+class GamePrefsBody(BaseModel):
+    type: str | None = None   # study | input | choice
+    dir: str | None = None    # no2int | int2no
+    sound: bool | None = None
