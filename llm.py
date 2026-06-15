@@ -41,7 +41,10 @@ def get_embed_client():
     global _embed_client
     if _embed_client is None:
         from openai import AsyncOpenAI
-        _embed_client = AsyncOpenAI(base_url=EMBED_BASE_URL, api_key=EMBED_API_KEY or "not-needed")
+        # max_retries=0 — не висим минутами на внутренних ретраях клиента при 429;
+        # пейсингом и повторами управляет наш цикл. timeout — чтобы не зависать.
+        _embed_client = AsyncOpenAI(base_url=EMBED_BASE_URL, api_key=EMBED_API_KEY or "not-needed",
+                                    max_retries=0, timeout=30)
     return _embed_client
 
 
