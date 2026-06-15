@@ -362,13 +362,12 @@ async def reembed_loop():
                     await mark_sem_embed(pid)
                     done += 1
                 else:
-                    failed = True  # ключ/квота (429) — отступаем надолго, повторим позже
+                    failed = True  # 429 (RPM/квота) — короткая пауза и продолжим
                     break
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.6)  # ~100 генераций/мин (лимит RPM модели)
             if done:
                 logger.info(f"reembed: +{done}/{len(batch)} via {model}")
-            # при исчерпании дневной квоты эмбеддингов (free-tier 1000/день) — длинный бэкофф
-            await asyncio.sleep(900 if failed else EMB_SEM_CHECK_SEC)
+            await asyncio.sleep(60 if failed else EMB_SEM_CHECK_SEC)
         except Exception as e:
             logger.warning(f"reembed_loop: {e}")
             await asyncio.sleep(EMB_SEM_CHECK_SEC)
