@@ -6,11 +6,12 @@ from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
     set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_stats, get_usage_like,
+    get_cached_query, cache_query,
 )
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, ranked_pool
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, ranked_pool
 from task import description_task
 import storage
 
@@ -156,3 +157,39 @@ async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", user=Depends(ge
         tr = (c["data"].get("translate", {}) or {}).get(lang) or []
         out.append({"word": c["norwegian"], "translate": tr})
     return {"synonyms": out}
+
+
+_DIFF_LANG_NAMES = {"ru": "русском", "ukr": "украинском", "en": "English", "pl": "polskim", "lt": "lietuvių"}
+_DIFF_LANGS = {"ru", "ukr", "en", "pl", "lt"}
+
+
+@router.get("/pool/diff")
+async def pool_diff(a: str, b: str, lang: str = "ru", user=Depends(get_current_user)):
+    """Разница между двумя норвежскими словами на языке пользователя (LLM, кэш по паре+языку)."""
+    a = normalize_word(a)
+    b = normalize_word(b)
+    if not a or not b or a == b:
+        raise HTTPException(status_code=400, detail="two distinct words required")
+    if lang not in _DIFF_LANGS:
+        lang = "ru"
+    ckey = f"diff|{a}|{b}|{lang}"
+    cached = await get_cached_query(ckey)
+    if cached:
+        return {"diff": cached, "a": a, "b": b}
+    sys = (
+        "Ты — преподаватель норвежского (bokmål). Объясни РАЗНИЦУ между двумя норвежскими "
+        f"словами кратко и по делу на языке: {_DIFF_LANG_NAMES.get(lang, lang)}. Поля: "
+        "summary — суть различия одной фразой; when_a — когда употреблять ПЕРВОЕ слово; "
+        "when_b — когда употреблять ВТОРОЕ слово; example — один короткий пример "
+        "(норвежская фраза + перевод). Весь текст на указанном языке; норвежские слова в "
+        "примере оставляй как есть."
+    )
+    try:
+        data = await ask_json(sys, f"Первое слово: >>{a}<<\nВторое слово: >>{b}<<", DIFF_SCHEMA)
+    except Exception as e:
+        logger.warning(f"diff failed: {e}")
+        raise HTTPException(status_code=502, detail="diff provider error")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="bad diff")
+    await cache_query(ckey, data)
+    return {"diff": data, "a": a, "b": b}

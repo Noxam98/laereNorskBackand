@@ -256,6 +256,20 @@ DESC_SCHEMA = {
         "required": ["ru", "ukr", "en", "pl", "lt"],
     },
 }
+# Разница между двумя норвежскими словами (на языке пользователя).
+DIFF_SCHEMA = {
+    "name": "word_diff_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},   # суть различия одной фразой
+            "when_a": {"type": "string"},     # когда употреблять первое слово
+            "when_b": {"type": "string"},     # когда употреблять второе слово
+            "example": {"type": "string"},    # короткий пример (норвежский + перевод)
+        },
+        "required": ["summary", "when_a", "when_b", "example"],
+    },
+}
 # Пакетная классификация слов: уровень CEFR + 1-3 темы из канонического списка.
 CLASSIFY_SCHEMA = {
     "name": "classify_response",
