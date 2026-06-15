@@ -6,7 +6,7 @@ import numpy as np
 from fastapi import HTTPException
 from config import logger
 from db import (
-    get_cached_query, cache_query, incr_usage,
+    get_cached_query, cache_query, incr_usage, get_usage,
     get_pool_by_id, set_pool_embedding, get_or_create_pool, set_pool_meta,
 )
 from task import task
@@ -254,6 +254,35 @@ def normalize_word_item(item):
     return item
 
 
+# Модели для ЖИВЫХ запросов пользователей: «по возможности» лучшая модель, при
+# исчерпании её суточной квоты — следующая. Формат env: "model:rpd,...".
+# По умолчанию — только LLM_MODEL (без ограничения), т.е. прежнее поведение.
+def _parse_models(env, default_model, default_budget=10 ** 9):
+    out = []
+    for part in (os.getenv(env, "") or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        m, _, b = part.rpartition(":")
+        try:
+            out.append((m.strip(), int(b)))
+        except ValueError:
+            out.append((part, default_budget))
+    return out or [(default_model, default_budget)]
+
+
+USER_TEXT_MODELS = _parse_models("USER_TEXT_MODELS", LLM_MODEL)
+
+
+async def pick_user_text_model():
+    """Лучшая доступная по суточной квоте модель для запросов пользователя."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for m, budget in USER_TEXT_MODELS:
+        if (await get_usage(f"{today}:text:{m}")) < budget:
+            return m
+    return USER_TEXT_MODELS[-1][0]
+
+
 async def generate_words(prompt, model):
     """Возвращает нормализованный список слов (из кэша или AI)."""
     cached = await get_cached_query(prompt)
@@ -261,6 +290,8 @@ async def generate_words(prompt, model):
         return cached, True
     if not LLM_API_KEY:
         raise HTTPException(status_code=503, detail="LLM is not configured (set LLM_API_KEY)")
+    if not model:
+        model = await pick_user_text_model()
     try:
         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model)
     except Exception as e:
