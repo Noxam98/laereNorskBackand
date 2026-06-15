@@ -390,7 +390,9 @@ async def autofill_loop():
                 # бесплатна — её добиваем всегда; текст/эмбеддинги — пока есть бюджет у моделей.
                 text_model = await _pick_model(TEXT_MODELS, "text")
                 emb_model = await _pick_model(EMBED_MODELS, "emb")
-                emb_miss = (await pool_missing_embedding(1)) if emb_model else []
+                # пока идёт пере-эмбеддинг — эмбеддингом занимается ТОЛЬКО батч-цикл reembed_loop
+                # (autofill не долбит по одному, чтобы не жечь дневной лимит запросов и RPM)
+                emb_miss = (await pool_missing_embedding(1)) if (emb_model and not await sem_embed_pending(1)) else []
                 tts_miss = await pool_missing_tts(1)
                 unclassified = await pool_missing_meta(CLASSIFY_BATCH) if (text_model and not emb_miss and not tts_miss) else None
                 if not text_model and not emb_model and not tts_miss:
