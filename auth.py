@@ -15,6 +15,13 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+# Админы — список имён через env ADMIN_USERS (через запятую), регистронезависимо.
+ADMIN_USERS = {u.strip().lower() for u in os.getenv("ADMIN_USERS", "").split(",") if u.strip()}
+
+
+def is_admin(user) -> bool:
+    return bool(user) and (user.get("username", "").lower() in ADMIN_USERS)
+
 
 def hash_password(p):
     return bcrypt.hashpw(p.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
@@ -44,6 +51,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user = await get_user(username)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
+    return user
+
+
+async def get_admin_user(user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Forbidden")
     return user
 
 
@@ -98,7 +111,7 @@ async def refresh_token(payload: RefreshRequest = None, refresh_token: str = Non
 
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
-    return {"username": user["username"], "theme": user.get("theme")}
+    return {"username": user["username"], "theme": user.get("theme"), "is_admin": is_admin(user)}
 
 
 @router.post("/me/theme")

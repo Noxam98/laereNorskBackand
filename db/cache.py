@@ -39,6 +39,16 @@ async def clear_query_cache():
 
 
 # --- Дневной учёт обращений к LLM ---
+async def get_usage_like(prefix: str):
+    """{ключ: n} для всех записей usage, начинающихся с prefix (напр. сегодняшняя дата)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT day, n FROM usage WHERE day LIKE ? ORDER BY day", (prefix + "%",)) as cur:
+            return {r["day"]: r["n"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+
+
 async def get_usage(day: str) -> int:
     db = await _conn()
     try:

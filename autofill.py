@@ -219,12 +219,10 @@ async def autofill_loop():
                 elif unclassified:
                     done = await classify_batch(unclassified, model=text_model)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
-                elif text_model and (await pool_missing_description(1)):
-                    w = (await pool_missing_description(1))[0]
-                    ok = await describe_word(w, model=text_model)
-                    logger.info(f"autofill: described '{w}' ok={ok} via {text_model}")
                 elif text_model:
                     i += 1
+                    # Генерация новых слов — основной приоритет. Описания не догоняем
+                    # фоном (генерятся по запросу при открытии), чтобы пул рос быстрее.
                     nonce = random.randint(1000, 99999)
                     # 2 из 3 циклов — по букве (системно вычищаем алфавит), 1 из 3 — по теме.
                     if i % 3 == 0:

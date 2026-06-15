@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
+from datetime import datetime
 from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
     set_pool_description, get_pool_list,
-    search_pool, get_pool_topics_counts, get_pool_level_counts,
+    search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_stats, get_usage_like,
 )
-from auth import get_current_user
+from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, ranked_pool
@@ -56,6 +57,18 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
 @router.get("/pool/topics")
 async def pool_topics(user=Depends(get_current_user)):
     return {"topics": await get_pool_topics_counts(), "levels": await get_pool_level_counts()}
+
+
+@router.get("/admin/stats")
+async def admin_stats(user=Depends(get_admin_user)):
+    """Техническая статистика проекта (только для админа)."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return {
+        "pool": await get_pool_stats(),
+        "topics": await get_pool_topics_counts(),
+        "levels": await get_pool_level_counts(),
+        "usageToday": await get_usage_like(today),
+    }
 
 
 @router.get("/pool/search")

@@ -185,6 +185,24 @@ async def pool_missing_meta(limit: int = 50):
         await _release(db)
 
 
+async def get_pool_stats():
+    """Сводка по пулу: всего и сколько с эмбеддингом/озвучкой/описанием/уровнем."""
+    db = await _conn()
+    try:
+        async def one(sql):
+            async with db.execute(sql) as cur:
+                return (await cur.fetchone())[0]
+        return {
+            "total": await one("SELECT COUNT(*) FROM word_pool"),
+            "embedding": await one("SELECT COUNT(*) FROM word_pool WHERE embedding IS NOT NULL"),
+            "tts": await one("SELECT COUNT(*) FROM word_pool WHERE tts IS NOT NULL"),
+            "description": await one("SELECT COUNT(*) FROM word_pool WHERE description IS NOT NULL"),
+            "classified": await one("SELECT COUNT(*) FROM word_pool WHERE level IS NOT NULL"),
+        }
+    finally:
+        await _release(db)
+
+
 async def get_pool_topics_counts():
     """[{topic, count}] по непустым темам (для фильтра)."""
     db = await _conn()
