@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
 from db import (
-    normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_list,
+    normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
+    set_pool_description, get_pool_candidates, get_pool_list,
     search_pool, get_pool_topics_counts, get_pool_level_counts,
 )
 from auth import get_current_user
+from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, rank_by_similarity
+from task import description_task
 
 router = APIRouter()
 
@@ -58,3 +61,42 @@ async def pool_topics(user=Depends(get_current_user)):
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, user=Depends(get_current_user)):
     return {"results": await search_pool(q, limit)}
+
+
+@router.get("/pool/{word}/description")
+async def pool_description(word: str, model: str = None, user=Depends(get_current_user)):
+    """Описание слова из общего пула (как в личном словаре): есть — отдаём, нет — генерим и кэшируем."""
+    pid = await get_pool_id(word)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    p = await get_pool_by_id(pid)
+    if p and p.get("description"):
+        return {"description": p["description"]}
+    mark_activity()
+    desc = await ask_json(description_task, f"Слово на норвежском: >>{normalize_word(word)}<<", DESC_SCHEMA, model)
+    if not isinstance(desc, dict):
+        raise HTTPException(status_code=500, detail="No JSON found in the response")
+    description = desc.get("description", desc)
+    await set_pool_description(pid, description)
+    return {"description": description}
+
+
+@router.get("/pool/{word}/synonyms")
+async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", user=Depends(get_current_user)):
+    """Близкие по смыслу слова из пула (по эмбеддингам). Без эмбеддинга — пусто."""
+    pid = await get_pool_id(word)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    p = await get_pool_by_id(pid)
+    if not p or not p.get("embedding"):
+        return {"synonyms": []}
+    key = normalize_word(word)
+    cands = [c for c in await get_pool_candidates() if c["norwegian"] != key and c.get("embedding")]
+    ranked = rank_by_similarity(p["embedding"], cands)
+    if not ranked:
+        return {"synonyms": []}
+    out = []
+    for c in ranked[:n]:
+        tr = (c["data"].get("translate", {}) or {}).get(lang) or []
+        out.append({"word": c["norwegian"], "translate": tr})
+    return {"synonyms": out}
