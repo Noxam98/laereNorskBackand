@@ -20,6 +20,7 @@ from db import (
     get_usage, incr_usage, delete_pool_word, get_pool_list,
     get_pool_tts, set_pool_tts, pool_missing_embedding, pool_missing_tts,
     get_pool_embeddings_raw, get_pool_sample, get_pool_letter,
+    set_pool_meta, pool_missing_meta, get_pool_topics_counts, get_pool_level_counts,
 )
 import math
 import random
@@ -270,6 +271,37 @@ async def ask_model(system_prompt, user_prompt, model=None):
     return None
 
 
+# Канонические темы-теги пула (стабильные ключи; UI-подписи — во фронтовом i18n).
+# Значение — рус. подсказка для LLM-классификатора и генерации.
+TOPIC_TAGS = {
+    "family": "семья и родственники",
+    "food": "еда, напитки, продукты",
+    "home": "дом, мебель, быт, посуда",
+    "work": "работа, профессии, офис, бизнес",
+    "school": "школа, учёба, образование, наука",
+    "travel": "путешествия, туризм, отдых, гостиница",
+    "health": "здоровье, болезни, медицина, аптека",
+    "body": "тело человека, органы чувств",
+    "clothing": "одежда, обувь, аксессуары",
+    "nature": "природа, ландшафт, растения, деревья",
+    "animals": "животные, птицы, рыбы, насекомые",
+    "weather": "погода, климат, времена года",
+    "city": "город, здания, места, улицы",
+    "transport": "транспорт, машины, дорога, движение",
+    "shopping": "деньги, покупки, магазин, финансы",
+    "time": "время, даты, дни, месяцы",
+    "sport": "спорт, фитнес, игры",
+    "hobby": "хобби, досуг, культура, искусство, музыка, кино",
+    "technology": "технологии, компьютеры, интернет, гаджеты",
+    "communication": "общение, речь, связь, приветствия",
+    "emotions": "эмоции, чувства, черты характера",
+    "holidays": "праздники, традиции, события",
+    "society": "общество, политика, право, экономика",
+    "other": "прочее, абстрактные понятия, качества, количества",
+}
+TOPIC_KEYS = list(TOPIC_TAGS.keys())
+CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
+
 # Схемы для гарантированного формата ответа (structured output / JSON-schema).
 _STR_ARR = {"type": "array", "items": {"type": "string"}}
 WORDS_SCHEMA = {
@@ -288,6 +320,8 @@ WORDS_SCHEMA = {
                             "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
                         },
                         "part_of_speech": {"type": "string"},
+                        "level": {"type": "string", "enum": CEFR_LEVELS},
+                        "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}},
                     },
                     "required": ["word", "translate", "part_of_speech"],
                 },
@@ -302,6 +336,28 @@ DESC_SCHEMA = {
         "type": "object",
         "properties": {"ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"}, "pl": {"type": "string"}, "lt": {"type": "string"}},
         "required": ["ru", "ukr", "en", "pl", "lt"],
+    },
+}
+# Пакетная классификация слов: уровень CEFR + 1-3 темы из канонического списка.
+CLASSIFY_SCHEMA = {
+    "name": "classify_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string"},
+                        "level": {"type": "string", "enum": CEFR_LEVELS},
+                        "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}, "minItems": 1, "maxItems": 3},
+                    },
+                    "required": ["word", "level", "topics"],
+                },
+            }
+        },
+        "required": ["results"],
     },
 }
 
@@ -363,6 +419,14 @@ async def generate_words(prompt, model):
     return normalized, False
 
 
+async def _apply_item_meta(pid, item):
+    """Проставить уровень/темы из сгенерированного слова, если пришли валидными."""
+    level = item.get("level") if item.get("level") in CEFR_LEVELS else None
+    topics = [t for t in (item.get("topics") or []) if t in TOPIC_KEYS]
+    if level or topics:
+        await set_pool_meta(pid, level=level, topics=topics or None)
+
+
 async def persist_pool(normalized):
     """Сохранить слова в общий пул + посчитать эмбеддинги (для авто-заполнения)."""
     for item in normalized:
@@ -370,6 +434,7 @@ async def persist_pool(normalized):
             pid = await get_or_create_pool(item["word"], item)
             if pid:
                 await ensure_embedding(pid, item["word"])
+                await _apply_item_meta(pid, item)
 
 
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
@@ -391,6 +456,7 @@ def _is_night():
     return (s <= h < e) if s <= e else (h >= s or h < e)
 
 AUTOFILL_AVOID_SAMPLE = int(os.getenv("AUTOFILL_AVOID_SAMPLE", "60"))  # фикс-размер списка исключений в промпте
+CLASSIFY_BATCH = int(os.getenv("CLASSIFY_BATCH", "50"))  # слов на один LLM-вызов классификации
 
 AUTOFILL_TOPICS = [
     "семья и родственники", "еда и блюда", "напитки", "фрукты и овощи", "дом и жильё",
@@ -446,6 +512,48 @@ async def complete_word(w):
                 await set_pool_tts(w, mp3)
 
 
+_CLASSIFY_SYS = (
+    "Ты — лингвист-методист по норвежскому (bokmål). Для каждого слова определи: "
+    "уровень CEFR (A1, A2, B1, B2, C1 или C2 — по частотности и сложности) и 1-3 темы "
+    "СТРОГО из этого списка ключей:\n"
+    + "; ".join(f"{k} ({v})" for k, v in TOPIC_TAGS.items())
+    + ".\nВерни массив results: по объекту на каждое входное слово (поле word — ровно как на входе)."
+)
+
+
+async def classify_batch(items):
+    """Пакетная классификация (≤CLASSIFY_BATCH): уровень + темы за один LLM-вызов.
+    items: [{word, translate}]. Слова без ответа остаются level IS NULL (добьются позже)."""
+    if not items:
+        return 0
+    lines = []
+    for it in items:
+        tr = it.get("translate", {}) or {}
+        hint = ", ".join((tr.get("ru") or tr.get("en") or [])[:3])
+        lines.append(f"- {it['word']}" + (f" ({hint})" if hint else ""))
+    user = "Классифицируй слова:\n" + "\n".join(lines)
+    try:
+        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, None)
+    except Exception as e:
+        logger.warning(f"classify_batch: {e}")
+        return 0
+    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d"))
+    results = (data or {}).get("results", []) if isinstance(data, dict) else []
+    done = 0
+    for r in results:
+        if not isinstance(r, dict) or not r.get("word"):
+            continue
+        pid = await get_pool_id(r["word"])
+        if not pid:
+            continue
+        level = r.get("level") if r.get("level") in CEFR_LEVELS else None
+        topics = [t for t in (r.get("topics") or []) if t in TOPIC_KEYS]
+        if level or topics:
+            await set_pool_meta(pid, level=level, topics=topics)
+            done += 1
+    return done
+
+
 async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
@@ -462,10 +570,14 @@ async def autofill_loop():
                 # Лимиты Gemini раздельные (текст/эмбеддинг), TTS (edge) безлимитный —
                 # каждый шаг падает независимо. Каждый цикл доводит ОДНО слово до полного.
                 miss = (await pool_missing_embedding(1)) or (await pool_missing_tts(1))
+                unclassified = await pool_missing_meta(CLASSIFY_BATCH) if not miss else None
                 if miss:
                     w = miss[0]
                     await complete_word(w)  # эмбеддинг + озвучка
                     logger.info(f"autofill: completed '{w}'")
+                elif unclassified:
+                    done = await classify_batch(unclassified)  # пачка: уровень + темы
+                    logger.info(f"autofill: classified {done}/{len(unclassified)}")
                 else:
                     i += 1
                     nonce = random.randint(1000, 99999)
@@ -491,7 +603,9 @@ async def autofill_loop():
                         for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
                                 existed = await get_pool_id(it["word"])
-                                await get_or_create_pool(it["word"], normalize_word_item(it))
+                                pid = await get_or_create_pool(it["word"], normalize_word_item(it))
+                                if pid:
+                                    await _apply_item_meta(pid, it)
                                 if not existed:
                                     new_words.append(it["word"])
                     except Exception as e:
@@ -813,8 +927,18 @@ async def tts(word: str):
 
 # --- Shared pool ---
 @app.get("/pool")
-async def pool(q: str = None, limit: int = 60, offset: int = 0, user=Depends(get_current_user)):
-    return await get_pool_list(limit, offset, q)
+async def pool(q: str = None, limit: int = 60, offset: int = 0,
+              topics: str = None, level: str = None,
+              sort: str = "alpha", order: str = "asc", user=Depends(get_current_user)):
+    topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
+    lvl = level if level in CEFR_LEVELS else None
+    srt = sort if sort in ("alpha", "level", "added") else "alpha"
+    return await get_pool_list(limit, offset, q, topic_list, lvl, srt, order)
+
+
+@app.get("/pool/topics")
+async def pool_topics(user=Depends(get_current_user)):
+    return {"topics": await get_pool_topics_counts(), "levels": await get_pool_level_counts()}
 
 
 @app.get("/pool/search")

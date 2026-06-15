@@ -57,10 +57,14 @@ JSON-массив, где каждый элемент соответствует
             "pl" ["tłumaczenie 1", "tłumaczenie 2"],
             "en" ["translate 1", "translate 2"],
         },
-        "part_of_speech": "noun/verb/adjective/adverb/phrase"
+        "part_of_speech": "noun/verb/adjective/adverb/phrase",
+        "level": "уровень CEFR: A1/A2/B1/B2/C1/C2",
+        "topics": ["1-3 темы из списка: family, food, home, work, school, travel, health, body, clothing, nature, animals, weather, city, transport, shopping, time, sport, hobby, technology, communication, emotions, holidays, society, other"]
     }
 ]
 Правила:
+
+    Поля "level" и "topics" указывай для каждого слова: level — один уровень CEFR по частотности/сложности; topics — 1-3 ключа СТРОГО из приведённого списка.
 
     Если перевод слова невозможен, вместо объекта со словом верни объект с описанием ошибки:
 

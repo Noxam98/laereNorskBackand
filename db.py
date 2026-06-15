@@ -39,6 +39,23 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN tts BLOB")
         except Exception:
             pass
+        # уровень CEFR (A1..C2); NULL = ещё не классифицировано
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN level TEXT")
+        except Exception:
+            pass
+
+        # Теги-темы общего пула (много на слово).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS word_topics (
+            pool_id INTEGER NOT NULL,
+            topic   TEXT    NOT NULL,
+            PRIMARY KEY (pool_id, topic),
+            FOREIGN KEY (pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_word_pool_level ON word_pool(level)")
 
         # Кэш запросов генерации.
         await db.execute("""
@@ -266,6 +283,62 @@ async def get_pool_letter(letter: str, limit: int = 120):
             (key + "%", limit),
         ) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def set_pool_meta(pool_id: int, level: str = None, topics=None):
+    """Записать уровень + теги-темы слова (мульти-тег). topics — список ключей."""
+    db = await _conn()
+    try:
+        if level is not None:
+            await db.execute("UPDATE word_pool SET level = ? WHERE id = ?", (level, pool_id))
+        if topics is not None:
+            await db.execute("DELETE FROM word_topics WHERE pool_id = ?", (pool_id,))
+            rows = [(pool_id, t) for t in topics if t]
+            if rows:
+                await db.executemany("INSERT OR IGNORE INTO word_topics (pool_id, topic) VALUES (?, ?)", rows)
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def pool_missing_meta(limit: int = 50):
+    """Слова без уровня (level IS NULL) + их переводы — для пакетной классификации."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT norwegian, data FROM word_pool WHERE level IS NULL LIMIT ?", (limit,)
+        ) as cur:
+            out = []
+            for r in await cur.fetchall():
+                d = json.loads(r["data"]) if r["data"] else {}
+                out.append({"word": r["norwegian"], "translate": d.get("translate", {})})
+            return out
+    finally:
+        await db.close()
+
+
+async def get_pool_topics_counts():
+    """[{topic, count}] по непустым темам (для фильтра)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT topic, COUNT(*) c FROM word_topics GROUP BY topic ORDER BY c DESC"
+        ) as cur:
+            return [{"topic": r["topic"], "count": r["c"]} for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def get_pool_level_counts():
+    """[{level, count}] по проставленным уровням."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT level, COUNT(*) c FROM word_pool WHERE level IS NOT NULL GROUP BY level"
+        ) as cur:
+            return [{"level": r["level"], "count": r["c"]} for r in await cur.fetchall()]
     finally:
         await db.close()
 
@@ -510,24 +583,71 @@ async def clear_query_cache():
         await db.close()
 
 
-async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None):
-    """Список слов из общего пула (с поиском и пагинацией)."""
+_POOL_SORTS = {
+    "alpha": "norwegian",
+    "added": "created_at, id",
+    # уровень: A1<…<C2, непроставленные в конец; добор по алфавиту
+    "level": "CASE level WHEN 'A1' THEN 1 WHEN 'A2' THEN 2 WHEN 'B1' THEN 3 "
+             "WHEN 'B2' THEN 4 WHEN 'C1' THEN 5 WHEN 'C2' THEN 6 ELSE 99 END, norwegian",
+}
+
+
+async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
+                        topics=None, level: str = None, sort: str = "alpha", order: str = "asc"):
+    """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень,
+    сортировка и постраничная пагинация. Возвращает {total, words[]}."""
+    conds, params = [], []
     key = normalize_word(q) if q else None
-    where = "WHERE norwegian LIKE ?" if key else ""
-    params = (f"%{key}%",) if key else ()
+    if key:
+        conds.append("(norwegian LIKE ? OR data LIKE ?)")
+        params += [f"%{key}%", f"%{key}%"]
+    if topics:
+        marks = ",".join("?" for _ in topics)
+        conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")
+        params += list(topics)
+    if level:
+        conds.append("level = ?")
+        params.append(level)
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+    order_by = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
+    direction = "DESC" if str(order).lower() == "desc" else "ASC"
+    # направление применяем к первому ключу сортировки, добор оставляем по возрастанию
+    if "," in order_by:
+        first, rest = order_by.split(",", 1)
+        order_sql = f"{first} {direction},{rest}"
+    else:
+        order_sql = f"{order_by} {direction}"
+
     db = await _conn()
     try:
         async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
             total = (await cur.fetchone())["c"]
         async with db.execute(
-            f"SELECT norwegian, data, (tts IS NOT NULL) AS has_tts FROM word_pool {where} ORDER BY norwegian LIMIT ? OFFSET ?",
+            f"SELECT id, norwegian, data, level, (tts IS NOT NULL) AS has_tts "
+            f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ) as cur:
             rows = await cur.fetchall()
-            words = []
-            for r in rows:
-                d = json.loads(r["data"]) if r["data"] else {}
-                words.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", ""), "hasTts": bool(r["has_tts"])})
+        # темы страницы — одним запросом (без N+1)
+        ids = [r["id"] for r in rows]
+        topic_map = {}
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            async with db.execute(
+                f"SELECT pool_id, topic FROM word_topics WHERE pool_id IN ({marks})", ids
+            ) as cur:
+                for tr in await cur.fetchall():
+                    topic_map.setdefault(tr["pool_id"], []).append(tr["topic"])
+        words = []
+        for r in rows:
+            d = json.loads(r["data"]) if r["data"] else {}
+            words.append({
+                "word": r["norwegian"], "translate": d.get("translate", {}),
+                "part_of_speech": d.get("part_of_speech", ""),
+                "level": r["level"], "topics": topic_map.get(r["id"], []),
+                "hasTts": bool(r["has_tts"]),
+            })
         return {"total": total, "words": words}
     finally:
         await db.close()
