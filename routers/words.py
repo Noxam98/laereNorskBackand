@@ -6,17 +6,17 @@ from db import (
     get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
     delete_dict_word, move_dict_word, set_word_override, record_result, get_dict_word,
     get_or_create_pool, get_pool_id, get_pool_candidates, delete_pool_word,
-    set_pool_description, get_pool_ids,
+    set_pool_description, get_pool_ids, update_pool_translate,
 )
 from auth import get_current_user
 from activity import mark_activity
 from llm import (
     generate_words, ensure_embedding, persist_pool, ask_json, DESC_SCHEMA,
-    ranked_pool, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS,
+    ranked_pool, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS, refine_translations,
 )
 from tts import schedule_tts
 from task import description_task
-from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords
+from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords, RefineWords
 
 router = APIRouter()
 
@@ -142,6 +142,41 @@ async def move_words(body: MoveWords, user=Depends(get_current_user)):
         if res.get("moved"):
             moved += 1
     return {"moved": moved, "total": len(body.ids)}
+
+
+@router.post("/words/refine")
+async def refine_words(body: RefineWords, user=Depends(get_current_user)):
+    """Уточнить перевод группы выбранных слов (одинаковый/неточный перевод) через LLM.
+    Правит перевод на язык body.lang в общем пуле (для всех)."""
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="LLM not configured")
+    lang = body.lang
+    items, pool_map = [], {}
+    for dw_id in body.ids:
+        dw = await get_dict_word(user["id"], dw_id)
+        if not dw:
+            continue
+        data = json.loads(dw["data"]) if dw["data"] else {}
+        cur = (data.get("translate", {}) or {}).get(lang) or []
+        no = dw["norwegian"]
+        items.append({"word": no, "current": cur})
+        pool_map[no.lower()] = (dw["pool_id"], data)
+    if len(items) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two words")
+    mark_activity()
+    refined = await refine_translations(items, lang)
+    updated = 0
+    for no_l, (pool_id, data) in pool_map.items():
+        new_tr = refined.get(no_l)
+        if not new_tr:
+            continue
+        translate = data.get("translate", {}) or {}
+        if translate.get(lang) == new_tr:
+            continue
+        translate[lang] = new_tr
+        await update_pool_translate(pool_id, translate)
+        updated += 1
+    return {"updated": updated, "total": len(items)}
 
 
 @router.patch("/words/{dw_id}")

@@ -340,6 +340,53 @@ TRANSLATE_BATCH_SCHEMA = {
 }
 
 
+# Уточнение перевода группы слов (одинаковые/неточные переводы) на один язык.
+REFINE_SCHEMA = {
+    "name": "refine_translate_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"word": {"type": "string"}, "translate": _STR_ARR},
+                    "required": ["word", "translate"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+# Названия языков перевода (ключ интерфейса → язык на русском для промпта).
+LANG_NAMES = {"ru": "русский", "ukr": "украинский", "en": "английский", "pl": "польский", "lt": "литовский"}
+
+
+async def refine_translations(items, lang, model=None):
+    """items: [{"word": no, "current": [..]}]. Вернуть {word_lower: [переводы]} —
+    точные, различимые между собой переводы на язык `lang`."""
+    lang_name = LANG_NAMES.get(lang, lang)
+    lines = "\n".join(f"- {it['word']}: {', '.join(it.get('current') or []) or '—'}" for it in items)
+    system = (
+        f"Ты эксперт-лексикограф норвежского языка. Пользователь выделил группу слов, "
+        f"у которых перевод на {lang_name} получился одинаковым или слишком общим. "
+        f"Для КАЖДОГО слова дай точный перевод на {lang_name}, подобранный так, чтобы слова "
+        f"в группе были различимы между собой (без идентичных переводов). 1-3 самых точных "
+        f"варианта на слово, сохраняя часть речи. Отвечай строго по схеме."
+    )
+    user = f"Слова (норвежское: текущий перевод на {lang_name}):\n{lines}"
+    res = await ask_json(system, user, REFINE_SCHEMA, model)
+    out = {}
+    if isinstance(res, dict):
+        for r in res.get("results", []):
+            w = (r.get("word") or "").strip().lower()
+            tr = [t.strip() for t in (r.get("translate") or []) if isinstance(t, str) and t.strip()]
+            if w and tr:
+                out[w] = tr
+    return out
+
+
 async def ask_json(system_prompt, user_prompt, schema, model=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
     try:

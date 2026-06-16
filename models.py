@@ -56,6 +56,11 @@ class MoveWords(BaseModel):
     dict_id: int
 
 
+class RefineWords(BaseModel):
+    ids: List[int]
+    lang: str
+
+
 class ThemeBody(BaseModel):
     theme: str
 
