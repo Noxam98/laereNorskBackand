@@ -165,7 +165,7 @@ async def classify_batch(items, model=None, api_key=None):
         lines.append(f"- {it['word']}" + (f" ({hint})" if hint else ""))
     user = "Классифицируй слова:\n" + "\n".join(lines)
     try:
-        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model, api_key)
+        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model, api_key, label="классификация слов")
     except Exception as e:
         errors.report(e, "classify_batch")
         return 0
@@ -201,7 +201,7 @@ async def describe_batch(words, model=None, api_key=None):
         return 0
     user = "Опиши слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model, api_key)
+        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model, api_key, label="описания слов")
     except Exception as e:
         errors.report(e, "describe_batch")
         return 0
@@ -252,7 +252,8 @@ async def generate_now(n=10):
               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {', '.join(avoid)}. (вариант {nonce})")
     new_words = []
     try:
-        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, key)
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, key,
+                              label="ручная генерация слов")
         await incr_text_usage(model, key)
         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
         for it in items:
@@ -350,7 +351,7 @@ async def translate_batch(words, model=None, api_key=None):
         return {}
     user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model, api_key)
+        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model, api_key, label="дополнение переводов")
     except Exception as e:
         errors.report(e, "translate_batch")
         return {}
@@ -624,7 +625,8 @@ async def autofill_loop():
                               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
                     new_words = []
                     try:
-                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, text_model, text_key)
+                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, text_model, text_key,
+                                              label="автозаполнение слов")
                         await incr_text_usage(text_model, text_key)
                         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                         for it in items:

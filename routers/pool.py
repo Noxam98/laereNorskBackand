@@ -204,7 +204,8 @@ def _diff_sys(lang, hint=None):
 
 async def _gen_diff(a, b, lang, hint=None):
     try:
-        data = await ask_json(_diff_sys(lang, hint), f"Первое слово: >>{a}<<\nВторое слово: >>{b}<<", DIFF_SCHEMA)
+        data = await ask_json(_diff_sys(lang, hint), f"Первое слово: >>{a}<<\nВторое слово: >>{b}<<", DIFF_SCHEMA,
+                              label="разница слов")
     except Exception as e:
         info = errors.report(e, "pool_diff")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)

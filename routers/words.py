@@ -207,7 +207,8 @@ async def word_description(dw_id: int, model: str = None, user=Depends(get_curre
     if dw["description"]:
         return {"description": json.loads(dw["description"])}
     try:
-        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model)
+        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model,
+                              label="описание слова")
     except Exception as e:
         info = errors.report(e, "word_description")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)

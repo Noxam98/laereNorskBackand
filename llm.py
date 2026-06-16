@@ -97,25 +97,34 @@ async def incr_emb_usage(model, api_key):
     await incr_usage(f"{_today()}:emb:{model}:k{_key_id(api_key, EMBED_API_KEYS)}")
 
 
-async def _llm_failover(attempt, start_key, keys=None):
+async def _llm_failover(attempt, start_key, keys=None, label="LLM", icon="📝"):
     """Выполнить attempt(key); при 429/квоте — повторить следующим ключом пула (по кругу
     от start_key). Бросает последнюю 429-ошибку, если ВСЕ ключи исчерпаны, либо сразу
-    любую НЕ-квотную ошибку. keys=None → LLM_API_KEYS."""
+    любую НЕ-квотную ошибку. Пишет осмысленную строку в ленту (что за операция + исход)."""
     keys = keys or LLM_API_KEYS or [start_key]
+    n = len(keys)
     try:
         start = keys.index(start_key)
     except (ValueError, AttributeError):
         start = 0
     last = None
-    for i in range(len(keys)):
+    for i in range(n):
+        idx = (start + i) % n
         try:
-            return await attempt(keys[(start + i) % len(keys)])
+            res = await attempt(keys[idx])
+            notify.feed(f"{icon} {label} · k{idx} ✅")
+            return res
         except Exception as e:
-            if errors.classify(e).kind != errors.QUOTA:
+            kind = errors.classify(e).kind
+            if kind != errors.QUOTA:
+                notify.feed(f"{icon} {label} · k{idx} ❌ {kind}")
                 raise
             last = e
-            if len(keys) > 1:
-                logger.warning(f"429 на ключе k{(start + i) % len(keys)} — пробую следующий")
+            if i < n - 1:
+                notify.feed(f"{icon} {label} · k{idx} ⚠️429 → переключаюсь на k{(idx + 1) % n}")
+                logger.warning(f"429 на k{idx} ({label}) — пробую k{(idx + 1) % n}")
+            else:
+                notify.feed(f"{icon} {label} · k{idx} ⛔ 429 (все ключи исчерпаны)")
     raise last
 
 
@@ -127,11 +136,11 @@ async def embed_text(text, model=None, api_key=None):
     async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=text)
         await incr_emb_usage(m, key)  # учёт по паре (модель × ключ)
-        notify.feed(f"🧮 Эмбеддинг: {m} · k{_key_id(key, EMBED_API_KEYS)} · 1")
         return list(r.data[0].embedding)
 
     try:
-        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS)
+        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS,
+                                   label=f"эмбеддинг 1 слова ({m})", icon="🧮")
     except Exception as e:
         errors.report(e, f"embed_text({m})")
         return None
@@ -163,17 +172,16 @@ async def embed_texts(texts, model=None, api_key=None, raise_on_error=False):
     async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=texts)
         await incr_emb_usage(m, key)
-        if not raise_on_error:  # reembed шлёт свой отчёт сам — не дублируем
-            notify.feed(f"🧮 Эмбеддинг: {m} · k{_key_id(key, EMBED_API_KEYS)} · {len(texts)}")
         data = list(r.data)  # API возвращает в порядке входа
         if all(getattr(d, "index", None) is not None for d in data):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
         return [list(d.embedding) for d in data]
 
-    if raise_on_error:
+    if raise_on_error:  # reembed сам рулит ключами и шлёт свой отчёт
         return await one(api_key or EMBED_API_KEYS[0])
     try:
-        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS)
+        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS,
+                                   label=f"эмбеддинг {len(texts)} слов ({m})", icon="🧮")
     except Exception as e:
         errors.report(e, f"embed_texts({m})")
         return None
@@ -463,7 +471,7 @@ async def refine_translations(items, lang, model=None):
         f"варианта на слово, сохраняя часть речи. Отвечай строго по схеме."
     )
     user = f"Слова (норвежское: текущий перевод на {lang_name}):\n{lines}"
-    res = await ask_json(system, user, REFINE_SCHEMA, model)
+    res = await ask_json(system, user, REFINE_SCHEMA, model, label="уточнение переводов")
     out = {}
     if isinstance(res, dict):
         for r in res.get("results", []):
@@ -474,8 +482,9 @@ async def refine_translations(items, lang, model=None):
     return out
 
 
-async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None):
-    """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
+async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None, label="LLM-запрос"):
+    """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста.
+    label — назначение запроса для ленты активности (например «дополнение переводов»)."""
     # Лёгкие вызовы (diff/refine/description) ключ явно не передают — подбираем лучший
     # доступный, чтобы не упираться в исчерпанный первый ключ, когда у других есть бюджет.
     if api_key is None and LLM_API_KEYS:
@@ -497,10 +506,9 @@ async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None)
                 raise
             logger.warning(f"structured output unsupported, fallback to plain: {e}")
             resp = await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
-        notify.feed(f"📝 Gemini текст: {model or LLM_MODEL} · k{_key_id(key, LLM_API_KEYS)}")
         return resp
 
-    resp = await _llm_failover(one, api_key)  # на 429 — следующий ключ пула
+    resp = await _llm_failover(one, api_key, label=f"{label} ({model or LLM_MODEL})", icon="📝")
     content = resp.choices[0].message.content if resp.choices else None
     if not content:
         return None
@@ -561,7 +569,8 @@ async def generate_words(prompt, model):
         raise HTTPException(status_code=503, detail="LLM is not configured (set LLM_API_KEY)")
     api_key, model = await pick_user_text(model)
     try:
-        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, api_key)
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, api_key,
+                              label="генерация слов")
     except Exception as e:
         info = errors.report(e, "generate_words")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)
