@@ -10,6 +10,7 @@ import notify
 from db import (
     get_pool_stats, count_users, get_usage_like, clear_query_cache,
     delete_pool_word, normalize_word, get_usage,
+    clear_all_embeddings, count_missing_embedding,
 )
 import autofill
 import llm
@@ -66,7 +67,8 @@ async def cmd_help(args, chat_id):
         "🌍 /translate — добить переводы\n"
         "🧹 /clearcache — очистить кэш генерации\n"
         "🗑 /delete <слово> — удалить слово из пула\n"
-        "🔁 /reembed2 — пере-эмбеддить весь пул на gemini-embedding-2\n\n"
+        "🔁 /reembed2 — добить эмбеддинги (слова без вектора) на gemini-embedding-2\n"
+        "🧹 /wipeembed yes — обнулить ВСЕ эмбеддинги (перед полным пересчётом)\n\n"
         "🔕 /mute [мин] · 🔔 /unmute — заглушить алерты\n"
         "⏱ /cooldown <сек> — частота повторных алертов\n"
         "📋 /menu — кнопки",
@@ -206,18 +208,42 @@ async def cmd_reembed2(args, chat_id):
     async def report(t):
         await _send(chat_id, t)
 
+    # «Живая» строка: одно сообщение, которое редактируем (обратный отсчёт раз в секунду).
+    st = {"mid": None, "last": None}
+
+    async def status(t):
+        if t == st["last"]:
+            return
+        st["last"] = t
+        if st["mid"] is None:
+            r = await notify.api("sendMessage", {"chat_id": chat_id, "text": t})
+            st["mid"] = ((r or {}).get("result") or {}).get("message_id")
+        else:
+            await notify.api("editMessageText", {"chat_id": chat_id, "message_id": st["mid"], "text": t})
+
     async def runner():
         global _reembed_running
         _reembed_running = True
         try:
-            await autofill.reembed_all_task(model="gemini-embedding-2", batch=90, sleep_sec=5, report=report)
+            await autofill.reembed_all_task(model="gemini-embedding-2", batch=90, interval=22,
+                                            report=report, status=status)
         except Exception as e:
             await _send(chat_id, f"⚠️ Пере-эмбеддинг упал: {str(e)[:200]}")
         finally:
             _reembed_running = False
 
     _track(runner())
-    return "🔁 Запускаю пере-эмбеддинг всего пула на gemini-embedding-2 (по 90 за запрос, раз в 5с). Отчёт — на каждый батч.", None
+    return "🔁 Добиваю эмбеддинги (слова без вектора) на gemini-embedding-2: по 90 за запрос, ключи по кругу раз в 22с. Отчёт — на каждый батч. Для полного пересчёта сначала /wipeembed yes.", None
+
+
+async def cmd_wipeembed(args, chat_id):
+    if (args[0].lower() if args else "") != "yes":
+        n = await count_missing_embedding()
+        return ("⚠️ Это ОБНУЛИТ ВСЕ эмбеддинги пула (и vec-индекс). Семантический поиск "
+                "перестанет работать, пока не прогонишь /reembed2.\n"
+                f"Сейчас без вектора: {n}.\nПодтверди: /wipeembed yes", None)
+    total = await clear_all_embeddings()
+    return f"🧹 Готово: обнулено эмбеддингов у всех {total} слов. Теперь запусти /reembed2.", None
 
 
 async def cmd_clearcache(args, chat_id):
@@ -265,7 +291,8 @@ COMMANDS = {
     "stats": cmd_stats, "quota": cmd_quota, "pool": cmd_pool, "users": cmd_users, "status": cmd_status,
     "autofill": cmd_autofill, "pause": cmd_pause, "resume": cmd_resume,
     "generate": cmd_generate, "describe": cmd_describe, "translate": cmd_translate,
-    "clearcache": cmd_clearcache, "delete": cmd_delete, "reembed2": cmd_reembed2,
+    "clearcache": cmd_clearcache, "delete": cmd_delete,
+    "reembed2": cmd_reembed2, "wipeembed": cmd_wipeembed,
     "mute": cmd_mute, "unmute": cmd_unmute, "cooldown": cmd_cooldown,
 }
 
