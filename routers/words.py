@@ -12,7 +12,7 @@ from db import (
 from auth import get_current_user
 from activity import mark_activity
 from llm import (
-    generate_words, ensure_embedding, persist_pool, ask_json, DESC_SCHEMA,
+    generate_words, ensure_embeddings, persist_pool, ask_json, DESC_SCHEMA,
     ranked_pool, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS, refine_translations,
 )
 from tts import schedule_tts
@@ -52,7 +52,7 @@ async def remove_dict(dict_id: int, user=Depends(get_current_user)):
 async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)):
     mark_activity()
     normalized, cached = await generate_words(body.prompt, body.model)
-    added, errors, words = 0, [], []
+    added, errors, words, pairs = 0, [], [], []
     for item in normalized:
         if not isinstance(item, dict):
             continue
@@ -62,11 +62,12 @@ async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)
             continue
         pool_id = await get_or_create_pool(item["word"], item)
         if pool_id:
-            await ensure_embedding(pool_id, item["word"])
+            pairs.append((pool_id, item))
             res = await add_word_to_dict(user["id"], dict_id, pool_id)
             if res.get("id") and not res.get("duplicate"):
                 added += 1
             words.append(item["word"])
+    await ensure_embeddings(pairs)  # эмбеддинги добавленных слов одним запросом
     schedule_tts(words)  # озвучку добавленных слов ставим в очередь сразу
     return {"added": added, "errors": errors, "cached": cached}
 

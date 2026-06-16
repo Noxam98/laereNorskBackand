@@ -208,6 +208,28 @@ async def ensure_embedding(pool_id, norwegian):
         await set_pool_embedding(pool_id, encode_emb(vec))
 
 
+async def ensure_embeddings(items):
+    """Best-effort эмбеддинг ПАЧКОЙ (один запрос) для слов без вектора.
+    items: [(pool_id, data_dict)]. Тише в ленте и экономит квоту против поштучного."""
+    if not EMBED_API_KEYS or not items:
+        return
+    pend = []  # (pid, текст)
+    for pid, data in items:
+        if not pid:
+            continue
+        p = await get_pool_by_id(pid)
+        if p and not p.get("embedding"):
+            text = semantic_embed_text(data if isinstance(data, dict) else {}) or (data if isinstance(data, str) else "")
+            if text:
+                pend.append((pid, text))
+    if not pend:
+        return
+    vecs = await embed_texts([t for _, t in pend])
+    if vecs and len(vecs) == len(pend):
+        for (pid, _), vec in zip(pend, vecs):
+            await set_pool_embedding(pid, encode_emb(vec))
+
+
 # --- Эмбеддинги: бинарное хранение (float16) + матричный косинус (мало RAM/CPU) ---
 def encode_emb(vec):
     return np.asarray(vec, dtype=np.float16).tobytes()
@@ -602,10 +624,12 @@ async def apply_item_meta(pid, item):
 
 
 async def persist_pool(normalized):
-    """Сохранить слова в общий пул + посчитать эмбеддинги (для авто-заполнения)."""
+    """Сохранить слова в общий пул + посчитать эмбеддинги ПАЧКОЙ (один запрос)."""
+    pairs = []
     for item in normalized:
         if isinstance(item, dict) and not item.get("error") and item.get("word"):
             pid = await get_or_create_pool(item["word"], item)
             if pid:
-                await ensure_embedding(pid, item["word"])
                 await apply_item_meta(pid, item)
+                pairs.append((pid, item))
+    await ensure_embeddings(pairs)  # эмбеддинги всех новых слов одним запросом
