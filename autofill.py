@@ -13,12 +13,11 @@ from db import (
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, missing_embedding_data, count_missing_embedding,
 )
+import llm  # текст/эмбеддинги через key-free API: ask_json/embed_texts/text_budget_left/...
 from llm import (
-    LLM_API_KEY, LLM_API_KEYS, EMBED_API_KEYS, LLM_MODEL, EMBED_MODEL,
-    embed_text, embed_texts, encode_emb, ask_json, WORDS_SCHEMA,
-    CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
-    normalize_word_item, apply_item_meta, semantic_embed_text,
-    pick_key_model, incr_text_usage, incr_emb_usage,
+    embed_texts, encode_emb, ask_json, semantic_embed_text,
+    WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
+    TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
 from task import task
@@ -49,37 +48,9 @@ AUTOFILL_NIGHT_END = int(os.getenv("AUTOFILL_NIGHT_END", "7"))        # лока
 AUTOFILL_TZ_OFFSET = int(os.getenv("AUTOFILL_TZ_OFFSET", "2"))        # сдвиг от UTC (Норвегия летом = +2)
 AUTOFILL_AVOID_SAMPLE = int(os.getenv("AUTOFILL_AVOID_SAMPLE", "60"))  # фикс-размер списка исключений в промпте
 CLASSIFY_BATCH = int(os.getenv("CLASSIFY_BATCH", "50"))  # слов на один LLM-вызов классификации
-# Ротация моделей по суточным лимитам Gemini free-tier (у каждой модели — свой RPD).
-# Формат env: "model1:rpd1,model2:rpd2". Кончилась квота первой → берём следующую.
-# Потолки берём чуть ниже реальных, оставляя запас живым запросам пользователей днём.
-#   Текст: 3.1 Flash Lite=500; Gemma 4 26B/31B=1500 каждая; мелкие flash=20.
-#   Эмбеддинги: Embedding 1=1000, Embedding 2=1000.
-def _parse_models(env, default_model, default_budget):
-    raw = (os.getenv(env, "") or "").strip()
-    out = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        m, _, b = part.rpartition(":")
-        try:
-            out.append((m.strip(), int(b)))
-        except ValueError:
-            out.append((part, default_budget))
-    return out or [(default_model, default_budget)]
-
-TEXT_MODELS = _parse_models("AUTOFILL_TEXT_MODELS", LLM_MODEL, int(os.getenv("TEXT_DAILY_BUDGET", "400")))
-EMBED_MODELS = _parse_models("AUTOFILL_EMBED_MODELS", EMBED_MODEL, int(os.getenv("EMBED_DAILY_BUDGET", "800")))
-
-
-async def _pick_text():
-    """(ключ, модель) для текстового фонового запроса. (None, None) — всё исчерпано."""
-    return await pick_key_model(TEXT_MODELS, LLM_API_KEYS, "text")
-
-
-async def _pick_emb():
-    """(ключ, модель) для эмбеддинга. (None, None) — всё исчерпано."""
-    return await pick_key_model(EMBED_MODELS, EMBED_API_KEYS, "emb")
+# Профили моделей и ротация ключей/квоты — целиком внутри llm.py (key-free API):
+# llm.ask_json(purpose="autofill"), llm.embed_texts(...), llm.text_budget_left("autofill"),
+# llm.embed_budget_left(), llm.text_enabled().
 
 
 def _is_night():
@@ -123,33 +94,13 @@ AUTOFILL_LETTERS = list(_LETTER_WEIGHTS.keys())
 AUTOFILL_LETTER_W = list(_LETTER_WEIGHTS.values())
 
 
-async def complete_word(w, emb_model=None, emb_key=None):
-    """Доделать слово: эмбеддинг (если задана модель emb_model с бюджетом) + озвучка (всегда, edge бесплатный)."""
-    pid = await get_pool_id(w)
-    if emb_model and pid:
-        p = await get_pool_by_id(pid)
-        if p and not p.get("embedding"):
-            vec = await embed_text(semantic_embed_text(p["data"]) or w, model=emb_model, api_key=emb_key)
-            if vec:
-                await set_pool_embedding(pid, encode_emb(vec))
-                await mark_sem_embed(pid)
-    if not await get_pool_tts(w):
-        async with _tts_lock:
-            try:
-                mp3 = await synth_tts(w)
-            except Exception as e:
-                mp3 = None
-                logger.warning(f"complete_word tts '{w}': {e}")
-            if mp3:
-                await set_pool_tts(w, mp3)
 
-
-async def complete_batch(words, emb_model=None, emb_key=None):
+async def complete_batch(words):
     """Доделать ПАЧКУ слов: эмбеддинги одним запросом (для тех, у кого вектора нет) +
-    озвучка каждого (edge, бесплатно). Эмбеддит до len(words) слов за 1 запрос вместо
-    отдельного запроса на слово. Возвращает число посчитанных эмбеддингов."""
+    озвучка каждого (edge, бесплатно). Ключ/модель эмбеддинга — внутри llm.embed_texts.
+    Возвращает число посчитанных эмбеддингов."""
     pending = []  # (pid, текст-для-эмбеддинга) — только у кого вектора ещё нет
-    if emb_model:
+    if llm.embed_enabled():
         for w in words:
             pid = await get_pool_id(w)
             if not pid:
@@ -159,7 +110,7 @@ async def complete_batch(words, emb_model=None, emb_key=None):
                 pending.append((pid, semantic_embed_text(p["data"]) or w))
     n = 0
     if pending:
-        vecs = await embed_texts([t for _, t in pending], model=emb_model, api_key=emb_key)
+        vecs = await embed_texts([t for _, t in pending])
         if vecs and len(vecs) == len(pending):
             for (pid, _), vec in zip(pending, vecs):
                 await set_pool_embedding(pid, encode_emb(vec))
@@ -187,7 +138,7 @@ _CLASSIFY_SYS = (
 )
 
 
-async def classify_batch(items, model=None, api_key=None):
+async def classify_batch(items):
     """Пакетная классификация (≤CLASSIFY_BATCH): уровень + темы за один LLM-вызов.
     items: [{word, translate}]. Слова без ответа остаются level IS NULL (добьются позже)."""
     if not items:
@@ -199,11 +150,10 @@ async def classify_batch(items, model=None, api_key=None):
         lines.append(f"- {it['word']}" + (f" ({hint})" if hint else ""))
     user = "Классифицируй слова:\n" + "\n".join(lines)
     try:
-        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model, api_key, label="классификация слов")
+        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, purpose="autofill", label="классификация слов")
     except Exception as e:
         errors.report(e, "classify_batch")
         return 0
-    await incr_text_usage(model or LLM_MODEL, api_key)
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
     done = 0
     for r in results:
@@ -229,17 +179,16 @@ _DESCRIBE_SYS = (
 )
 
 
-async def describe_batch(words, model=None, api_key=None):
+async def describe_batch(words):
     """Пакетные описания (≤DESCRIBE_BATCH слов за один LLM-вызов). Кешируется в БД."""
     if not words:
         return 0
     user = "Опиши слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model, api_key, label="описания слов")
+        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, purpose="autofill", label="описания слов")
     except Exception as e:
         errors.report(e, "describe_batch")
         return 0
-    await incr_text_usage(model or LLM_MODEL, api_key)
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
     done = 0
     for r in results:
@@ -262,13 +211,12 @@ async def describe_all_task():
         if not batch:
             logger.info(f"describe_all: готово, всего {total}")
             break
-        key, model = await _pick_text()
-        if not model:
+        if not await llm.text_budget_left("autofill"):
             logger.info(f"describe_all: бюджет исчерпан, всего {total}")
             break
-        done = await describe_batch(batch, model, key)
+        done = await describe_batch(batch)
         total += done
-        logger.info(f"describe_all: +{done} (всего {total}) via {model}")
+        logger.info(f"describe_all: +{done} (всего {total})")
         if done == 0:
             break
         await asyncio.sleep(5)  # ≤12 пачек/мин — держимся под лимитом 15 RPM
@@ -276,9 +224,8 @@ async def describe_all_task():
 
 async def generate_now(n=10):
     """Ручная генерация n новых слов (для Telegram-команды). Возвращает (добавлено, ошибка|None)."""
-    key, model = await _pick_text()
-    if not model:
-        return 0, "бюджет ключей/моделей на сегодня исчерпан"
+    if not llm.text_enabled():
+        return 0, "LLM не сконфигурирован"
     letter = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
     avoid = await get_pool_letter(letter, AUTOFILL_AVOID_SAMPLE)
     nonce = random.randint(1000, 99999)
@@ -286,9 +233,8 @@ async def generate_now(n=10):
               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {', '.join(avoid)}. (вариант {nonce})")
     new_words = []
     try:
-        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, key,
-                              label="ручная генерация слов")
-        await incr_text_usage(model, key)
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                              purpose="autofill", label="ручная генерация слов")
         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
         for it in items:
             if isinstance(it, dict) and not it.get("error") and it.get("word"):
@@ -323,10 +269,9 @@ async def translate_all_task(max_batches=200):
                 need.append((pid, nw, data, missing))
         if not need:
             continue
-        key, model = await _pick_text()
-        if not model:
+        if not await llm.text_budget_left("autofill"):
             break
-        res = await translate_batch([nw for _, nw, _, _ in need], model, key)
+        res = await translate_batch([nw for _, nw, _, _ in need])
         if not res:
             break
         for pid, nw, data, missing in need:
@@ -356,13 +301,11 @@ async def describe_loop():
         if _bg_blocked():
             await asyncio.sleep(20); continue
         try:
-            if LLM_API_KEY:
+            if llm.text_enabled():
                 batch = await pool_missing_description(DESCRIBE_BATCH)
-                if batch:
-                    key, model = await _pick_text()
-                    if model:
-                        done = await describe_batch(batch, model, key)
-                        logger.info(f"describe_loop: +{done}/{len(batch)} via {model}")
+                if batch and await llm.text_budget_left("autofill"):
+                    done = await describe_batch(batch)
+                    logger.info(f"describe_loop: +{done}/{len(batch)}")
         except Exception as e:
             errors.report(e, "describe_loop")
         await asyncio.sleep(DESCRIBE_CHECK_SEC)
@@ -379,17 +322,16 @@ _TRANSLATE_SYS = (
 )
 
 
-async def translate_batch(words, model=None, api_key=None):
+async def translate_batch(words):
     """Пакетный перевод списка норвежских слов на 5 языков. Возвращает {norm_word: result}."""
     if not words:
         return {}
     user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model, api_key, label="дополнение переводов")
+        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, purpose="autofill", label="дополнение переводов")
     except Exception as e:
         errors.report(e, "translate_batch")
         return {}
-    await incr_text_usage(model or LLM_MODEL, api_key)
     out = {}
     for r in ((data or {}).get("results", []) if isinstance(data, dict) else []):
         if isinstance(r, dict) and r.get("word"):
@@ -422,12 +364,11 @@ async def translate_loop():
                 await asyncio.sleep(0.5)  # быстро добиваем «полные»
                 continue
 
-            key, model = await _pick_text()
-            if not model:
+            if not await llm.text_budget_left("autofill"):
                 logger.info("translate_loop: бюджет моделей/ключей исчерпан")
                 await asyncio.sleep(300)
                 continue
-            res = await translate_batch([nw for _, nw, _, _ in need], model, key)
+            res = await translate_batch([nw for _, nw, _, _ in need])
             if not res:
                 await asyncio.sleep(TRANSLATE_CHECK_SEC)  # провал запроса — повторим позже
                 continue
@@ -444,7 +385,7 @@ async def translate_loop():
                         await update_pool_translate(pid, tr)
                         done += 1
                 await mark_translate_done(pid)  # попытка сделана — не зацикливаемся
-            logger.info(f"translate_loop: дополнено {done}/{len(need)} via {model}")
+            logger.info(f"translate_loop: дополнено {done}/{len(need)}")
         except Exception as e:
             errors.report(e, "translate_loop")
         await asyncio.sleep(TRANSLATE_CHECK_SEC)
@@ -455,13 +396,11 @@ EMB_SEM_BATCH = min(int(os.getenv("EMB_SEM_BATCH", "100")), 100)  # до 100 т�
 EMB_SEM_CHECK_SEC = int(os.getenv("EMB_SEM_CHECK_SEC", "2"))
 
 
-async def reembed_all_task(model="gemini-embedding-2", batch=90, interval=20, report=None, status=None):
-    """Добить эмбеддинги у всех слов БЕЗ эмбеддинга моделью `model`, батчами (1 запрос =
-    batch слов). Ключи перебираются ПО КРУГУ — один запрос раз в `interval` сек, так каждый
-    ключ задействуется поочерёдно (под свой лимит ~100 эмб/мин). Эмбеддит по смыслу
-    (слово + переводы). НЕ обнуляет существующие — резюмируемо (полный сброс — /wipeembed).
-    report(text) — новый отчёт на каждый батч; status(text) — обновляемая «живая» строка
-    (обратный отсчёт до следующего запроса, раз в секунду). На время глушим фон."""
+async def reembed_all_task(batch=90, interval=20, report=None, status=None):
+    """Добить эмбеддинги у всех слов БЕЗ эмбеддинга, батчами (1 запрос = batch слов),
+    раз в `interval` сек. Ключ/модель/round-robin/429 — внутри llm.embed_texts. Эмбеддит
+    по смыслу (слово + переводы). НЕ обнуляет существующие — резюмируемо (/wipeembed).
+    report(text) — отчёт на каждый батч; status(text) — «живая» строка с обратным отсчётом."""
     async def say(t):
         logger.info(t)
         if report:
@@ -470,20 +409,17 @@ async def reembed_all_task(model="gemini-embedding-2", batch=90, interval=20, re
             except Exception:
                 pass
 
-    async def countdown(seconds, next_key, remaining):
-        """Тикаем раз в секунду в Telegram (редактируя одну строку) до следующего запроса."""
+    async def countdown(seconds, remaining):
         if not status or seconds <= 0:
             await asyncio.sleep(max(0, seconds))
             return
         for s in range(int(seconds), 0, -1):
             try:
-                await status(f"⏳ Следующий запрос (k{next_key}) через {s}с · осталось {remaining}")
+                await status(f"⏳ Следующий запрос через {s}с · осталось {remaining}")
             except Exception:
                 pass
             await asyncio.sleep(1)
 
-    # Объединяем пулы ключей (это одни и те же Google-ключи) — перебираем их по кругу.
-    keys = list(dict.fromkeys((EMBED_API_KEYS or []) + (LLM_API_KEYS or []))) or [None]
     prev_paused = RUNTIME["paused"]
     RUNTIME["paused"] = True  # на время bulk-операции глушим фон, чтобы не мешал/не жёг квоту
     try:
@@ -491,63 +427,38 @@ async def reembed_all_task(model="gemini-embedding-2", batch=90, interval=20, re
         if not total:
             await say("🔁 Все слова уже с эмбеддингом — нечего добивать.")
             return 0
-        await say(f"🔁 Добиваю эмбеддинги: {total} слов без вектора, модель {model}, по {batch} за "
-                  f"запрос, ключей {len(keys)} по кругу раз в {interval}с. Фон на паузе.")
-        done = bn = last_id = ki = fails = q429 = stall = 0
+        await say(f"🔁 Добиваю эмбеддинги: {total} слов без вектора, по {batch} за запрос "
+                  f"раз в {interval}с. Фон на паузе.")
+        done = bn = last_id = fails = 0
         while True:
             rows = await missing_embedding_data(batch, after_id=last_id)
             if not rows:
                 break
             bn += 1
-            key = keys[ki]; used = ki
-            ki = (ki + 1) % len(keys)  # round-robin: следующий запрос — следующим ключом
             items = [(pid, semantic_embed_text(data)) for pid, data in rows]
             items = [(pid, t) for pid, t in items if t]  # только со смысловым текстом
             if items:
-                try:
-                    vecs = await embed_texts([t for _, t in items], model, key, raise_on_error=True)
-                except Exception as e:
-                    info = errors.classify(e)
-                    if info.kind == errors.QUOTA:
-                        q429 += 1
-                        if q429 >= len(keys):  # прошли все ключи по кругу — все в 429
-                            q429 = 0; stall += 1
-                            if stall >= 5:
-                                await say(f"⛔ Все ключи в 429 слишком долго — прерываю. Сделано {done}/{total}, "
-                                          f"осталось {await count_missing_embedding()}. Запусти /reembed2 позже.")
-                                break
-                            await say(f"  ⏳ Все ключи 429 — пауза 120с (попытка {stall}/5)")
-                            await asyncio.sleep(120)
-                        else:
-                            await say(f"  🔑 429 на k{used} — пробую следующий ключ через {interval}с")
-                            await asyncio.sleep(interval)
-                        continue  # курсор НЕ двигаем — повторим тот же батч следующим ключом
-                    fails += 1
-                    if fails >= 5:
-                        await say(f"⛔ Прерываю: 5 ошибок подряд ({info.summary}). Сделано {done}/{total}, "
-                                  f"осталось {await count_missing_embedding()}. /reembed2 позже.")
-                        break
-                    await say(f"  ⚠️ батч {bn} (k{used}): {info.kind} ({fails}/5) — повтор через {interval}с")
-                    await asyncio.sleep(interval)
-                    continue
+                vecs = await embed_texts([t for _, t in items])  # ключ/429 — внутри llm
                 if not (vecs and len(vecs) == len(items)):
                     fails += 1
                     if fails >= 5:
-                        await say(f"⛔ Прерываю: 5 пустых ответов подряд. Сделано {done}/{total}. /reembed2 позже.")
+                        await say(f"⛔ Прерываю: 5 неудачных батчей подряд (квота?). Сделано {done}/{total}, "
+                                  f"осталось {await count_missing_embedding()}. /reembed2 позже.")
                         break
+                    await say(f"  ⚠️ батч {bn}: не удалось (квота?) — повтор через {interval}с ({fails}/5)")
                     await asyncio.sleep(interval)
-                    continue
+                    continue  # курсор НЕ двигаем — повторим тот же батч
                 for (pid, _), vec in zip(items, vecs):
                     await set_pool_embedding(pid, encode_emb(vec))
                     await mark_sem_embed(pid)
                 done += len(items)
-            fails = q429 = stall = 0  # успешный батч — сбрасываем счётчики
+            fails = 0
             last_id = rows[-1][0]  # курсор вперёд — гарантирует завершение
             remaining = await count_missing_embedding()
-            if items:  # был реальный запрос — отчитываемся и выдерживаем интервал с отсчётом
-                await say(f"  ✅ батч {bn} (k{used}): +{len(items)} · осталось {remaining}")
+            if items:
+                await say(f"  ✅ батч {bn}: +{len(items)} · осталось {remaining}")
                 if remaining > 0:
-                    await countdown(interval, ki, remaining)  # ki уже указывает на следующий ключ
+                    await countdown(interval, remaining)
     finally:
         RUNTIME["paused"] = prev_paused
     if status:
@@ -555,7 +466,7 @@ async def reembed_all_task(model="gemini-embedding-2", batch=90, interval=20, re
             await status(f"🏁 Пере-эмбеддинг завершён: {done}/{total}.")
         except Exception:
             pass
-    await say(f"🏁 Готово: пере-эмбеддено {done}/{total} на {model}. Фон возобновлён.")
+    await say(f"🏁 Готово: пере-эмбеддено {done}/{total}. Фон возобновлён.")
     return done
 
 
@@ -572,8 +483,7 @@ async def reembed_loop():
             if not batch:
                 await asyncio.sleep(300)  # всё пересчитано — ждём дольше
                 continue
-            key, model = await _pick_emb()
-            if not model:
+            if not await llm.embed_budget_left():
                 await asyncio.sleep(900)
                 continue
             # слова без текста (нет переводов) — просто помечаем
@@ -586,12 +496,12 @@ async def reembed_loop():
                     await mark_sem_embed(pid)
             if not items:
                 continue
-            vecs = await embed_texts([t for _, t in items], model, key)
+            vecs = await embed_texts([t for _, t in items])
             if vecs and len(vecs) == len(items):
                 for (pid, _), vec in zip(items, vecs):
                     await set_pool_embedding(pid, encode_emb(vec))  # обновляет и vec-индекс
                     await mark_sem_embed(pid)
-                logger.info(f"reembed batch: +{len(items)} via {model}")
+                logger.info(f"reembed batch: +{len(items)}")
                 await asyncio.sleep(EMB_SEM_CHECK_SEC)
             else:
                 await asyncio.sleep(60)  # 429/ошибка батча — переждём (RPM/квота), повторим
@@ -614,29 +524,28 @@ async def autofill_loop():
             if idle < AUTOFILL_IDLE_SEC:
                 await asyncio.sleep(min(AUTOFILL_IDLE_SEC - idle + 1, 60))
                 continue
-            if LLM_API_KEY:
-                # Ротация ключей × моделей по суточным лимитам (RPD — на ключ для каждой
-                # модели). Озвучка (edge) бесплатна — добиваем всегда; текст/эмбеддинги —
-                # пока есть бюджет хоть у одной пары (ключ × модель).
-                text_key, text_model = await _pick_text()
-                emb_key, emb_model = await _pick_emb()
+            if llm.text_enabled():
+                # Есть ли ещё суточный бюджет (квота/ключи) на текст и эмбеддинги. Само
+                # распределение по ключам×моделям — внутри llm. Озвучка (edge) бесплатна.
+                text_ok = await llm.text_budget_left("autofill")
+                emb_ok = await llm.embed_budget_left()
                 # пока идёт пере-эмбеддинг — эмбеддингом занимается ТОЛЬКО батч-цикл reembed_loop
                 # (autofill не долбит по одному, чтобы не жечь дневной лимит запросов и RPM)
-                emb_miss = (await pool_missing_embedding(10)) if (emb_model and not await sem_embed_pending(1)) else []
+                emb_miss = (await pool_missing_embedding(10)) if (emb_ok and not await sem_embed_pending(1)) else []
                 tts_miss = await pool_missing_tts(10)
-                unclassified = await pool_missing_meta(CLASSIFY_BATCH) if (text_model and not emb_miss and not tts_miss) else None
-                if not text_model and not emb_model and not tts_miss:
-                    # квота всех моделей на сегодня исчерпана, доделывать нечего — ждём подольше
+                unclassified = await pool_missing_meta(CLASSIFY_BATCH) if (text_ok and not emb_miss and not tts_miss) else None
+                if not text_ok and not emb_ok and not tts_miss:
+                    # квота на сегодня исчерпана, доделывать нечего — ждём подольше
                     await asyncio.sleep(600)
                     continue
                 if emb_miss or tts_miss:
                     words = emb_miss or tts_miss  # пачка до 10: эмбеддинг одним запросом + озвучка
-                    n = await complete_batch(words, emb_model=emb_model, emb_key=emb_key)
+                    n = await complete_batch(words)
                     logger.info(f"autofill: completed batch {len(words)} (emb +{n})")
                 elif unclassified:
-                    done = await classify_batch(unclassified, model=text_model, api_key=text_key)  # пачка: уровень + темы
-                    logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
-                elif text_model and not await sem_embed_pending(1):
+                    done = await classify_batch(unclassified)  # пачка: уровень + темы
+                    logger.info(f"autofill: classified {done}/{len(unclassified)}")
+                elif text_ok and not await sem_embed_pending(1):
                     # Пока не пересчитаны ВСЕ эмбеддинги по смыслу — новые слова не добавляем
                     # (чтобы пул не рос во время пере-эмбеддинга и статистика была понятной).
                     i += 1
@@ -659,9 +568,8 @@ async def autofill_loop():
                               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
                     new_words = []
                     try:
-                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, text_model, text_key,
-                                              label="автозаполнение слов")
-                        await incr_text_usage(text_model, text_key)
+                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                                              purpose="autofill", label="автозаполнение слов")
                         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                         for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
@@ -674,8 +582,8 @@ async def autofill_loop():
                     except Exception as e:
                         errors.report(e, "autofill generate")
                     if new_words:
-                        await complete_batch(new_words, emb_model=emb_model, emb_key=emb_key)  # пачкой
-                    logger.info(f"autofill: {label} new={len(new_words)} via {text_model}")
+                        await complete_batch(new_words)  # пачкой
+                    logger.info(f"autofill: {label} new={len(new_words)}")
         except Exception as e:
             errors.report(e, "autofill_loop")
             await asyncio.sleep(120)

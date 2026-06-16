@@ -13,7 +13,7 @@ from auth import get_current_user
 from activity import mark_activity
 from llm import (
     generate_words, ensure_embeddings, persist_pool, ask_json, DESC_SCHEMA,
-    ranked_pool, LLM_API_KEY, TOPIC_KEYS, CEFR_LEVELS, refine_translations,
+    ranked_pool, text_enabled, TOPIC_KEYS, CEFR_LEVELS, refine_translations,
 )
 from tts import schedule_tts
 from task import description_task
@@ -150,7 +150,7 @@ async def move_words(body: MoveWords, user=Depends(get_current_user)):
 async def refine_words(body: RefineWords, user=Depends(get_current_user)):
     """Уточнить перевод группы выбранных слов (одинаковый/неточный перевод) через LLM.
     Правит перевод на язык body.lang в общем пуле (для всех)."""
-    if not LLM_API_KEY:
+    if not text_enabled():
         raise HTTPException(status_code=503, detail="LLM not configured")
     lang = body.lang
     items, pool_map = [], {}
@@ -208,8 +208,8 @@ async def word_description(dw_id: int, model: str = None, user=Depends(get_curre
     if dw["description"]:
         return {"description": json.loads(dw["description"])}
     try:
-        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model,
-                              label="описание слова")
+        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA,
+                              purpose="user", label="описание слова", model=model)
     except Exception as e:
         info = errors.report(e, "word_description")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)
@@ -271,7 +271,7 @@ async def report_word(dw_id: int, user=Depends(get_current_user)):
     await delete_pool_word(norwegian)  # убираем из пула у всех + чистим кэш
 
     regenerated, new_word = False, None
-    if LLM_API_KEY:
+    if text_enabled():
         try:
             mark_activity()
             normalized, _ = await generate_words(norwegian, None)

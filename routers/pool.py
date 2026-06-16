@@ -138,7 +138,8 @@ async def pool_description(word: str, model: str = None, user=Depends(get_curren
     if p and p.get("description"):
         return {"description": p["description"]}
     mark_activity()
-    desc = await ask_json(description_task, f"Слово на норвежском: >>{normalize_word(word)}<<", DESC_SCHEMA, model)
+    desc = await ask_json(description_task, f"Слово на норвежском: >>{normalize_word(word)}<<", DESC_SCHEMA,
+                          purpose="user", label="описание слова", model=model)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     description = desc.get("description", desc)
@@ -159,7 +160,7 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_curr
     if hint:
         user_prompt += ("\nВАЖНО: предыдущее описание было неверным. Правильное значение/уточнение "
                         f"от пользователя (учти обязательно): {hint}")
-    desc = await ask_json(description_task, user_prompt, DESC_SCHEMA)
+    desc = await ask_json(description_task, user_prompt, DESC_SCHEMA, purpose="user", label="переописание слова")
     if not isinstance(desc, dict):
         raise HTTPException(status_code=502, detail="No JSON")
     description = desc.get("description", desc)

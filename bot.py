@@ -93,7 +93,7 @@ def _fmt_usage(rows):
 
 
 async def cmd_stats(args, chat_id):
-    today = llm._today()
+    today = llm.today()
     usage = await get_usage_like(today)
     ps = await get_pool_stats()
     users = await count_users()
@@ -109,17 +109,14 @@ async def cmd_stats(args, chat_id):
 
 
 async def cmd_quota(args, chat_id):
-    today = llm._today()
+    rows = await llm.quota_snapshot()
+    by_kind = {"text": [], "emb": []}
+    for r in rows:
+        by_kind[r["kind"]].append(f"  {r['model']} k{r['key']}: {r['used']}/{r['budget']}")
     lines = ["📈 Остаток дневного бюджета (использовано/лимит на ключ×модель):", "", "🔤 Текст:"]
-    for m, budget in autofill.TEXT_MODELS:
-        for i, _ in enumerate(llm.LLM_API_KEYS):
-            used = await get_usage(f"{today}:text:{m}:k{i}")
-            lines.append(f"  {m} k{i}: {used}/{budget}")
+    lines += by_kind["text"] or ["  (нет)"]
     lines += ["", "🧮 Эмбеддинги:"]
-    for m, budget in autofill.EMBED_MODELS:
-        for i, _ in enumerate(llm.EMBED_API_KEYS):
-            used = await get_usage(f"{today}:emb:{m}:k{i}")
-            lines.append(f"  {m} k{i}: {used}/{budget}")
+    lines += by_kind["emb"] or ["  (нет)"]
     return "\n".join(lines), None
 
 
@@ -154,7 +151,7 @@ async def cmd_status(args, chat_id):
         f"  🔔 алерты: {'🔕 mute ' + str(mute) + 'с' if mute else 'включены'}\n"
         f"  📡 лента активности: {'ON' if notify.FEED_ON else 'OFF'}\n"
         f"  ⏱ cooldown алертов: {notify.NOTIFY_COOLDOWN_SEC}с\n"
-        f"  🔑 ключей: LLM {len(llm.LLM_API_KEYS)}, emb {len(llm.EMBED_API_KEYS)}", None)
+        f"  🔑 ключей: LLM {llm.key_counts()['text']}, emb {llm.key_counts()['emb']}", None)
 
 
 async def cmd_autofill(args, chat_id):
@@ -232,8 +229,7 @@ async def cmd_reembed2(args, chat_id):
         global _reembed_running
         _reembed_running = True
         try:
-            await autofill.reembed_all_task(model="gemini-embedding-2", batch=90, interval=22,
-                                            report=report, status=status)
+            await autofill.reembed_all_task(batch=90, interval=22, report=report, status=status)
         except Exception as e:
             await _send(chat_id, f"⚠️ Пере-эмбеддинг упал: {str(e)[:200]}")
         finally:

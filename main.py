@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import logger, CORS_ORIGINS
 from db import init_db, get_pool_embeddings_raw, set_pool_embedding
-from llm import decode_emb, encode_emb, LLM_API_KEY
+from llm import decode_emb, encode_emb, text_enabled
 from auth import SECRET_KEY, router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
@@ -47,7 +47,7 @@ async def startup():
         logger.warning(f"embedding migration: {e}")
     # autofill_loop стартуем всегда (если есть ключ): включение/выключение генерации —
     # через рантайм-флаг RUNTIME["autofill"] (управляется Telegram-ботом /autofill on|off).
-    if LLM_API_KEY:
+    if text_enabled():
         asyncio.create_task(autofill_loop())
         logger.info(f"autofill loop started (генерация={'ON' if AUTOFILL_ENABLED else 'OFF'}): "
                     f"budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
