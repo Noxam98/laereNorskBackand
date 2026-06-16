@@ -78,14 +78,23 @@ def _key_id(api_key, pool):
         return 0
 
 
+_rr_cursor = {}  # (kind, model) -> индекс последнего выданного ключа (для round-robin)
+
+
 async def pick_key_model(models, keys, kind):
-    """Лучшая доступная пара (ключ, модель) по суточному бюджету.
-    (None, None) — все пары исчерпаны."""
+    """Пара (ключ, модель). Модели — в порядке приоритета; внутри модели ключи идут
+    ПО КРУГУ (round-robin): каждый следующий запрос к одной модели — со следующего ключа.
+    Пропускаем ключи, исчерпавшие суточный бюджет; когда у модели исчерпаны ВСЕ ключи —
+    переходим к следующей модели. (None, None) — всё исчерпано."""
     today = _today()
+    n = len(keys)
     for m, budget in models:
-        for k in keys:
-            if (await get_usage(f"{today}:{kind}:{m}:k{_key_id(k, keys)}")) < budget:
-                return k, m
+        start = _rr_cursor.get((kind, m), -1)
+        for off in range(1, n + 1):
+            idx = (start + off) % n
+            if (await get_usage(f"{today}:{kind}:{m}:k{idx}")) < budget:
+                _rr_cursor[(kind, m)] = idx  # запомнили — следующий раз начнём со следующего
+                return keys[idx], m
     return None, None
 
 

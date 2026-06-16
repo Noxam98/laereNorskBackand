@@ -11,6 +11,7 @@ from db import (
     get_pool_stats, count_users, get_usage_like, clear_query_cache,
     delete_pool_word, normalize_word, get_usage,
     clear_all_embeddings, count_missing_embedding,
+    pool_missing_description, pool_missing_meta, get_pool_id, get_pool_by_id, get_pool_tts,
 )
 import autofill
 import llm
@@ -46,6 +47,7 @@ def _menu_markup():
         [{"text": "⏸ Пауза", "callback_data": "pause"}, {"text": "⏯ Возобновить", "callback_data": "resume"}],
         [{"text": "⚡ +10 слов", "callback_data": "gen10"}, {"text": "📝 Описания", "callback_data": "describe"}],
         [{"text": "🌍 Переводы", "callback_data": "translate"}, {"text": "🧹 Кэш", "callback_data": "clearcache"}],
+        [{"text": "📝 Без описания", "callback_data": "nodesc"}, {"text": "🏷 Без меты", "callback_data": "nometa"}],
         [{"text": "🔁 Reembed → v2", "callback_data": "reembed2"}],
         [{"text": "🔕 Mute 1ч", "callback_data": "mute60"}, {"text": "🔔 Unmute", "callback_data": "unmute"}],
     ]}
@@ -67,6 +69,9 @@ async def cmd_help(args, chat_id):
         "🌍 /translate — добить переводы\n"
         "🧹 /clearcache — очистить кэш генерации\n"
         "🗑 /delete <слово> — удалить слово из пула\n"
+        "📝 /nodesc — слова без описания (что крутит очередь) + удалить\n"
+        "🏷 /nometa — слова без уровня/тем\n"
+        "🔎 /word <слово> — что есть/нет у слова (описание/эмбеддинг/озвучка)\n"
         "🔁 /reembed2 — добить эмбеддинги (слова без вектора) на gemini-embedding-2\n"
         "🧹 /wipeembed yes — обнулить ВСЕ эмбеддинги (перед полным пересчётом)\n\n"
         "🔕 /mute [мин] · 🔔 /unmute — заглушить алерты\n"
@@ -261,6 +266,55 @@ async def cmd_delete(args, chat_id):
     return f"🗑 Удалено из пула (и кэша): {w}", None
 
 
+def _del_buttons(words):
+    """Inline-кнопки удаления для списка слов (по одному в ряд)."""
+    return {"inline_keyboard": [[{"text": f"🗑 {w}", "callback_data": f"del:{w}"}] for w in words[:25]]}
+
+
+async def cmd_nodesc(args, chat_id):
+    """Слова без описания — то, что крутит очередь describe_loop. С кнопками удаления."""
+    words = await pool_missing_description(50)
+    if not words:
+        return "✅ Все слова с описанием — очередь описаний простаивает.", None
+    more = " (показаны первые 50)" if len(words) >= 50 else ""
+    txt = (f"📝 Без описания: {len(words)}{more}\n"
+           f"Эти слова describe_loop пытается описать каждые 10с. Если слово «залипло» "
+           f"(Gemini возвращает другое написание) — удали его кнопкой:\n\n"
+           + "\n".join(f"• {w}" for w in words))
+    return txt, _del_buttons(words)
+
+
+async def cmd_nometa(args, chat_id):
+    """Слова без уровня/тем — что крутит классификатор."""
+    words = await pool_missing_meta(50)
+    if not words:
+        return "✅ Все слова классифицированы.", None
+    return (f"🏷 Без уровня/тем: {len(words)}\n\n" + "\n".join(f"• {w}" for w in words),
+            _del_buttons(words))
+
+
+async def cmd_word(args, chat_id):
+    """Инспекция слова пула: что есть, чего не хватает."""
+    if not args:
+        return "Использование: /word <норвежское слово>", None
+    w = normalize_word(" ".join(args))
+    pid = await get_pool_id(w)
+    if not pid:
+        return f"🔎 «{w}» — нет в пуле.", None
+    p = await get_pool_by_id(pid)
+    data = p.get("data") or {}
+    tr = data.get("translate") or {}
+    langs = [l for l in ("ru", "ukr", "en", "pl", "lt") if tr.get(l)]
+    has_tts = bool(await get_pool_tts(w))
+    txt = (f"🔎 «{w}» · id {pid}\n"
+           f"  переводы: {', '.join(langs) if langs else '— НЕТ'}\n"
+           f"  уровень: {data.get('level') or '—'} · части речи: {data.get('part_of_speech') or '—'}\n"
+           f"  описание: {'есть' if p.get('description') else '❌ НЕТ'}\n"
+           f"  эмбеддинг: {'есть' if p.get('embedding') else '❌ НЕТ'}\n"
+           f"  озвучка: {'есть' if has_tts else '❌ НЕТ'}")
+    return txt, _del_buttons([w])
+
+
 async def cmd_mute(args, chat_id):
     minutes = 60
     if args:
@@ -302,6 +356,7 @@ COMMANDS = {
     "autofill": cmd_autofill, "pause": cmd_pause, "resume": cmd_resume,
     "generate": cmd_generate, "describe": cmd_describe, "translate": cmd_translate,
     "clearcache": cmd_clearcache, "delete": cmd_delete,
+    "nodesc": cmd_nodesc, "nometa": cmd_nometa, "word": cmd_word,
     "reembed2": cmd_reembed2, "wipeembed": cmd_wipeembed,
     "mute": cmd_mute, "unmute": cmd_unmute, "cooldown": cmd_cooldown, "feed": cmd_feed,
 }
@@ -313,6 +368,7 @@ BUTTONS = {
     "pause": "/pause", "resume": "/resume",
     "gen10": "/generate 10", "describe": "/describe", "translate": "/translate",
     "clearcache": "/clearcache", "reembed2": "/reembed2", "mute60": "/mute 60", "unmute": "/unmute",
+    "nodesc": "/nodesc", "nometa": "/nometa",
 }
 
 
@@ -334,8 +390,15 @@ async def _process(update):
         if from_id not in ADMIN_IDS:
             await notify.api("answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Нет доступа"})
             return
+        data = cb.get("data") or ""
+        if data.startswith("del:"):  # кнопка удаления слова из пула
+            w = normalize_word(data[4:])
+            await delete_pool_word(w)
+            await notify.api("answerCallbackQuery", {"callback_query_id": cb["id"], "text": f"Удалено: {w}"})
+            await _send(chat_id, f"🗑 Удалено из пула: {w}")
+            return
         await notify.api("answerCallbackQuery", {"callback_query_id": cb["id"]})
-        text = BUTTONS.get(cb.get("data") or "", "")
+        text = BUTTONS.get(data, "")
         if text:
             reply, markup = await _dispatch(text, chat_id)
             await _send(chat_id, reply, markup)

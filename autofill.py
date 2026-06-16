@@ -144,6 +144,40 @@ async def complete_word(w, emb_model=None, emb_key=None):
                 await set_pool_tts(w, mp3)
 
 
+async def complete_batch(words, emb_model=None, emb_key=None):
+    """Доделать ПАЧКУ слов: эмбеддинги одним запросом (для тех, у кого вектора нет) +
+    озвучка каждого (edge, бесплатно). Эмбеддит до len(words) слов за 1 запрос вместо
+    отдельного запроса на слово. Возвращает число посчитанных эмбеддингов."""
+    pending = []  # (pid, текст-для-эмбеддинга) — только у кого вектора ещё нет
+    if emb_model:
+        for w in words:
+            pid = await get_pool_id(w)
+            if not pid:
+                continue
+            p = await get_pool_by_id(pid)
+            if p and not p.get("embedding"):
+                pending.append((pid, semantic_embed_text(p["data"]) or w))
+    n = 0
+    if pending:
+        vecs = await embed_texts([t for _, t in pending], model=emb_model, api_key=emb_key)
+        if vecs and len(vecs) == len(pending):
+            for (pid, _), vec in zip(pending, vecs):
+                await set_pool_embedding(pid, encode_emb(vec))
+                await mark_sem_embed(pid)
+            n = len(pending)
+    for w in words:  # озвучка — по одному (edge бесплатный, без квоты)
+        if not await get_pool_tts(w):
+            async with _tts_lock:
+                try:
+                    mp3 = await synth_tts(w)
+                except Exception as e:
+                    mp3 = None
+                    logger.warning(f"complete_batch tts '{w}': {e}")
+                if mp3:
+                    await set_pool_tts(w, mp3)
+    return n
+
+
 _CLASSIFY_SYS = (
     "Ты — лингвист-методист по норвежскому (bokmål). Для каждого слова определи: "
     "уровень CEFR (A1, A2, B1, B2, C1 или C2 — по частотности и сложности) и 1-3 темы "
@@ -266,8 +300,8 @@ async def generate_now(n=10):
                     new_words.append(it["word"])
     except Exception as e:
         return 0, errors.report(e, "generate_now").summary
-    for nw in new_words:
-        await complete_word(nw)  # озвучка сейчас; эмбеддинг добьёт reembed_loop
+    if new_words:
+        await complete_batch(new_words)  # озвучка пачкой; эмбеддинг добьёт reembed_loop
     return len(new_words), None
 
 
@@ -588,17 +622,17 @@ async def autofill_loop():
                 emb_key, emb_model = await _pick_emb()
                 # пока идёт пере-эмбеддинг — эмбеддингом занимается ТОЛЬКО батч-цикл reembed_loop
                 # (autofill не долбит по одному, чтобы не жечь дневной лимит запросов и RPM)
-                emb_miss = (await pool_missing_embedding(1)) if (emb_model and not await sem_embed_pending(1)) else []
-                tts_miss = await pool_missing_tts(1)
+                emb_miss = (await pool_missing_embedding(10)) if (emb_model and not await sem_embed_pending(1)) else []
+                tts_miss = await pool_missing_tts(10)
                 unclassified = await pool_missing_meta(CLASSIFY_BATCH) if (text_model and not emb_miss and not tts_miss) else None
                 if not text_model and not emb_model and not tts_miss:
                     # квота всех моделей на сегодня исчерпана, доделывать нечего — ждём подольше
                     await asyncio.sleep(600)
                     continue
                 if emb_miss or tts_miss:
-                    w = (emb_miss or tts_miss)[0]
-                    await complete_word(w, emb_model=emb_model, emb_key=emb_key)  # эмбеддинг (если есть бюджет) + озвучка
-                    logger.info(f"autofill: completed '{w}'")
+                    words = emb_miss or tts_miss  # пачка до 10: эмбеддинг одним запросом + озвучка
+                    n = await complete_batch(words, emb_model=emb_model, emb_key=emb_key)
+                    logger.info(f"autofill: completed batch {len(words)} (emb +{n})")
                 elif unclassified:
                     done = await classify_batch(unclassified, model=text_model, api_key=text_key)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
@@ -639,8 +673,8 @@ async def autofill_loop():
                                     new_words.append(it["word"])
                     except Exception as e:
                         errors.report(e, "autofill generate")
-                    for nw in new_words:
-                        await complete_word(nw, emb_model=emb_model, emb_key=emb_key)  # эмбеддинг (если бюджет) + озвучка
+                    if new_words:
+                        await complete_batch(new_words, emb_model=emb_model, emb_key=emb_key)  # пачкой
                     logger.info(f"autofill: {label} new={len(new_words)} via {text_model}")
         except Exception as e:
             errors.report(e, "autofill_loop")
