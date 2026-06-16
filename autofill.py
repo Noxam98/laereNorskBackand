@@ -3,6 +3,7 @@ import random
 import asyncio
 from datetime import datetime
 from config import logger
+import errors
 from activity import seconds_idle
 from db import (
     get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
@@ -155,7 +156,7 @@ async def classify_batch(items, model=None):
     try:
         data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model)
     except Exception as e:
-        logger.warning(f"classify_batch: {e}")
+        errors.report(e, "classify_batch")
         return 0
     await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
@@ -191,7 +192,7 @@ async def describe_batch(words, model=None):
     try:
         data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model)
     except Exception as e:
-        logger.warning(f"describe_batch: {e}")
+        errors.report(e, "describe_batch")
         return 0
     await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
@@ -245,7 +246,7 @@ async def describe_loop():
                         done = await describe_batch(batch, model)
                         logger.info(f"describe_loop: +{done}/{len(batch)} via {model}")
         except Exception as e:
-            logger.warning(f"describe_loop: {e}")
+            errors.report(e, "describe_loop")
         await asyncio.sleep(DESCRIBE_CHECK_SEC)
 
 
@@ -268,7 +269,7 @@ async def translate_batch(words, model=None):
     try:
         data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model)
     except Exception as e:
-        logger.warning(f"translate_batch: {e}")
+        errors.report(e, "translate_batch")
         return {}
     await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
     out = {}
@@ -325,7 +326,7 @@ async def translate_loop():
                 await mark_translate_done(pid)  # попытка сделана — не зацикливаемся
             logger.info(f"translate_loop: дополнено {done}/{len(need)} via {model}")
         except Exception as e:
-            logger.warning(f"translate_loop: {e}")
+            errors.report(e, "translate_loop")
         await asyncio.sleep(TRANSLATE_CHECK_SEC)
 
 
@@ -369,7 +370,7 @@ async def reembed_loop():
             else:
                 await asyncio.sleep(60)  # 429/ошибка батча — переждём (RPM/квота), повторим
         except Exception as e:
-            logger.warning(f"reembed_loop: {e}")
+            errors.report(e, "reembed_loop")
             await asyncio.sleep(30)
 
 
@@ -441,12 +442,12 @@ async def autofill_loop():
                                 if not existed:
                                     new_words.append(it["word"])
                     except Exception as e:
-                        logger.warning(f"autofill generate: {e}")
+                        errors.report(e, "autofill generate")
                     for nw in new_words:
                         await complete_word(nw, emb_model=emb_model)  # эмбеддинг (если бюджет) + озвучка
                     logger.info(f"autofill: {label} new={len(new_words)} via {text_model}")
         except Exception as e:
-            logger.warning(f"autofill error: {e}")
+            errors.report(e, "autofill_loop")
             await asyncio.sleep(120)
             continue
         await asyncio.sleep(interval)

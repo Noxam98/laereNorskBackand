@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 from fastapi import HTTPException
 from config import logger
+import errors
 from db import (
     get_cached_query, cache_query, incr_usage, get_usage,
     get_pool_by_id, set_pool_embedding, get_or_create_pool, set_pool_meta,
@@ -57,7 +58,7 @@ async def embed_text(text, model=None):
         await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)  # учёт по модели
         return list(r.data[0].embedding)
     except Exception as e:
-        logger.warning(f"embed failed ({m}): {e}")
+        errors.report(e, f"embed_text({m})")
         return None
 
 
@@ -89,7 +90,7 @@ async def embed_texts(texts, model=None):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
         return [list(d.embedding) for d in data]
     except Exception as e:
-        logger.warning(f"embed_texts failed ({m}): {e}")
+        errors.report(e, f"embed_texts({m})")
         return None
 
 
@@ -396,6 +397,11 @@ async def ask_json(system_prompt, user_prompt, schema, model=None):
             response_format={"type": "json_schema", "json_schema": schema},
         )
     except Exception as e:
+        # Фолбэк на простой запрос имеет смысл ТОЛЬКО когда провайдер не понял схему (400).
+        # При квоте/ключе/сбое/таймауте второй запрос бесполезен — пробрасываем, чтобы
+        # вызывающий обработал ошибку правильно (классификация + уведомление).
+        if errors.classify(e).kind != errors.BAD_REQUEST:
+            raise
         logger.warning(f"structured output unsupported, fallback to plain: {e}")
         resp = await get_client().chat.completions.create(
             model=model or LLM_MODEL,
@@ -462,11 +468,8 @@ async def generate_words(prompt, model):
     try:
         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model)
     except Exception as e:
-        msg = str(e)
-        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-            raise HTTPException(status_code=429, detail="Translation provider quota exhausted")
-        logger.error(f"generation failed: {msg}")
-        raise HTTPException(status_code=502, detail="Translation provider error")
+        info = errors.report(e, "generate_words")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     if data is None:
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     # гарантированный формат: { words: [...] }

@@ -2,6 +2,7 @@ import json
 import random
 from fastapi import APIRouter, Depends, HTTPException
 from config import logger
+import errors
 from db import (
     get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
     delete_dict_word, move_dict_word, set_word_override, record_result, get_dict_word,
@@ -164,7 +165,11 @@ async def refine_words(body: RefineWords, user=Depends(get_current_user)):
     if len(items) < 2:
         raise HTTPException(status_code=400, detail="Select at least two words")
     mark_activity()
-    refined = await refine_translations(items, lang)
+    try:
+        refined = await refine_translations(items, lang)
+    except Exception as e:
+        info = errors.report(e, "refine_translations")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     updated = 0
     for no_l, (pool_id, data) in pool_map.items():
         new_tr = refined.get(no_l)
@@ -201,7 +206,11 @@ async def word_description(dw_id: int, model: str = None, user=Depends(get_curre
         raise HTTPException(status_code=404, detail="Not found")
     if dw["description"]:
         return {"description": json.loads(dw["description"])}
-    desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model)
+    try:
+        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA, model)
+    except Exception as e:
+        info = errors.report(e, "word_description")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     description = desc.get("description", desc)

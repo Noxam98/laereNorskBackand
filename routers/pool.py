@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
+import errors
 import asyncio
 from datetime import datetime
 from db import (
@@ -205,8 +206,8 @@ async def _gen_diff(a, b, lang, hint=None):
     try:
         data = await ask_json(_diff_sys(lang, hint), f"Первое слово: >>{a}<<\nВторое слово: >>{b}<<", DIFF_SCHEMA)
     except Exception as e:
-        logger.warning(f"diff failed: {e}")
-        raise HTTPException(status_code=502, detail="diff provider error")
+        info = errors.report(e, "pool_diff")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="bad diff")
     return data

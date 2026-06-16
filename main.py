@@ -30,6 +30,8 @@ async def startup():
     await init_db()
     if SECRET_KEY == "your_secret_key":
         logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
+    import notify
+    logger.info("telegram notifications: " + ("ON" if notify.enabled() else "OFF (TELEGRAM_BOT_TOKEN/CHAT_ID не заданы)"))
     # миграция эмбеддингов: legacy JSON -> бинарь float16
     try:
         migrated = 0
