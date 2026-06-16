@@ -12,15 +12,6 @@ async def get_user(username: str):
         await _release(db)
 
 
-async def count_users():
-    db = await _conn()
-    try:
-        async with db.execute("SELECT COUNT(*) FROM users") as cur:
-            return (await cur.fetchone())[0]
-    finally:
-        await _release(db)
-
-
 async def set_user_theme(user_id: int, theme: str):
     db = await _conn()
     try:

@@ -1,5 +1,5 @@
 import json
-from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows, vec_clear_all
+from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
 async def get_or_create_pool(norwegian: str, data: dict):
@@ -372,54 +372,6 @@ async def get_pool_level_counts():
             return [{"level": r["level"], "count": r["c"]} for r in await cur.fetchall()]
     finally:
         await _release(db)
-
-
-async def all_pool_ids_data():
-    """[(id, data_dict)] для ВСЕХ слов пула — для массового пере-эмбеддинга."""
-    db = await _conn()
-    try:
-        async with db.execute("SELECT id, data FROM word_pool ORDER BY id") as cur:
-            return [(r["id"], json.loads(r["data"]) if r["data"] else {}) for r in await cur.fetchall()]
-    finally:
-        await _release(db)
-
-
-async def missing_embedding_data(limit: int = 90, after_id: int = 0):
-    """[(id, data_dict)] для слов БЕЗ эмбеддинга с id > after_id (курсор — гарантирует
-    продвижение вперёд, даже если слово без смыслового текста и останется NULL)."""
-    db = await _conn()
-    try:
-        async with db.execute(
-            "SELECT id, data FROM word_pool WHERE embedding IS NULL AND id > ? ORDER BY id LIMIT ?",
-            (after_id, limit),
-        ) as cur:
-            return [(r["id"], json.loads(r["data"]) if r["data"] else {}) for r in await cur.fetchall()]
-    finally:
-        await _release(db)
-
-
-async def count_missing_embedding():
-    db = await _conn()
-    try:
-        async with db.execute("SELECT COUNT(*) FROM word_pool WHERE embedding IS NULL") as cur:
-            return (await cur.fetchone())[0]
-    finally:
-        await _release(db)
-
-
-async def clear_all_embeddings():
-    """Обнулить ВСЕ эмбеддинги пула (embedding=NULL, emb_sem=0) и очистить vec-индекс.
-    Возвращает число слов в пуле (= сколько предстоит пере-эмбеддить)."""
-    db = await _conn()
-    try:
-        await db.execute("UPDATE word_pool SET embedding = NULL, emb_sem = 0")
-        await db.commit()
-        async with db.execute("SELECT COUNT(*) FROM word_pool") as cur:
-            n = (await cur.fetchone())[0]
-    finally:
-        await _release(db)
-    await vec_clear_all()
-    return n
 
 
 async def get_pool_candidates():

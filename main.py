@@ -31,7 +31,6 @@ async def startup():
     if SECRET_KEY == "your_secret_key":
         logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
     import notify
-    logger.info("telegram notifications: " + ("ON" if notify.enabled() else "OFF (TELEGRAM_BOT_TOKEN/CHAT_ID не заданы)"))
     # миграция эмбеддингов: legacy JSON -> бинарь float16
     try:
         migrated = 0
@@ -45,23 +44,19 @@ async def startup():
             logger.info(f"migrated {migrated} embeddings to binary float16")
     except Exception as e:
         logger.warning(f"embedding migration: {e}")
-    # autofill_loop стартуем всегда (если есть ключ): включение/выключение генерации —
-    # через рантайм-флаг RUNTIME["autofill"] (управляется Telegram-ботом /autofill on|off).
     if text_enabled():
-        asyncio.create_task(autofill_loop())
-        logger.info(f"autofill loop started (генерация={'ON' if AUTOFILL_ENABLED else 'OFF'}): "
-                    f"budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
+        if AUTOFILL_ENABLED:
+            asyncio.create_task(autofill_loop())
+            logger.info(f"autofill loop started: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
         asyncio.create_task(describe_loop())
         logger.info("describe queue enabled: новые слова получают описание пачками")
         asyncio.create_task(translate_loop())
         logger.info("translate queue enabled: догенерация недостающих переводов")
         asyncio.create_task(reembed_loop())
         logger.info("reembed queue enabled: пере-эмбеддинг пула по смыслу")
-    # Интерактивный Telegram-бот администрирования (long-polling) + лента активности.
-    import bot
-    asyncio.create_task(bot.poll_loop())
+    # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
-    logger.info(f"telegram feed: {'ON' if notify.FEED_ON else 'OFF'}")
+    logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")
     # Очередь озвучки переводов в Tigris (если хранилище настроено).
     import storage
     from tts import tts_translation_loop

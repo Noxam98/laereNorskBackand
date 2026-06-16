@@ -10,7 +10,7 @@ from .core import (
     DATABASE_URL, init_db, normalize_word, normalize_query,
     SQLITE_VEC_OK, vec_upsert, vec_delete, vec_nearest_rows,
 )
-from .users import get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict, count_users
+from .users import get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict
 from .pool import (
     get_or_create_pool, get_pool_id, get_pool_by_id,
     get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,
@@ -18,8 +18,7 @@ from .pool import (
     translate_pending, mark_translate_done, update_pool_translate,
     sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter,
     set_pool_meta, pool_missing_meta, pool_missing_description, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
-    get_pool_candidates, all_pool_ids_data, missing_embedding_data, count_missing_embedding,
-    clear_all_embeddings, set_pool_description, delete_pool_word,
+    get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,
 )
 from .cache import (
