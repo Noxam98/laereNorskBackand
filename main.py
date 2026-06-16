@@ -57,9 +57,11 @@ async def startup():
         logger.info("translate queue enabled: догенерация недостающих переводов")
         asyncio.create_task(reembed_loop())
         logger.info("reembed queue enabled: пере-эмбеддинг пула по смыслу")
-    # Интерактивный Telegram-бот администрирования (long-polling).
+    # Интерактивный Telegram-бот администрирования (long-polling) + лента активности.
     import bot
     asyncio.create_task(bot.poll_loop())
+    asyncio.create_task(notify.feed_worker())
+    logger.info(f"telegram feed: {'ON' if notify.FEED_ON else 'OFF'}")
     # Очередь озвучки переводов в Tigris (если хранилище настроено).
     import storage
     from tts import tts_translation_loop

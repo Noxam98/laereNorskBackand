@@ -7,6 +7,7 @@ import numpy as np
 from fastapi import HTTPException
 from config import logger
 import errors
+import notify
 from db import (
     get_cached_query, cache_query, incr_usage, get_usage,
     get_pool_by_id, set_pool_embedding, get_or_create_pool, set_pool_meta,
@@ -126,6 +127,7 @@ async def embed_text(text, model=None, api_key=None):
     async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=text)
         await incr_emb_usage(m, key)  # учёт по паре (модель × ключ)
+        notify.feed(f"🧮 Эмбеддинг: {m} · k{_key_id(key, EMBED_API_KEYS)} · 1")
         return list(r.data[0].embedding)
 
     try:
@@ -161,6 +163,8 @@ async def embed_texts(texts, model=None, api_key=None, raise_on_error=False):
     async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=texts)
         await incr_emb_usage(m, key)
+        if not raise_on_error:  # reembed шлёт свой отчёт сам — не дублируем
+            notify.feed(f"🧮 Эмбеддинг: {m} · k{_key_id(key, EMBED_API_KEYS)} · {len(texts)}")
         data = list(r.data)  # API возвращает в порядке входа
         if all(getattr(d, "index", None) is not None for d in data):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
@@ -483,7 +487,7 @@ async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None)
     async def one(key):
         client = get_client().with_options(api_key=key or "not-needed")
         try:
-            return await client.chat.completions.create(
+            resp = await client.chat.completions.create(
                 model=model or LLM_MODEL, messages=msgs,
                 response_format={"type": "json_schema", "json_schema": schema},
             )
@@ -492,7 +496,9 @@ async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None)
             if errors.classify(e).kind != errors.BAD_REQUEST:
                 raise
             logger.warning(f"structured output unsupported, fallback to plain: {e}")
-            return await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
+            resp = await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
+        notify.feed(f"📝 Gemini текст: {model or LLM_MODEL} · k{_key_id(key, LLM_API_KEYS)}")
+        return resp
 
     resp = await _llm_failover(one, api_key)  # на 429 — следующий ключ пула
     content = resp.choices[0].message.content if resp.choices else None

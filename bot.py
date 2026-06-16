@@ -71,6 +71,7 @@ async def cmd_help(args, chat_id):
         "🧹 /wipeembed yes — обнулить ВСЕ эмбеддинги (перед полным пересчётом)\n\n"
         "🔕 /mute [мин] · 🔔 /unmute — заглушить алерты\n"
         "⏱ /cooldown <сек> — частота повторных алертов\n"
+        "📡 /feed on|off — живая лента: отчёт на каждый запрос/эмбеддинг\n"
         "📋 /menu — кнопки",
         _menu_markup(),
     )
@@ -146,6 +147,7 @@ async def cmd_status(args, chat_id):
         f"  ⚙️ autofill (генерация): {'ON' if r['autofill'] else 'OFF'}\n"
         f"  ⏸ глобальная пауза: {'ДА' if r['paused'] else 'нет'}\n"
         f"  🔔 алерты: {'🔕 mute ' + str(mute) + 'с' if mute else 'включены'}\n"
+        f"  📡 лента активности: {'ON' if notify.FEED_ON else 'OFF'}\n"
         f"  ⏱ cooldown алертов: {notify.NOTIFY_COOLDOWN_SEC}с\n"
         f"  🔑 ключей: LLM {len(llm.LLM_API_KEYS)}, emb {len(llm.EMBED_API_KEYS)}", None)
 
@@ -275,6 +277,14 @@ async def cmd_unmute(args, chat_id):
     return "🔔 Алерты снова включены.", None
 
 
+async def cmd_feed(args, chat_id):
+    val = (args[0].lower() if args else "")
+    if val not in ("on", "off"):
+        return f"Лента активности сейчас: {'ON' if notify.FEED_ON else 'OFF'}. Использование: /feed on|off", None
+    notify.feed_set(val == "on")
+    return f"📡 Лента активности: {'ON' if val == 'on' else 'OFF'}", None
+
+
 async def cmd_cooldown(args, chat_id):
     if not args:
         return f"Текущий cooldown: {notify.NOTIFY_COOLDOWN_SEC}с. Использование: /cooldown <сек>", None
@@ -293,7 +303,7 @@ COMMANDS = {
     "generate": cmd_generate, "describe": cmd_describe, "translate": cmd_translate,
     "clearcache": cmd_clearcache, "delete": cmd_delete,
     "reembed2": cmd_reembed2, "wipeembed": cmd_wipeembed,
-    "mute": cmd_mute, "unmute": cmd_unmute, "cooldown": cmd_cooldown,
+    "mute": cmd_mute, "unmute": cmd_unmute, "cooldown": cmd_cooldown, "feed": cmd_feed,
 }
 
 # Кнопки меню → текстовая команда
