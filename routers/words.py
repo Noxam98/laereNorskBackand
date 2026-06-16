@@ -3,6 +3,7 @@ import random
 from fastapi import APIRouter, Depends, HTTPException
 from config import logger
 import errors
+import notify
 from db import (
     get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
     delete_dict_word, move_dict_word, set_word_override, record_result, get_dict_word,
@@ -52,24 +53,36 @@ async def remove_dict(dict_id: int, user=Depends(get_current_user)):
 async def add_words(dict_id: int, body: AddWords, user=Depends(get_current_user)):
     mark_activity()
     normalized, cached = await generate_words(body.prompt, body.model)
-    added, errors, words, pairs = 0, [], [], []
+    errs, words, pairs = [], [], []
+    added_words, dup_words = [], []  # добавлено в словарь / уже там было
     for item in normalized:
         if not isinstance(item, dict):
             continue
         if item.get("error"):
-            errors.append(item["error"]); continue
+            errs.append(item["error"]); continue
         if not item.get("word"):
             continue
         pool_id = await get_or_create_pool(item["word"], item)
         if pool_id:
             pairs.append((pool_id, item))
             res = await add_word_to_dict(user["id"], dict_id, pool_id)
-            if res.get("id") and not res.get("duplicate"):
-                added += 1
+            (added_words if (res.get("id") and not res.get("duplicate")) else dup_words).append(item["word"])
             words.append(item["word"])
     await ensure_embeddings(pairs)  # эмбеддинги добавленных слов одним запросом
     schedule_tts(words)  # озвучку добавленных слов ставим в очередь сразу
-    return {"added": added, "errors": errors, "cached": cached}
+    # Разбивка в ленту: почему добавилось не всё (часть слов уже была в словаре).
+    src = "из кэша" if cached else "сгенерировано"
+    msg = (f"📥 «{(body.prompt or '')[:40]}» ({src}): получено {len(added_words) + len(dup_words)} · "
+           f"добавлено {len(added_words)} · уже в словаре {len(dup_words)}")
+    if added_words:
+        msg += f"\n  ➕ {', '.join(added_words)}"
+    if dup_words:
+        msg += f"\n  ↩️ уже были: {', '.join(dup_words)}"
+    if errs:
+        msg += f"\n  ⚠️ ошибок: {len(errs)}"
+    notify.feed(msg)
+    return {"added": len(added_words), "errors": errs, "cached": cached,
+            "duplicates": len(dup_words), "added_words": added_words, "duplicate_words": dup_words}
 
 
 @router.post("/dictionaries/{dict_id}/add_pool")

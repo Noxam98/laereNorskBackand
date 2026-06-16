@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from config import logger
 import errors
+import notify
 from activity import seconds_idle
 from db import (
     get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
@@ -138,7 +139,8 @@ async def classify_batch(items):
         lines.append(f"- {it['word']}" + (f" ({hint})" if hint else ""))
     user = "Классифицируй слова:\n" + "\n".join(lines)
     try:
-        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, purpose="autofill", label="классификация слов")
+        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, purpose="autofill",
+                              label=f"классификация слов ({len(items)})")
     except Exception as e:
         errors.report(e, "classify_batch")
         return 0
@@ -173,7 +175,8 @@ async def describe_batch(words):
         return 0
     user = "Опиши слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, purpose="autofill", label="описания слов")
+        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, purpose="autofill",
+                              label=f"описания слов ({len(words)})")
     except Exception as e:
         errors.report(e, "describe_batch")
         return 0
@@ -246,7 +249,8 @@ async def translate_batch(words):
         return {}
     user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, purpose="autofill", label="дополнение переводов")
+        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, purpose="autofill",
+                              label=f"дополнение переводов ({len(words)})")
     except Exception as e:
         errors.report(e, "translate_batch")
         return {}
@@ -404,10 +408,10 @@ async def autofill_loop():
                     avoid_s = ", ".join(avoid)
                     prompt = (f"Дай {AUTOFILL_BATCH} распространённых норвежских слов {constraint}. "
                               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
-                    new_words = []
+                    new_words, dup_words = [], []
                     try:
                         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
-                                              purpose="autofill", label="автозаполнение слов")
+                                              purpose="autofill", label=f"автозаполнение ({label})")
                         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                         for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
@@ -415,13 +419,21 @@ async def autofill_loop():
                                 pid = await get_or_create_pool(it["word"], normalize_word_item(it))
                                 if pid:
                                     await apply_item_meta(pid, it)
-                                if not existed:
-                                    new_words.append(it["word"])
+                                (dup_words if existed else new_words).append(it["word"])
                     except Exception as e:
                         errors.report(e, "autofill generate")
                     if new_words:
                         await complete_batch(new_words)  # пачкой
-                    logger.info(f"autofill: {label} new={len(new_words)}")
+                    logger.info(f"autofill: {label} new={len(new_words)} dup={len(dup_words)}")
+                    # Разбивка в ленту: почему добавилось не всё — LLM иногда повторяет
+                    # уже известные слова, несмотря на список «не предлагай».
+                    msg = (f"🆕 автозаполнение ({label}): запрошено {len(new_words) + len(dup_words)} · "
+                           f"новых {len(new_words)} · уже было {len(dup_words)}")
+                    if new_words:
+                        msg += f"\n  ➕ новые: {', '.join(new_words)}"
+                    if dup_words:
+                        msg += f"\n  ↩️ повтор известных: {', '.join(dup_words)}"
+                    notify.feed(msg)
         except Exception as e:
             errors.report(e, "autofill_loop")
             await asyncio.sleep(120)
