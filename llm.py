@@ -124,9 +124,10 @@ def semantic_embed_text(data):
     return ", ".join(p for p in parts if p).strip()
 
 
-async def embed_texts(texts, model=None, api_key=None):
+async def embed_texts(texts, model=None, api_key=None, raise_on_error=False):
     """Батч-эмбеддинг списка текстов одним запросом (до 100). Возвращает список
-    векторов в исходном порядке или None при ошибке. Один запрос = одна единица квоты."""
+    векторов в исходном порядке или None при ошибке. Один запрос = одна единица квоты.
+    raise_on_error=True — пробросить исключение (чтобы вызывающий мог реагировать на 429)."""
     if not EMBED_API_KEYS or not texts:
         return None
     m = model or EMBED_MODEL
@@ -139,6 +140,8 @@ async def embed_texts(texts, model=None, api_key=None):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
         return [list(d.embedding) for d in data]
     except Exception as e:
+        if raise_on_error:
+            raise
         errors.report(e, f"embed_texts({m})")
         return None
 

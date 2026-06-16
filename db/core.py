@@ -287,6 +287,18 @@ async def vec_delete(pool_id):
         await _release(db)
 
 
+async def vec_clear_all():
+    """Полностью очистить ANN-индекс (для массового пере-эмбеддинга)."""
+    if not SQLITE_VEC_OK:
+        return
+    db = await _conn()
+    try:
+        await db.execute("DELETE FROM vec_words")
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def vec_nearest_rows(target_raw, k):
     """Top-k ближайших слов пула через ANN-индекс. None — индекс недоступен."""
     if not SQLITE_VEC_OK:

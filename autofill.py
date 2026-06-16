@@ -11,7 +11,8 @@ from db import (
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     sem_embed_pending, mark_sem_embed,
-    get_pool_sample, get_pool_letter,
+    get_pool_sample, get_pool_letter, missing_embedding_data, clear_all_embeddings,
+    count_missing_embedding,
 )
 from llm import (
     LLM_API_KEY, LLM_API_KEYS, EMBED_API_KEYS, LLM_MODEL, EMBED_MODEL,
@@ -418,6 +419,86 @@ async def translate_loop():
 # --- Пере-эмбеддинг пула по смыслу (слово+переводы) батчами, с обновлением vec-индекса ---
 EMB_SEM_BATCH = min(int(os.getenv("EMB_SEM_BATCH", "100")), 100)  # до 100 текстов за запрос (лимит API)
 EMB_SEM_CHECK_SEC = int(os.getenv("EMB_SEM_CHECK_SEC", "2"))
+
+
+async def reembed_all_task(model="gemini-embedding-2", batch=90, sleep_sec=5, report=None):
+    """Пере-эмбеддить ВЕСЬ пул моделью `model`: сначала обнуляем ВСЕ эмбеддинги (чтобы
+    «осталось» = число слов с NULL-эмбеддингом удобно убывало), затем добиваем батчами
+    (1 запрос = batch слов) с паузой sleep_sec. Эмбеддим по смыслу (слово + переводы).
+    report(text) — async-колбэк отчёта в Telegram на каждый батч. На время глушим фон."""
+    async def say(t):
+        logger.info(t)
+        if report:
+            try:
+                await report(t)
+            except Exception:
+                pass
+
+    # Объединяем пулы ключей (это одни и те же Google-ключи; на 429 переключаемся между ними).
+    keys = list(dict.fromkeys((EMBED_API_KEYS or []) + (LLM_API_KEYS or []))) or [None]
+    ki = 0  # текущий ключ; двигаем только при 429
+    prev_paused = RUNTIME["paused"]
+    RUNTIME["paused"] = True  # на время bulk-операции глушим фон, чтобы не мешал/не жёг квоту
+    try:
+        total = await clear_all_embeddings()  # embedding=NULL, emb_sem=0, vec-индекс очищен
+        await say(f"🧹 Эмбеддинги обнулены: {total} слов. Пере-эмбеддинг на {model}, "
+                  f"по {batch} за запрос, раз в {sleep_sec}с, ключей {len(keys)}. Фон на паузе.")
+        done = bn = last_id = fails = q429 = stall = 0
+        while True:
+            rows = await missing_embedding_data(batch, after_id=last_id)
+            if not rows:
+                break
+            bn += 1
+            items = [(pid, semantic_embed_text(data)) for pid, data in rows]
+            items = [(pid, t) for pid, t in items if t]  # только со смысловым текстом
+            if items:
+                try:
+                    vecs = await embed_texts([t for _, t in items], model, keys[ki], raise_on_error=True)
+                except Exception as e:
+                    info = errors.classify(e)
+                    if info.kind == errors.QUOTA:
+                        if len(keys) > 1:
+                            ki = (ki + 1) % len(keys)
+                        q429 += 1
+                        if q429 >= max(len(keys), 1):  # все ключи подряд дали 429
+                            q429 = 0; stall += 1
+                            if stall >= 5:
+                                await say(f"⛔ Все ключи в 429 слишком долго — прерываю. Сделано {done}/{total}, "
+                                          f"осталось {await count_missing_embedding()}. Запусти /reembed2 позже.")
+                                break
+                            await say(f"  ⏳ Все ключи 429 — пауза 120с (попытка {stall}/5)")
+                            await asyncio.sleep(120)
+                        else:
+                            await say(f"  🔑 429 на батче {bn} — переключаюсь на ключ k{ki}, повтор")
+                            await asyncio.sleep(sleep_sec)
+                        continue  # курсор НЕ двигаем — повторим тот же батч (другим ключом)
+                    fails += 1
+                    if fails >= 5:
+                        await say(f"⛔ Прерываю: 5 ошибок подряд ({info.summary}). Сделано {done}/{total}, "
+                                  f"осталось {await count_missing_embedding()}. /reembed2 позже.")
+                        break
+                    await say(f"  ⚠️ батч {bn}: {info.kind} ({fails}/5) — повтор через {sleep_sec}с")
+                    await asyncio.sleep(sleep_sec)
+                    continue
+                if not (vecs and len(vecs) == len(items)):
+                    fails += 1
+                    if fails >= 5:
+                        await say(f"⛔ Прерываю: 5 пустых ответов подряд. Сделано {done}/{total}. /reembed2 позже.")
+                        break
+                    await asyncio.sleep(sleep_sec)
+                    continue
+                for (pid, _), vec in zip(items, vecs):
+                    await set_pool_embedding(pid, encode_emb(vec))
+                    await mark_sem_embed(pid)
+                done += len(items)
+            fails = q429 = stall = 0  # успешный батч — сбрасываем счётчики
+            last_id = rows[-1][0]  # курсор вперёд — гарантирует завершение
+            await say(f"  ✅ батч {bn} (k{ki}): +{len(items)} · осталось {await count_missing_embedding()}")
+            await asyncio.sleep(sleep_sec)
+    finally:
+        RUNTIME["paused"] = prev_paused
+    await say(f"🏁 Готово: пере-эмбеддено {done}/{total} на {model}. Фон возобновлён.")
+    return done
 
 
 async def reembed_loop():

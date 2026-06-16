@@ -45,6 +45,7 @@ def _menu_markup():
         [{"text": "⏸ Пауза", "callback_data": "pause"}, {"text": "⏯ Возобновить", "callback_data": "resume"}],
         [{"text": "⚡ +10 слов", "callback_data": "gen10"}, {"text": "📝 Описания", "callback_data": "describe"}],
         [{"text": "🌍 Переводы", "callback_data": "translate"}, {"text": "🧹 Кэш", "callback_data": "clearcache"}],
+        [{"text": "🔁 Reembed → v2", "callback_data": "reembed2"}],
         [{"text": "🔕 Mute 1ч", "callback_data": "mute60"}, {"text": "🔔 Unmute", "callback_data": "unmute"}],
     ]}
 
@@ -64,7 +65,8 @@ async def cmd_help(args, chat_id):
         "📝 /describe — добить описания\n"
         "🌍 /translate — добить переводы\n"
         "🧹 /clearcache — очистить кэш генерации\n"
-        "🗑 /delete <слово> — удалить слово из пула\n\n"
+        "🗑 /delete <слово> — удалить слово из пула\n"
+        "🔁 /reembed2 — пере-эмбеддить весь пул на gemini-embedding-2\n\n"
         "🔕 /mute [мин] · 🔔 /unmute — заглушить алерты\n"
         "⏱ /cooldown <сек> — частота повторных алертов\n"
         "📋 /menu — кнопки",
@@ -193,6 +195,31 @@ async def cmd_translate(args, chat_id):
     return "🌍 Добивка переводов запущена — пришлю итог.", None
 
 
+_reembed_running = False
+
+
+async def cmd_reembed2(args, chat_id):
+    global _reembed_running
+    if _reembed_running:
+        return "⏳ Пере-эмбеддинг уже идёт — дождись отчёта о завершении.", None
+
+    async def report(t):
+        await _send(chat_id, t)
+
+    async def runner():
+        global _reembed_running
+        _reembed_running = True
+        try:
+            await autofill.reembed_all_task(model="gemini-embedding-2", batch=90, sleep_sec=5, report=report)
+        except Exception as e:
+            await _send(chat_id, f"⚠️ Пере-эмбеддинг упал: {str(e)[:200]}")
+        finally:
+            _reembed_running = False
+
+    _track(runner())
+    return "🔁 Запускаю пере-эмбеддинг всего пула на gemini-embedding-2 (по 90 за запрос, раз в 5с). Отчёт — на каждый батч.", None
+
+
 async def cmd_clearcache(args, chat_id):
     await clear_query_cache()
     return "🧹 Кэш генерации очищен.", None
@@ -238,7 +265,7 @@ COMMANDS = {
     "stats": cmd_stats, "quota": cmd_quota, "pool": cmd_pool, "users": cmd_users, "status": cmd_status,
     "autofill": cmd_autofill, "pause": cmd_pause, "resume": cmd_resume,
     "generate": cmd_generate, "describe": cmd_describe, "translate": cmd_translate,
-    "clearcache": cmd_clearcache, "delete": cmd_delete,
+    "clearcache": cmd_clearcache, "delete": cmd_delete, "reembed2": cmd_reembed2,
     "mute": cmd_mute, "unmute": cmd_unmute, "cooldown": cmd_cooldown,
 }
 
@@ -248,7 +275,7 @@ BUTTONS = {
     "autofill_on": "/autofill on", "autofill_off": "/autofill off",
     "pause": "/pause", "resume": "/resume",
     "gen10": "/generate 10", "describe": "/describe", "translate": "/translate",
-    "clearcache": "/clearcache", "mute60": "/mute 60", "unmute": "/unmute",
+    "clearcache": "/clearcache", "reembed2": "/reembed2", "mute60": "/mute 60", "unmute": "/unmute",
 }
 
 
