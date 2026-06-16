@@ -26,5 +26,5 @@ from .cache import (
 )
 from .dictionaries import (
     create_dictionary, delete_dictionary, add_word_to_dict, delete_dict_word,
-    set_word_override, record_result, get_dict_word, get_user_data,
+    move_dict_word, set_word_override, record_result, get_dict_word, get_user_data,
 )

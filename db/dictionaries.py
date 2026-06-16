@@ -67,6 +67,36 @@ async def delete_dict_word(user_id: int, dw_id: int):
         await _release(db)
 
 
+async def move_dict_word(user_id: int, dw_id: int, target_dict_id: int):
+    """Перенести слово в другой словарь пользователя, сохранив правки и прогресс.
+    Если в целевом словаре оно уже есть — просто убираем из исходного."""
+    db = await _conn()
+    try:
+        if not await _owns_dict(db, user_id, target_dict_id):
+            return {"error": "Not found"}
+        async with db.execute("""
+            SELECT dw.id, dw.dict_id FROM dict_words dw
+            JOIN dictionaries d ON d.id = dw.dict_id
+            WHERE dw.id = ? AND d.user_id = ?
+        """, (dw_id, user_id)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"error": "Not found"}
+        if row["dict_id"] == target_dict_id:
+            return {"ok": True, "moved": False}  # уже в этом словаре
+        try:
+            await db.execute("UPDATE dict_words SET dict_id = ? WHERE id = ?", (target_dict_id, dw_id))
+            await db.commit()
+            return {"ok": True, "moved": True}
+        except aiosqlite.IntegrityError:
+            # UNIQUE(dict_id, pool_id): в целевом словаре слово уже есть — убираем дубль из исходного
+            await db.execute("DELETE FROM dict_words WHERE id = ?", (dw_id,))
+            await db.commit()
+            return {"ok": True, "moved": True, "duplicate": True}
+    finally:
+        await _release(db)
+
+
 async def set_word_override(user_id: int, dw_id: int, override: dict):
     db = await _conn()
     try:

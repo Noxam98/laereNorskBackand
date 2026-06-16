@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from config import logger
 from db import (
     get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
-    delete_dict_word, set_word_override, record_result, get_dict_word,
+    delete_dict_word, move_dict_word, set_word_override, record_result, get_dict_word,
     get_or_create_pool, get_pool_id, get_pool_candidates, delete_pool_word,
     set_pool_description, get_pool_ids,
 )
@@ -16,7 +16,7 @@ from llm import (
 )
 from tts import schedule_tts
 from task import description_task
-from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody
+from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords
 
 router = APIRouter()
 
@@ -131,6 +131,17 @@ async def import_dict(body: ImportDict, user=Depends(get_current_user)):
 @router.delete("/words/{dw_id}")
 async def remove_word(dw_id: int, user=Depends(get_current_user)):
     return await delete_dict_word(user["id"], dw_id)
+
+
+@router.post("/words/move")
+async def move_words(body: MoveWords, user=Depends(get_current_user)):
+    """Перенести выбранные слова (по dw_id) в другой словарь пользователя."""
+    moved = 0
+    for dw_id in body.ids:
+        res = await move_dict_word(user["id"], dw_id, body.dict_id)
+        if res.get("moved"):
+            moved += 1
+    return {"moved": moved, "total": len(body.ids)}
 
 
 @router.patch("/words/{dw_id}")

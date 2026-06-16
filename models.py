@@ -51,6 +51,11 @@ class ResultBody(BaseModel):
     correct: bool
 
 
+class MoveWords(BaseModel):
+    ids: List[int]
+    dict_id: int
+
+
 class ThemeBody(BaseModel):
     theme: str
 
