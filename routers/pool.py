@@ -5,7 +5,7 @@ from datetime import datetime
 from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
     set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
-    search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_stats, get_usage_like,
+    search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_stats, get_usage_like,
     get_cached_query, cache_query,
 )
 from auth import get_current_user, get_admin_user
@@ -83,7 +83,9 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added") else "alpha"
-    return await get_pool_list(limit, offset, q, topic_list, lvl, srt, order)
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order)
+    res["facets"] = await get_pool_facets(q, topic_list, lvl)  # динамические счётчики под текущий фильтр
+    return res
 
 
 @router.get("/pool/topics")

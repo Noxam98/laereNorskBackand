@@ -301,6 +301,49 @@ async def get_pool_topics_counts():
         await _release(db)
 
 
+async def get_pool_facets(q: str = None, topics=None, level: str = None):
+    """Динамические счётчики фильтров под текущий выбор.
+    Темы: число слов, попадающих под (поиск + уровень + выбранные темы), по каждой теме
+    (темы пересекаются — поэтому считаем по факту). Уровни: распределение под (поиск +
+    выбранные темы), без учёта самого выбранного уровня."""
+    key = normalize_word(q) if q else None
+
+    def base(use_level):
+        conds, params = [], []
+        if key:
+            conds.append("(norwegian LIKE ? OR data LIKE ?)")
+            params += [f"%{key}%", f"%{key}%"]
+        if use_level and level:
+            conds.append("level = ?")
+            params.append(level)
+        if topics:
+            marks = ",".join("?" for _ in topics)
+            conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")
+            params += list(topics)
+        return conds, params
+
+    db = await _conn()
+    try:
+        c1, p1 = base(True)
+        w1 = ("WHERE " + " AND ".join(c1)) if c1 else ""
+        async with db.execute(
+            f"SELECT topic, COUNT(DISTINCT pool_id) c FROM word_topics "
+            f"WHERE pool_id IN (SELECT id FROM word_pool {w1}) GROUP BY topic ORDER BY c DESC", p1
+        ) as cur:
+            topics_out = [{"topic": r["topic"], "count": r["c"]} for r in await cur.fetchall()]
+
+        c2, p2 = base(False)
+        c2.append("level IS NOT NULL")
+        w2 = "WHERE " + " AND ".join(c2)
+        async with db.execute(
+            f"SELECT level, COUNT(*) c FROM word_pool {w2} GROUP BY level", p2
+        ) as cur:
+            levels_out = [{"level": r["level"], "count": r["c"]} for r in await cur.fetchall()]
+        return {"topics": topics_out, "levels": levels_out}
+    finally:
+        await _release(db)
+
+
 async def get_pool_level_counts():
     """[{level, count}] по проставленным уровням."""
     db = await _conn()
