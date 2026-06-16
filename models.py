@@ -63,3 +63,10 @@ class GamePrefsBody(BaseModel):
 
 class RedescribeBody(BaseModel):
     hint: str | None = None   # подсказка о правильном значении слова
+
+
+class RediffBody(BaseModel):
+    a: str
+    b: str
+    lang: str = "ru"
+    hint: str | None = None   # подсказка для перегенерации разницы

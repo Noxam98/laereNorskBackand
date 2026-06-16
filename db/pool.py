@@ -301,6 +301,24 @@ async def get_pool_topics_counts():
         await _release(db)
 
 
+async def get_pool_meta(word: str):
+    """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле."""
+    key = normalize_word(word)
+    if not key:
+        return None
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id, level FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+        async with db.execute("SELECT topic FROM word_topics WHERE pool_id = ?", (row["id"],)) as cur:
+            topics = [r["topic"] for r in await cur.fetchall()]
+        return {"level": row["level"], "topics": topics}
+    finally:
+        await _release(db)
+
+
 async def get_pool_facets(q: str = None, topics=None, level: str = None):
     """Динамические счётчики фильтров под текущий выбор.
     Темы: число слов, попадающих под (поиск + уровень + выбранные темы), по каждой теме

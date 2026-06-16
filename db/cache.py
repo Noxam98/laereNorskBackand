@@ -29,6 +29,20 @@ async def cache_query(query: str, response):
         await _release(db)
 
 
+async def set_cached_query(query: str, response):
+    """Перезаписать кэш (для принудительной перегенерации)."""
+    key = normalize_query(query)
+    if not key:
+        return
+    db = await _conn()
+    try:
+        await db.execute("INSERT OR REPLACE INTO query_cache (query, response, created_at) VALUES (?, ?, ?)",
+                         (key, json.dumps(response, ensure_ascii=False), _now()))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def clear_query_cache():
     db = await _conn()
     try:
