@@ -45,17 +45,21 @@ async def startup():
             logger.info(f"migrated {migrated} embeddings to binary float16")
     except Exception as e:
         logger.warning(f"embedding migration: {e}")
-    if AUTOFILL_ENABLED:
-        asyncio.create_task(autofill_loop())
-        logger.info(f"autofill enabled: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
-    # Очередь описаний — независимо от autofill: новые слова должны быстро получать описание.
+    # autofill_loop стартуем всегда (если есть ключ): включение/выключение генерации —
+    # через рантайм-флаг RUNTIME["autofill"] (управляется Telegram-ботом /autofill on|off).
     if LLM_API_KEY:
+        asyncio.create_task(autofill_loop())
+        logger.info(f"autofill loop started (генерация={'ON' if AUTOFILL_ENABLED else 'OFF'}): "
+                    f"budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
         asyncio.create_task(describe_loop())
         logger.info("describe queue enabled: новые слова получают описание пачками")
         asyncio.create_task(translate_loop())
         logger.info("translate queue enabled: догенерация недостающих переводов")
         asyncio.create_task(reembed_loop())
         logger.info("reembed queue enabled: пере-эмбеддинг пула по смыслу")
+    # Интерактивный Telegram-бот администрирования (long-polling).
+    import bot
+    asyncio.create_task(bot.poll_loop())
     # Очередь озвучки переводов в Tigris (если хранилище настроено).
     import storage
     from tts import tts_translation_loop

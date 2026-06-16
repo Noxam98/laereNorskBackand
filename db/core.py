@@ -267,7 +267,10 @@ async def vec_upsert(pool_id, raw):
         return
     db = await _conn()
     try:
-        await db.execute("INSERT OR REPLACE INTO vec_words(rowid, embedding) VALUES (?, ?)", (pool_id, v))
+        # vec0 (sqlite-vec) не разрешает конфликт по rowid через INSERT OR REPLACE
+        # (падает UNIQUE constraint) — поэтому сначала удаляем, потом вставляем.
+        await db.execute("DELETE FROM vec_words WHERE rowid = ?", (pool_id,))
+        await db.execute("INSERT INTO vec_words(rowid, embedding) VALUES (?, ?)", (pool_id, v))
         await db.commit()
     finally:
         await _release(db)

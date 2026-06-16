@@ -12,10 +12,55 @@ NOTIFY_COOLDOWN_SEC = int(os.getenv("NOTIFY_COOLDOWN_SEC", "900"))
 
 _last_sent = {}   # dedup_key -> monotonic-метка последней отправки
 _tasks = set()    # держим ссылки на фоновые задачи отправки (иначе их соберёт GC)
+_mute_until = 0.0  # monotonic-метка, до которой алерты заглушены (управляется ботом)
 
 
 def enabled():
     return TELEGRAM_ENABLED and bool(TELEGRAM_BOT_TOKEN) and bool(TELEGRAM_CHAT_ID)
+
+
+# --- Рантайм-управление алертами (из Telegram-бота) ---
+def mute(seconds):
+    global _mute_until
+    _mute_until = time.monotonic() + max(0, seconds)
+
+
+def unmute():
+    global _mute_until
+    _mute_until = 0.0
+
+
+def is_muted():
+    return time.monotonic() < _mute_until
+
+
+def mute_left():
+    """Сколько секунд ещё заглушено (0 — не заглушено)."""
+    return max(0, int(_mute_until - time.monotonic()))
+
+
+def set_cooldown(seconds):
+    global NOTIFY_COOLDOWN_SEC
+    NOTIFY_COOLDOWN_SEC = max(0, int(seconds))
+
+
+async def api(method, payload):
+    """Низкоуровневый вызов Telegram Bot API. Возвращает dict ответа или None.
+    Используют и алерты (_send), и интерактивный бот (bot.py)."""
+    if not TELEGRAM_BOT_TOKEN:
+        return None
+    try:
+        import httpx
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+        async with httpx.AsyncClient(timeout=40) as client:
+            r = await client.post(url, json=payload)
+            data = r.json()
+            if not data.get("ok"):
+                logger.warning(f"telegram {method} failed: {r.status_code} {str(data)[:200]}")
+            return data
+    except Exception as e:
+        logger.warning(f"telegram {method} error: {e}")
+        return None
 
 
 def _throttled(key):
@@ -29,26 +74,14 @@ def _throttled(key):
 
 
 async def _send(text):
-    try:
-        import httpx
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(url, json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "disable_web_page_preview": True,
-            })
-            if r.status_code != 200:
-                logger.warning(f"telegram notify failed: {r.status_code} {r.text[:200]}")
-    except Exception as e:
-        # Уведомление не должно ронять основную логику — глотаем любые ошибки отправки.
-        logger.warning(f"telegram notify error: {e}")
+    await api("sendMessage", {"chat_id": TELEGRAM_CHAT_ID, "text": text,
+                              "disable_web_page_preview": True})
 
 
 def notify(text, dedup_key=None):
     """Fire-and-forget уведомление в Telegram. Не блокирует вызывающий код и не бросает.
     dedup_key — чтобы повторяющийся сбой не спамил (кулдаун NOTIFY_COOLDOWN_SEC)."""
-    if not enabled():
+    if not enabled() or is_muted():
         return
     if _throttled(dedup_key or text):
         return

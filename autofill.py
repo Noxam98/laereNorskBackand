@@ -25,6 +25,18 @@ from task import task
 
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
 AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
+
+# Рантайм-флаги, управляемые из Telegram-бота (без редеплоя):
+#   autofill — генерация новых слов (autofill_loop);
+#   paused   — глобальная пауза ВСЕХ фоновых очередей (describe/translate/reembed/autofill).
+RUNTIME = {"autofill": AUTOFILL_ENABLED, "paused": False}
+
+
+def _bg_blocked(check_autofill=False):
+    """Должна ли фоновая итерация пропуститься (пауза / выключенный autofill)."""
+    if RUNTIME["paused"]:
+        return True
+    return check_autofill and not RUNTIME["autofill"]
 AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
 AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "150"))  # одно слово целиком раз в N сек (день)
 AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
@@ -228,6 +240,76 @@ async def describe_all_task():
         await asyncio.sleep(5)  # ≤12 пачек/мин — держимся под лимитом 15 RPM
 
 
+async def generate_now(n=10):
+    """Ручная генерация n новых слов (для Telegram-команды). Возвращает (добавлено, ошибка|None)."""
+    key, model = await _pick_text()
+    if not model:
+        return 0, "бюджет ключей/моделей на сегодня исчерпан"
+    letter = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
+    avoid = await get_pool_letter(letter, AUTOFILL_AVOID_SAMPLE)
+    nonce = random.randint(1000, 99999)
+    prompt = (f"Дай {n} распространённых норвежских слов начинающихся на букву «{letter}». "
+              f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {', '.join(avoid)}. (вариант {nonce})")
+    new_words = []
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, key)
+        await incr_text_usage(model, key)
+        items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        for it in items:
+            if isinstance(it, dict) and not it.get("error") and it.get("word"):
+                existed = await get_pool_id(it["word"])
+                pid = await get_or_create_pool(it["word"], normalize_word_item(it))
+                if pid:
+                    await apply_item_meta(pid, it)
+                if not existed:
+                    new_words.append(it["word"])
+    except Exception as e:
+        return 0, errors.report(e, "generate_now").summary
+    for nw in new_words:
+        await complete_word(nw)  # озвучка сейчас; эмбеддинг добьёт reembed_loop
+    return len(new_words), None
+
+
+async def translate_all_task(max_batches=200):
+    """Добить недостающие переводы у слов пула — пачками, пока есть очередь и бюджет.
+    Возвращает число дополненных слов."""
+    total = 0
+    for _ in range(max_batches):
+        pend = await translate_pending(TRANSLATE_BATCH)
+        if not pend:
+            break
+        need = []
+        for pid, nw, data in pend:
+            tr = (data.get("translate") or {})
+            missing = [l for l in TRANSLATE_LANGS if not tr.get(l)]
+            if not missing:
+                await mark_translate_done(pid)
+            else:
+                need.append((pid, nw, data, missing))
+        if not need:
+            continue
+        key, model = await _pick_text()
+        if not model:
+            break
+        res = await translate_batch([nw for _, nw, _, _ in need], model, key)
+        if not res:
+            break
+        for pid, nw, data, missing in need:
+            r = res.get(normalize_word(nw))
+            if r:
+                tr = dict(data.get("translate") or {})
+                for l in missing:
+                    vals = [v for v in (r.get(l) or []) if v]
+                    if vals:
+                        tr[l] = vals
+                if tr != (data.get("translate") or {}):
+                    await update_pool_translate(pid, tr)
+                    total += 1
+            await mark_translate_done(pid)
+        await asyncio.sleep(2)
+    return total
+
+
 async def describe_loop():
     """Очередь описаний: раз в DESCRIBE_CHECK_SEC проверяем слова без description
     и генерируем одну пачку до DESCRIBE_BATCH (10) слов. Размер пачки = min(кол-во, 10):
@@ -236,6 +318,8 @@ async def describe_loop():
     Когда очередь пуста — только дешёвый запрос к БД, без обращения к LLM."""
     await asyncio.sleep(15)
     while True:
+        if _bg_blocked():
+            await asyncio.sleep(20); continue
         try:
             if LLM_API_KEY:
                 batch = await pool_missing_description(DESCRIBE_BATCH)
@@ -284,6 +368,8 @@ async def translate_loop():
     языки одним LLM-вызовом и обновляем data.translate."""
     await asyncio.sleep(25)
     while True:
+        if _bg_blocked():
+            await asyncio.sleep(20); continue
         try:
             pend = await translate_pending(TRANSLATE_BATCH)
             if not pend:
@@ -340,6 +426,8 @@ async def reembed_loop():
     запросам). set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
     await asyncio.sleep(20)
     while True:
+        if _bg_blocked():
+            await asyncio.sleep(20); continue
         try:
             batch = await sem_embed_pending(EMB_SEM_BATCH)
             if not batch:
@@ -377,6 +465,8 @@ async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
     while True:
+        if _bg_blocked(check_autofill=True):
+            await asyncio.sleep(20); continue
         night = _is_night()
         interval = AUTOFILL_NIGHT_INTERVAL_SEC if night else AUTOFILL_INTERVAL_SEC
         try:
