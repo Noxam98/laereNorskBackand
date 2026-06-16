@@ -13,6 +13,7 @@ from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, ranked_pool
 from task import description_task
+from models import RedescribeBody
 import storage
 
 router = APIRouter()
@@ -139,6 +140,27 @@ async def pool_description(word: str, model: str = None, user=Depends(get_curren
     desc = await ask_json(description_task, f"Слово на норвежском: >>{normalize_word(word)}<<", DESC_SCHEMA, model)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
+    description = desc.get("description", desc)
+    await set_pool_description(pid, description)
+    return {"description": description}
+
+
+@router.post("/pool/{word}/redescribe")
+async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_current_user)):
+    """Перегенерировать описание слова (при неверном) с учётом подсказки пользователя
+    о правильном значении. Перезаписывает кэш описания в общем пуле."""
+    pid = await get_pool_id(word)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    hint = (body.hint or "").strip()
+    mark_activity()
+    user_prompt = f"Слово на норвежском: >>{normalize_word(word)}<<"
+    if hint:
+        user_prompt += ("\nВАЖНО: предыдущее описание было неверным. Правильное значение/уточнение "
+                        f"от пользователя (учти обязательно): {hint}")
+    desc = await ask_json(description_task, user_prompt, DESC_SCHEMA)
+    if not isinstance(desc, dict):
+        raise HTTPException(status_code=502, detail="No JSON")
     description = desc.get("description", desc)
     await set_pool_description(pid, description)
     return {"description": description}

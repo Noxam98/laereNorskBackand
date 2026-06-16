@@ -59,3 +59,7 @@ class GamePrefsBody(BaseModel):
     type: str | None = None   # study | input | choice
     dir: str | None = None    # no2int | int2no
     sound: bool | None = None
+
+
+class RedescribeBody(BaseModel):
+    hint: str | None = None   # подсказка о правильном значении слова
