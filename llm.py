@@ -16,8 +16,20 @@ from task import task
 
 # --- LLM-провайдер (OpenAI-совместимый): Gemini / Groq / OpenRouter / любой через env ---
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek/deepseek-r1:free")
+
+
+def _parse_keys(multi_env, single_env):
+    """Пул API-ключей (несколько Google-аккаунтов = суммарно больше квоты).
+    Ключи перечисляются через запятую — работает и LLM_API_KEYS, и одиночный
+    LLM_API_KEY (туда тоже можно вписать несколько через запятую)."""
+    raw = (os.getenv(multi_env, "") or "").strip() or (os.getenv(single_env, "") or "").strip()
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+LLM_API_KEYS = _parse_keys("LLM_API_KEYS", "LLM_API_KEY")
+# Совместимость: по всему коду есть проверки `if LLM_API_KEY` («ключ задан вообще?»).
+LLM_API_KEY = LLM_API_KEYS[0] if LLM_API_KEYS else ""
 
 _llm_client = None
 
@@ -32,7 +44,8 @@ def get_client():
 
 # --- Эмбеддинги (Gemini по умолчанию, OpenAI-совместимый эндпоинт; провайдер через env) ---
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
+EMBED_API_KEYS = _parse_keys("EMBED_API_KEYS", "EMBED_API_KEY")
+EMBED_API_KEY = EMBED_API_KEYS[0] if EMBED_API_KEYS else ""
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
 
 _embed_client = None
@@ -49,13 +62,48 @@ def get_embed_client():
     return _embed_client
 
 
-async def embed_text(text, model=None):
-    if not EMBED_API_KEY:
+# --- Ротация ключей × моделей по суточному бюджету ---
+# Лимит RPD у Gemini free-tier — на проект/ключ для каждой модели. Поэтому бюджет
+# считаем на ПАРУ (ключ × модель): жжём первый ключ до лимита лучшей модели, потом
+# следующий ключ; кончились все ключи у лучшей модели — переходим к следующей.
+def _today():
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _key_id(api_key, pool):
+    try:
+        return pool.index(api_key)
+    except (ValueError, AttributeError):
+        return 0
+
+
+async def pick_key_model(models, keys, kind):
+    """Лучшая доступная пара (ключ, модель) по суточному бюджету.
+    (None, None) — все пары исчерпаны."""
+    today = _today()
+    for m, budget in models:
+        for k in keys:
+            if (await get_usage(f"{today}:{kind}:{m}:k{_key_id(k, keys)}")) < budget:
+                return k, m
+    return None, None
+
+
+async def incr_text_usage(model, api_key):
+    await incr_usage(f"{_today()}:text:{model}:k{_key_id(api_key, LLM_API_KEYS)}")
+
+
+async def incr_emb_usage(model, api_key):
+    await incr_usage(f"{_today()}:emb:{model}:k{_key_id(api_key, EMBED_API_KEYS)}")
+
+
+async def embed_text(text, model=None, api_key=None):
+    if not EMBED_API_KEYS:
         return None
     m = model or EMBED_MODEL
+    key = api_key or EMBED_API_KEYS[0]
     try:
-        r = await get_embed_client().embeddings.create(model=m, input=text)
-        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)  # учёт по модели
+        r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=text)
+        await incr_emb_usage(m, key)  # учёт по паре (модель × ключ)
         return list(r.data[0].embedding)
     except Exception as e:
         errors.report(e, f"embed_text({m})")
@@ -76,15 +124,16 @@ def semantic_embed_text(data):
     return ", ".join(p for p in parts if p).strip()
 
 
-async def embed_texts(texts, model=None):
+async def embed_texts(texts, model=None, api_key=None):
     """Батч-эмбеддинг списка текстов одним запросом (до 100). Возвращает список
     векторов в исходном порядке или None при ошибке. Один запрос = одна единица квоты."""
-    if not EMBED_API_KEY or not texts:
+    if not EMBED_API_KEYS or not texts:
         return None
     m = model or EMBED_MODEL
+    key = api_key or EMBED_API_KEYS[0]
     try:
-        r = await get_embed_client().embeddings.create(model=m, input=texts)
-        await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":emb:" + m)
+        r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=texts)
+        await incr_emb_usage(m, key)
         data = list(r.data)  # API возвращает в порядке входа
         if all(getattr(d, "index", None) is not None for d in data):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
@@ -180,8 +229,9 @@ def extract_json(content: str):
         return None
 
 
-async def ask_model(system_prompt, user_prompt, model=None):
-    resp = await get_client().chat.completions.create(
+async def ask_model(system_prompt, user_prompt, model=None, api_key=None):
+    client = get_client().with_options(api_key=api_key or LLM_API_KEY or "not-needed")
+    resp = await client.chat.completions.create(
         model=model or LLM_MODEL,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
     )
@@ -388,12 +438,19 @@ async def refine_translations(items, lang, model=None):
     return out
 
 
-async def ask_json(system_prompt, user_prompt, schema, model=None):
+async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста."""
+    # Лёгкие вызовы (diff/refine/description) ключ явно не передают — подбираем лучший
+    # доступный, чтобы не упираться в исчерпанный первый ключ, когда у других есть бюджет.
+    if api_key is None and LLM_API_KEYS:
+        api_key, picked = await pick_key_model(USER_TEXT_MODELS, LLM_API_KEYS, "text")
+        api_key = api_key or LLM_API_KEYS[0]
+        model = model or picked
+    client = get_client().with_options(api_key=api_key or "not-needed")
+    msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     try:
-        resp = await get_client().chat.completions.create(
-            model=model or LLM_MODEL,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        resp = await client.chat.completions.create(
+            model=model or LLM_MODEL, messages=msgs,
             response_format={"type": "json_schema", "json_schema": schema},
         )
     except Exception as e:
@@ -403,10 +460,7 @@ async def ask_json(system_prompt, user_prompt, schema, model=None):
         if errors.classify(e).kind != errors.BAD_REQUEST:
             raise
         logger.warning(f"structured output unsupported, fallback to plain: {e}")
-        resp = await get_client().chat.completions.create(
-            model=model or LLM_MODEL,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        )
+        resp = await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
     content = resp.choices[0].message.content if resp.choices else None
     if not content:
         return None
@@ -447,13 +501,15 @@ def _parse_models(env, default_model, default_budget=10 ** 9):
 USER_TEXT_MODELS = _parse_models("USER_TEXT_MODELS", LLM_MODEL)
 
 
-async def pick_user_text_model():
-    """Лучшая доступная по суточной квоте модель для запросов пользователя."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    for m, budget in USER_TEXT_MODELS:
-        if (await get_usage(f"{today}:text:{m}")) < budget:
-            return m
-    return USER_TEXT_MODELS[-1][0]
+async def pick_user_text(model=None):
+    """(ключ, модель) для живого запроса пользователя. Если модель задана явно — берём
+    её с первым ключом; иначе подбираем лучшую доступную пару (ключ × модель)."""
+    if model:
+        return (LLM_API_KEYS[0] if LLM_API_KEYS else None), model
+    key, m = await pick_key_model(USER_TEXT_MODELS, LLM_API_KEYS, "text")
+    if not m:  # всё исчерпано — деградируем на последнюю модель + первый ключ (как раньше)
+        return (LLM_API_KEYS[0] if LLM_API_KEYS else None), USER_TEXT_MODELS[-1][0]
+    return key, m
 
 
 async def generate_words(prompt, model):
@@ -461,19 +517,18 @@ async def generate_words(prompt, model):
     cached = await get_cached_query(prompt)
     if cached is not None:
         return cached, True
-    if not LLM_API_KEY:
+    if not LLM_API_KEYS:
         raise HTTPException(status_code=503, detail="LLM is not configured (set LLM_API_KEY)")
-    if not model:
-        model = await pick_user_text_model()
+    api_key, model = await pick_user_text(model)
     try:
-        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model)
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, model, api_key)
     except Exception as e:
         info = errors.report(e, "generate_words")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     if data is None:
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     # гарантированный формат: { words: [...] }
-    await incr_usage(datetime.utcnow().strftime("%Y-%m-%d") + ":text:" + (model or LLM_MODEL))  # учёт по модели
+    await incr_text_usage(model or LLM_MODEL, api_key)  # учёт по паре (модель × ключ)
     items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     normalized = [normalize_word_item(i) for i in items]
     await cache_query(prompt, normalized)

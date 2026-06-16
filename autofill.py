@@ -11,12 +11,14 @@ from db import (
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     sem_embed_pending, mark_sem_embed,
-    get_pool_sample, get_pool_letter, incr_usage, get_usage,
+    get_pool_sample, get_pool_letter,
 )
 from llm import (
-    LLM_API_KEY, LLM_MODEL, EMBED_MODEL, embed_text, embed_texts, encode_emb, ask_json, WORDS_SCHEMA,
+    LLM_API_KEY, LLM_API_KEYS, EMBED_API_KEYS, LLM_MODEL, EMBED_MODEL,
+    embed_text, embed_texts, encode_emb, ask_json, WORDS_SCHEMA,
     CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS,
     normalize_word_item, apply_item_meta, semantic_embed_text,
+    pick_key_model, incr_text_usage, incr_emb_usage,
 )
 from tts import synth_tts, _tts_lock
 from task import task
@@ -58,17 +60,14 @@ TEXT_MODELS = _parse_models("AUTOFILL_TEXT_MODELS", LLM_MODEL, int(os.getenv("TE
 EMBED_MODELS = _parse_models("AUTOFILL_EMBED_MODELS", EMBED_MODEL, int(os.getenv("EMBED_DAILY_BUDGET", "800")))
 
 
-def _today():
-    return datetime.utcnow().strftime("%Y-%m-%d")
+async def _pick_text():
+    """(ключ, модель) для текстового фонового запроса. (None, None) — всё исчерпано."""
+    return await pick_key_model(TEXT_MODELS, LLM_API_KEYS, "text")
 
 
-async def _pick_model(models, kind):
-    """Первая модель из списка, у которой ещё есть суточный бюджет. None — все исчерпаны."""
-    today = _today()
-    for m, budget in models:
-        if (await get_usage(f"{today}:{kind}:{m}")) < budget:
-            return m
-    return None
+async def _pick_emb():
+    """(ключ, модель) для эмбеддинга. (None, None) — всё исчерпано."""
+    return await pick_key_model(EMBED_MODELS, EMBED_API_KEYS, "emb")
 
 
 def _is_night():
@@ -112,13 +111,13 @@ AUTOFILL_LETTERS = list(_LETTER_WEIGHTS.keys())
 AUTOFILL_LETTER_W = list(_LETTER_WEIGHTS.values())
 
 
-async def complete_word(w, emb_model=None):
+async def complete_word(w, emb_model=None, emb_key=None):
     """Доделать слово: эмбеддинг (если задана модель emb_model с бюджетом) + озвучка (всегда, edge бесплатный)."""
     pid = await get_pool_id(w)
     if emb_model and pid:
         p = await get_pool_by_id(pid)
         if p and not p.get("embedding"):
-            vec = await embed_text(semantic_embed_text(p["data"]) or w, model=emb_model)
+            vec = await embed_text(semantic_embed_text(p["data"]) or w, model=emb_model, api_key=emb_key)
             if vec:
                 await set_pool_embedding(pid, encode_emb(vec))
                 await mark_sem_embed(pid)
@@ -142,7 +141,7 @@ _CLASSIFY_SYS = (
 )
 
 
-async def classify_batch(items, model=None):
+async def classify_batch(items, model=None, api_key=None):
     """Пакетная классификация (≤CLASSIFY_BATCH): уровень + темы за один LLM-вызов.
     items: [{word, translate}]. Слова без ответа остаются level IS NULL (добьются позже)."""
     if not items:
@@ -154,11 +153,11 @@ async def classify_batch(items, model=None):
         lines.append(f"- {it['word']}" + (f" ({hint})" if hint else ""))
     user = "Классифицируй слова:\n" + "\n".join(lines)
     try:
-        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model)
+        data = await ask_json(_CLASSIFY_SYS, user, CLASSIFY_SCHEMA, model, api_key)
     except Exception as e:
         errors.report(e, "classify_batch")
         return 0
-    await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
+    await incr_text_usage(model or LLM_MODEL, api_key)
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
     done = 0
     for r in results:
@@ -184,17 +183,17 @@ _DESCRIBE_SYS = (
 )
 
 
-async def describe_batch(words, model=None):
+async def describe_batch(words, model=None, api_key=None):
     """Пакетные описания (≤DESCRIBE_BATCH слов за один LLM-вызов). Кешируется в БД."""
     if not words:
         return 0
     user = "Опиши слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model)
+        data = await ask_json(_DESCRIBE_SYS, user, DESCRIBE_BATCH_SCHEMA, model, api_key)
     except Exception as e:
         errors.report(e, "describe_batch")
         return 0
-    await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
+    await incr_text_usage(model or LLM_MODEL, api_key)
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
     done = 0
     for r in results:
@@ -217,11 +216,11 @@ async def describe_all_task():
         if not batch:
             logger.info(f"describe_all: готово, всего {total}")
             break
-        model = await _pick_model(TEXT_MODELS, "text")
+        key, model = await _pick_text()
         if not model:
             logger.info(f"describe_all: бюджет исчерпан, всего {total}")
             break
-        done = await describe_batch(batch, model)
+        done = await describe_batch(batch, model, key)
         total += done
         logger.info(f"describe_all: +{done} (всего {total}) via {model}")
         if done == 0:
@@ -241,9 +240,9 @@ async def describe_loop():
             if LLM_API_KEY:
                 batch = await pool_missing_description(DESCRIBE_BATCH)
                 if batch:
-                    model = await _pick_model(TEXT_MODELS, "text")
+                    key, model = await _pick_text()
                     if model:
-                        done = await describe_batch(batch, model)
+                        done = await describe_batch(batch, model, key)
                         logger.info(f"describe_loop: +{done}/{len(batch)} via {model}")
         except Exception as e:
             errors.report(e, "describe_loop")
@@ -261,17 +260,17 @@ _TRANSLATE_SYS = (
 )
 
 
-async def translate_batch(words, model=None):
+async def translate_batch(words, model=None, api_key=None):
     """Пакетный перевод списка норвежских слов на 5 языков. Возвращает {norm_word: result}."""
     if not words:
         return {}
     user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
     try:
-        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model)
+        data = await ask_json(_TRANSLATE_SYS, user, TRANSLATE_BATCH_SCHEMA, model, api_key)
     except Exception as e:
         errors.report(e, "translate_batch")
         return {}
-    await incr_usage(_today() + ":text:" + (model or LLM_MODEL))
+    await incr_text_usage(model or LLM_MODEL, api_key)
     out = {}
     for r in ((data or {}).get("results", []) if isinstance(data, dict) else []):
         if isinstance(r, dict) and r.get("word"):
@@ -302,12 +301,12 @@ async def translate_loop():
                 await asyncio.sleep(0.5)  # быстро добиваем «полные»
                 continue
 
-            model = await _pick_model(TEXT_MODELS, "text")
+            key, model = await _pick_text()
             if not model:
-                logger.info("translate_loop: бюджет моделей исчерпан")
+                logger.info("translate_loop: бюджет моделей/ключей исчерпан")
                 await asyncio.sleep(300)
                 continue
-            res = await translate_batch([nw for _, nw, _, _ in need], model)
+            res = await translate_batch([nw for _, nw, _, _ in need], model, key)
             if not res:
                 await asyncio.sleep(TRANSLATE_CHECK_SEC)  # провал запроса — повторим позже
                 continue
@@ -346,7 +345,7 @@ async def reembed_loop():
             if not batch:
                 await asyncio.sleep(300)  # всё пересчитано — ждём дольше
                 continue
-            model = await _pick_model(EMBED_MODELS, "emb")
+            key, model = await _pick_emb()
             if not model:
                 await asyncio.sleep(900)
                 continue
@@ -360,7 +359,7 @@ async def reembed_loop():
                     await mark_sem_embed(pid)
             if not items:
                 continue
-            vecs = await embed_texts([t for _, t in items], model)
+            vecs = await embed_texts([t for _, t in items], model, key)
             if vecs and len(vecs) == len(items):
                 for (pid, _), vec in zip(items, vecs):
                     await set_pool_embedding(pid, encode_emb(vec))  # обновляет и vec-индекс
@@ -387,10 +386,11 @@ async def autofill_loop():
                 await asyncio.sleep(min(AUTOFILL_IDLE_SEC - idle + 1, 60))
                 continue
             if LLM_API_KEY:
-                # Ротация моделей по суточным лимитам (у каждой свой RPD). Озвучка (edge)
-                # бесплатна — её добиваем всегда; текст/эмбеддинги — пока есть бюджет у моделей.
-                text_model = await _pick_model(TEXT_MODELS, "text")
-                emb_model = await _pick_model(EMBED_MODELS, "emb")
+                # Ротация ключей × моделей по суточным лимитам (RPD — на ключ для каждой
+                # модели). Озвучка (edge) бесплатна — добиваем всегда; текст/эмбеддинги —
+                # пока есть бюджет хоть у одной пары (ключ × модель).
+                text_key, text_model = await _pick_text()
+                emb_key, emb_model = await _pick_emb()
                 # пока идёт пере-эмбеддинг — эмбеддингом занимается ТОЛЬКО батч-цикл reembed_loop
                 # (autofill не долбит по одному, чтобы не жечь дневной лимит запросов и RPM)
                 emb_miss = (await pool_missing_embedding(1)) if (emb_model and not await sem_embed_pending(1)) else []
@@ -402,10 +402,10 @@ async def autofill_loop():
                     continue
                 if emb_miss or tts_miss:
                     w = (emb_miss or tts_miss)[0]
-                    await complete_word(w, emb_model=emb_model)  # эмбеддинг (если есть бюджет) + озвучка
+                    await complete_word(w, emb_model=emb_model, emb_key=emb_key)  # эмбеддинг (если есть бюджет) + озвучка
                     logger.info(f"autofill: completed '{w}'")
                 elif unclassified:
-                    done = await classify_batch(unclassified, model=text_model)  # пачка: уровень + темы
+                    done = await classify_batch(unclassified, model=text_model, api_key=text_key)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)} via {text_model}")
                 elif text_model and not await sem_embed_pending(1):
                     # Пока не пересчитаны ВСЕ эмбеддинги по смыслу — новые слова не добавляем
@@ -430,8 +430,8 @@ async def autofill_loop():
                               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
                     new_words = []
                     try:
-                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, text_model)
-                        await incr_usage(_today() + ":text:" + text_model)
+                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA, text_model, text_key)
+                        await incr_text_usage(text_model, text_key)
                         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                         for it in items:
                             if isinstance(it, dict) and not it.get("error") and it.get("word"):
@@ -444,7 +444,7 @@ async def autofill_loop():
                     except Exception as e:
                         errors.report(e, "autofill generate")
                     for nw in new_words:
-                        await complete_word(nw, emb_model=emb_model)  # эмбеддинг (если бюджет) + озвучка
+                        await complete_word(nw, emb_model=emb_model, emb_key=emb_key)  # эмбеддинг (если бюджет) + озвучка
                     logger.info(f"autofill: {label} new={len(new_words)} via {text_model}")
         except Exception as e:
             errors.report(e, "autofill_loop")
