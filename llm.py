@@ -96,15 +96,40 @@ async def incr_emb_usage(model, api_key):
     await incr_usage(f"{_today()}:emb:{model}:k{_key_id(api_key, EMBED_API_KEYS)}")
 
 
+async def _llm_failover(attempt, start_key, keys=None):
+    """Выполнить attempt(key); при 429/квоте — повторить следующим ключом пула (по кругу
+    от start_key). Бросает последнюю 429-ошибку, если ВСЕ ключи исчерпаны, либо сразу
+    любую НЕ-квотную ошибку. keys=None → LLM_API_KEYS."""
+    keys = keys or LLM_API_KEYS or [start_key]
+    try:
+        start = keys.index(start_key)
+    except (ValueError, AttributeError):
+        start = 0
+    last = None
+    for i in range(len(keys)):
+        try:
+            return await attempt(keys[(start + i) % len(keys)])
+        except Exception as e:
+            if errors.classify(e).kind != errors.QUOTA:
+                raise
+            last = e
+            if len(keys) > 1:
+                logger.warning(f"429 на ключе k{(start + i) % len(keys)} — пробую следующий")
+    raise last
+
+
 async def embed_text(text, model=None, api_key=None):
     if not EMBED_API_KEYS:
         return None
     m = model or EMBED_MODEL
-    key = api_key or EMBED_API_KEYS[0]
-    try:
+
+    async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=text)
         await incr_emb_usage(m, key)  # учёт по паре (модель × ключ)
         return list(r.data[0].embedding)
+
+    try:
+        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS)
     except Exception as e:
         errors.report(e, f"embed_text({m})")
         return None
@@ -127,21 +152,25 @@ def semantic_embed_text(data):
 async def embed_texts(texts, model=None, api_key=None, raise_on_error=False):
     """Батч-эмбеддинг списка текстов одним запросом (до 100). Возвращает список
     векторов в исходном порядке или None при ошибке. Один запрос = одна единица квоты.
-    raise_on_error=True — пробросить исключение (чтобы вызывающий мог реагировать на 429)."""
+    raise_on_error=True — один прогон без внутреннего failover (вызывающий сам рулит
+    ключами, напр. /reembed2). Иначе — на 429 повтор следующим ключом пула."""
     if not EMBED_API_KEYS or not texts:
         return None
     m = model or EMBED_MODEL
-    key = api_key or EMBED_API_KEYS[0]
-    try:
+
+    async def one(key):
         r = await get_embed_client().with_options(api_key=key).embeddings.create(model=m, input=texts)
         await incr_emb_usage(m, key)
         data = list(r.data)  # API возвращает в порядке входа
         if all(getattr(d, "index", None) is not None for d in data):
             data.sort(key=lambda d: d.index)  # подстраховка по индексу, если он есть
         return [list(d.embedding) for d in data]
+
+    if raise_on_error:
+        return await one(api_key or EMBED_API_KEYS[0])
+    try:
+        return await _llm_failover(one, api_key or EMBED_API_KEYS[0], keys=EMBED_API_KEYS)
     except Exception as e:
-        if raise_on_error:
-            raise
         errors.report(e, f"embed_texts({m})")
         return None
 
@@ -449,21 +478,23 @@ async def ask_json(system_prompt, user_prompt, schema, model=None, api_key=None)
         api_key, picked = await pick_key_model(USER_TEXT_MODELS, LLM_API_KEYS, "text")
         api_key = api_key or LLM_API_KEYS[0]
         model = model or picked
-    client = get_client().with_options(api_key=api_key or "not-needed")
     msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    try:
-        resp = await client.chat.completions.create(
-            model=model or LLM_MODEL, messages=msgs,
-            response_format={"type": "json_schema", "json_schema": schema},
-        )
-    except Exception as e:
-        # Фолбэк на простой запрос имеет смысл ТОЛЬКО когда провайдер не понял схему (400).
-        # При квоте/ключе/сбое/таймауте второй запрос бесполезен — пробрасываем, чтобы
-        # вызывающий обработал ошибку правильно (классификация + уведомление).
-        if errors.classify(e).kind != errors.BAD_REQUEST:
-            raise
-        logger.warning(f"structured output unsupported, fallback to plain: {e}")
-        resp = await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
+
+    async def one(key):
+        client = get_client().with_options(api_key=key or "not-needed")
+        try:
+            return await client.chat.completions.create(
+                model=model or LLM_MODEL, messages=msgs,
+                response_format={"type": "json_schema", "json_schema": schema},
+            )
+        except Exception as e:
+            # Фолбэк на простой запрос — ТОЛЬКО если провайдер не понял схему (400).
+            if errors.classify(e).kind != errors.BAD_REQUEST:
+                raise
+            logger.warning(f"structured output unsupported, fallback to plain: {e}")
+            return await client.chat.completions.create(model=model or LLM_MODEL, messages=msgs)
+
+    resp = await _llm_failover(one, api_key)  # на 429 — следующий ключ пула
     content = resp.choices[0].message.content if resp.choices else None
     if not content:
         return None
