@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 import bcrypt
 import jwt
-from db import get_user, create_user, set_user_theme, set_user_game_prefs
-from models import UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody
+from db import get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict
+from models import UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -144,3 +144,10 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["sound"] = bool(body.sound)
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))
     return {"gamePrefs": prefs}
+
+
+@router.post("/me/current_dict")
+async def set_current_dict(body: CurrentDictBody, user=Depends(get_current_user)):
+    """Запоминаем последний выбранный словарь, чтобы восстановить при следующем входе."""
+    await set_user_current_dict(user["id"], body.name)
+    return {"currentDict": body.name}

@@ -95,6 +95,10 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN game_prefs TEXT")  # последние настройки игры (JSON)
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN current_dict TEXT")  # последний выбранный словарь
+        except Exception:
+            pass
 
         # Общий пул сгенерированных слов: каждое норвежское слово хранится один раз
         # и переиспользуется всеми пользователями.

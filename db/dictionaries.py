@@ -180,6 +180,9 @@ async def get_user_data(user_id: int):
             """, (d["id"],)) as cur:
                 words = [_build_word(r) for r in await cur.fetchall()]
             result.append({"id": d["id"], "dictName": d["name"], "words": words})
-        return {"dictList": result, "dictNames": [d["name"] for d in dicts]}
+        async with db.execute("SELECT current_dict FROM users WHERE id = ?", (user_id,)) as cur:
+            urow = await cur.fetchone()
+        current = urow["current_dict"] if urow else None
+        return {"dictList": result, "dictNames": [d["name"] for d in dicts], "currentDict": current}
     finally:
         await _release(db)

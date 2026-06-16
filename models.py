@@ -61,6 +61,10 @@ class RefineWords(BaseModel):
     lang: str
 
 
+class CurrentDictBody(BaseModel):
+    name: str
+
+
 class ThemeBody(BaseModel):
     theme: str
 

@@ -30,6 +30,15 @@ async def set_user_game_prefs(user_id: int, prefs_json: str):
         await _release(db)
 
 
+async def set_user_current_dict(user_id: int, name: str):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET current_dict = ? WHERE id = ?", (name, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def create_user(username: str, hashed_password: str):
     db = await _conn()
     try:
