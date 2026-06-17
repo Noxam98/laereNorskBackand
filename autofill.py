@@ -175,7 +175,7 @@ async def classify_batch(items):
 
 
 DESCRIBE_BATCH = int(os.getenv("DESCRIBE_BATCH", "10"))
-DESCRIBE_CHECK_SEC = int(os.getenv("DESCRIBE_CHECK_SEC", "10"))  # как часто проверять очередь описаний
+DESCRIBE_CHECK_SEC = int(os.getenv("DESCRIBE_CHECK_SEC", "4"))  # как часто проверять очередь описаний (5 ключей → можно чаще)
 _DESCRIBE_SYS = (
     "Ты — преподаватель норвежского. Для каждого норвежского слова дай краткое "
     "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt. "
@@ -235,7 +235,7 @@ async def describe_all_task():
         logger.info(f"describe_all: +{done} (всего {total})")
         if done == 0:
             break
-        await asyncio.sleep(5)  # ≤12 пачек/мин — держимся под лимитом 15 RPM
+        await asyncio.sleep(2)  # 5 ключей × 15 RPM — пачки чаще, ротация раскидает нагрузку
 
 
 async def describe_loop():
@@ -262,7 +262,7 @@ async def describe_loop():
 # --- Догенерация недостающих переводов (на все 5 языков) ---
 TRANSLATE_LANGS = ["ru", "ukr", "en", "pl", "lt"]
 TRANSLATE_BATCH = int(os.getenv("TRANSLATE_BATCH", "10"))
-TRANSLATE_CHECK_SEC = int(os.getenv("TRANSLATE_CHECK_SEC", "15"))
+TRANSLATE_CHECK_SEC = int(os.getenv("TRANSLATE_CHECK_SEC", "6"))
 _TRANSLATE_SYS = (
     "Ты — переводчик с норвежского (bokmål). Для каждого норвежского слова дай перевод "
     "на 5 языков: ru, ukr, en, pl, lt — по 1-3 варианта (массив строк), без пояснений. "
@@ -385,7 +385,7 @@ async def reembed_loop():
 
 # --- Переразметка части речи для слов с пустой/нераспознанной POS («прочее») ---
 POS_BATCH = int(os.getenv("POS_BATCH", "20"))
-POS_CHECK_SEC = int(os.getenv("POS_CHECK_SEC", "12"))
+POS_CHECK_SEC = int(os.getenv("POS_CHECK_SEC", "5"))
 _POS_SYS = (
     "Ты — лингвист по норвежскому (bokmål). Для каждого слова определи часть речи СТРОГО "
     "одним ключом из списка: noun (существительное), verb (глагол), adjective (прилагательное), "
@@ -437,7 +437,7 @@ async def pos_loop():
 
 # --- Грамматические формы по части речи (фоновая очередь, отдельный промпт на POS) ---
 FORMS_BATCH = int(os.getenv("FORMS_BATCH", "20"))
-FORMS_CHECK_SEC = int(os.getenv("FORMS_CHECK_SEC", "12"))
+FORMS_CHECK_SEC = int(os.getenv("FORMS_CHECK_SEC", "5"))
 _FORMS = {
     "noun": dict(
         schema=NOUN_FORMS_SCHEMA, fields=["gender", "def_sg", "indef_pl", "def_pl"],
