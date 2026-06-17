@@ -36,10 +36,13 @@ def _key_id(key, pool):
         return 0
 
 
-# --- Дневник 429 ---
-def mark_429(kind, model, idx):
-    """Зафиксировать 429 у ключа idx модели model — скипаем его COOLDOWN_SEC секунд."""
-    _blocked[(kind, model, idx)] = time.monotonic() + COOLDOWN_SEC
+# --- Дневник 429 (по паре МОДЕЛЬ × КЛЮЧ, не по всему ключу) ---
+def mark_429(kind, model, idx, seconds=None):
+    """Зафиксировать 429 у пары (модель model, ключ idx) — скипаем её `seconds` секунд
+    (из retryDelay ответа), либо COOLDOWN_SEC если время не пришло. Другие модели на этом
+    же ключе не затрагиваются."""
+    wait = COOLDOWN_SEC if (seconds is None or seconds <= 0) else seconds
+    _blocked[(kind, model, idx)] = time.monotonic() + wait
 
 
 def advance(kind, model, idx):

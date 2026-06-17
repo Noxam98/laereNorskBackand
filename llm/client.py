@@ -50,8 +50,12 @@ async def _run(kind, cands, attempt, incr, label, icon):
             if ek != errors.QUOTA:
                 notify.feed(f"{icon} {label} [{model}] · k{idx} ❌ {ek}")
                 raise
-            quota.mark_429(kind, model, idx)  # скипаем этот ключ COOLDOWN_SEC секунд
-            notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️429 → следующий ключ")
+            # из 429 достаём реальное время до сброса (retryDelay) и тип лимита (RPD/RPM/TPM)
+            q = errors.quota_info(e)
+            quota.mark_429(kind, model, idx, q["retry"])  # скип ПАРЫ модель×ключ на retryDelay
+            wait = q["retry"] if q["retry"] else quota.COOLDOWN_SEC
+            tag = (q["scope"] + " ") if q["scope"] else ""
+            notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️429 {tag}retry {wait:.0f}с → следующий ключ")
             last = e
             continue
         quota.advance(kind, model, idx)        # next-запрос начнём со следующего ключа

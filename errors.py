@@ -1,3 +1,5 @@
+import re
+import json
 from dataclasses import dataclass
 from config import logger
 import notify
@@ -98,3 +100,55 @@ def report(exc, context) -> LlmError:
         notify.notify(f"⚠️ LearnNorsk: {info.summary}\nГде: {context}",
                       dedup_key=f"{info.kind}:{context}")
     return info
+
+
+def _error_body(exc):
+    """Распарсить тело ошибки провайдера в dict (из exc.body или из JSON в тексте)."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        return body.get("error", body)
+    m = re.search(r'(\{.*\})', str(exc), re.DOTALL)
+    if m:
+        try:
+            d = json.loads(m.group(1))
+            return d.get("error", d)
+        except Exception:
+            pass
+    return {}
+
+
+def quota_info(exc):
+    """Из 429-ошибки достать {retry, scope, limit}: сколько ждать до сброса (RetryInfo
+    retryDelay или из текста), тип лимита (RPD/RPM/TPM по quotaId) и значение потолка.
+    retry/scope/limit = None, если не нашли."""
+    err = _error_body(exc)
+    msg = err.get("message") or str(exc)
+    retry = scope = limit = None
+    for d in err.get("details", []) or []:
+        t = str(d.get("@type", ""))
+        if t.endswith("RetryInfo"):
+            mm = re.match(r'([\d.]+)s', str(d.get("retryDelay", "")))
+            if mm:
+                retry = float(mm.group(1))
+        if t.endswith("QuotaFailure"):
+            for v in d.get("violations", []):
+                qid = v.get("quotaId", "")
+                if "PerDay" in qid:
+                    scope = "RPD"
+                elif "PerMinute" in qid:
+                    scope = "RPM"
+                elif "Token" in qid:
+                    scope = "TPM"
+                if v.get("quotaValue"):
+                    try:
+                        limit = int(v["quotaValue"])
+                    except (TypeError, ValueError):
+                        pass
+    if retry is None:  # фолбэк: "Please retry in 42.09s"
+        mm = re.search(r'retry in ([\d.]+)s', msg, re.IGNORECASE)
+        if mm:
+            retry = float(mm.group(1))
+    if scope is None:
+        low = msg.lower().replace(" ", "")
+        scope = "RPD" if "perday" in low else ("RPM" if "perminute" in low else None)
+    return {"retry": retry, "scope": scope, "limit": limit}
