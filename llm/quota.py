@@ -1,70 +1,18 @@
-"""Ключи и квота: round-robin ключей внутри модели, суточные бюджеты, учёт расхода.
-Единственное место, которое знает про конкретные ключи. Наружу отдаёт key-free хелперы
-(text_budget_left/embed_budget_left/quota_snapshot/...). Транспорт (client.py) спрашивает
-здесь «дай ключ под этот purpose» и «учти расход»."""
+"""Здоровье ключей («дневник 429»). Бюджетов/лимитов больше нет — полагаемся на реальные
+429 от провайдера: ключ, получивший 429, скипаем COOLDOWN_SEC секунд (для пары ключ×модель).
+Учёт расхода (incr_*) ведём только для статистики, в выборе ключа он не участвует."""
+import os
+import time
 from datetime import datetime
-from db import get_usage, incr_usage
+from db import incr_usage
 from .settings import LLM_API_KEYS, EMBED_API_KEYS, TEXT_PROFILES, EMBED_MODELS
 
+COOLDOWN_SEC = int(os.getenv("KEY_429_COOLDOWN_SEC", "10"))
 
-def _today():
-    return datetime.utcnow().strftime("%Y-%m-%d")
-
-
-def _key_id(api_key, pool):
-    try:
-        return pool.index(api_key)
-    except (ValueError, AttributeError):
-        return 0
+_blocked = {}    # (kind, model, idx) -> monotonic-время, до которого ключ скипаем после 429
+_rr_cursor = {}  # (kind, model) -> индекс последнего успешно использованного ключа (round-robin)
 
 
-_rr_cursor = {}  # (kind, model) -> индекс последнего выданного ключа (для round-robin)
-
-
-async def pick(models, keys, kind):
-    """Пара (ключ, модель). Модели — в порядке приоритета; внутри модели ключи идут
-    ПО КРУГУ: каждый следующий запрос к одной модели — со следующего ключа. Пропускаем
-    ключи, исчерпавшие суточный бюджет; у модели исчерпаны ВСЕ ключи → следующая модель.
-    (None, None) — всё исчерпано."""
-    today = _today()
-    n = len(keys)
-    for m, budget in models:
-        start = _rr_cursor.get((kind, m), -1)
-        for off in range(1, n + 1):
-            idx = (start + off) % n
-            if (await get_usage(f"{today}:{kind}:{m}:k{idx}")) < budget:
-                _rr_cursor[(kind, m)] = idx
-                return keys[idx], m
-    return None, None
-
-
-async def incr_text(model, key):
-    await incr_usage(f"{_today()}:text:{model}:k{_key_id(key, LLM_API_KEYS)}")
-
-
-async def incr_emb(model, key):
-    await incr_usage(f"{_today()}:emb:{model}:k{_key_id(key, EMBED_API_KEYS)}")
-
-
-async def pick_text(purpose, model=None):
-    """(ключ, модель) для текстового запроса profile. model — явный override."""
-    if model:
-        key, _ = await pick([(model, 10 ** 9)], LLM_API_KEYS, "text")
-        return (key or (LLM_API_KEYS[0] if LLM_API_KEYS else None)), model
-    key, m = await pick(TEXT_PROFILES[purpose], LLM_API_KEYS, "text")
-    if not m:  # всё исчерпано — деградируем на последнюю модель + первый ключ
-        return (LLM_API_KEYS[0] if LLM_API_KEYS else None), TEXT_PROFILES[purpose][-1][0]
-    return key, m
-
-
-async def pick_emb():
-    key, m = await pick(EMBED_MODELS, EMBED_API_KEYS, "emb")
-    if not m:
-        return (EMBED_API_KEYS[0] if EMBED_API_KEYS else None), EMBED_MODELS[-1][0]
-    return key, m
-
-
-# --- Публичный key-free интерфейс (ключей наружу не отдаём) ---
 def text_enabled():
     return bool(LLM_API_KEYS)
 
@@ -74,40 +22,87 @@ def embed_enabled():
 
 
 def today():
-    return _today()
+    return datetime.utcnow().strftime("%Y-%m-%d")
 
 
 def key_counts():
-    """Сколько ключей в пулах (для /status — без раскрытия самих ключей)."""
     return {"text": len(LLM_API_KEYS), "emb": len(EMBED_API_KEYS)}
 
 
-async def _has_budget(models, keys, kind):
-    today = _today()
-    for m, budget in models:
-        for idx in range(len(keys)):
-            if (await get_usage(f"{today}:{kind}:{m}:k{idx}")) < budget:
-                return True
+def _key_id(key, pool):
+    try:
+        return pool.index(key)
+    except (ValueError, AttributeError):
+        return 0
+
+
+# --- Дневник 429 ---
+def mark_429(kind, model, idx):
+    """Зафиксировать 429 у ключа idx модели model — скипаем его COOLDOWN_SEC секунд."""
+    _blocked[(kind, model, idx)] = time.monotonic() + COOLDOWN_SEC
+
+
+def advance(kind, model, idx):
+    """Запомнить успешно использованный ключ — следующий запрос начнём со следующего."""
+    _rr_cursor[(kind, model)] = idx
+
+
+def _fresh(kind, model, idx):
+    until = _blocked.get((kind, model, idx))
+    return until is None or time.monotonic() >= until
+
+
+def candidates(models, keys, kind):
+    """Порядок попыток [(model, key, idx)]: модели по приоритету, ключи round-robin.
+    «Свежие» (без 429 за последние COOLDOWN_SEC) — впереди; «остывающие» — в хвосте по
+    времени истечения (чтобы не вставать колом, если все в кулдауне)."""
+    n = len(keys)
+    fresh, cooling = [], []
+    for entry in models:
+        m = entry[0] if isinstance(entry, (tuple, list)) else entry
+        start = _rr_cursor.get((kind, m), -1)
+        for off in range(1, n + 1):
+            idx = (start + off) % n
+            if _fresh(kind, m, idx):
+                fresh.append((m, keys[idx], idx))
+            else:
+                cooling.append((_blocked[(kind, m, idx)], m, keys[idx], idx))
+    cooling.sort(key=lambda x: x[0])  # сначала те, у кого кулдаун истечёт раньше
+    return fresh + [(m, k, i) for _, m, k, i in cooling]
+
+
+def _any_fresh(models, keys, kind):
+    n = len(keys)
+    for entry in models:
+        m = entry[0] if isinstance(entry, (tuple, list)) else entry
+        if any(_fresh(kind, m, idx) for idx in range(n)):
+            return True
     return False
 
 
-async def text_budget_left(purpose="autofill"):
-    """Есть ли ещё суточный бюджет на текстовые запросы данного profile."""
-    return bool(LLM_API_KEYS) and await _has_budget(TEXT_PROFILES[purpose], LLM_API_KEYS, "text")
+# --- key-free интерфейс наружу ---
+def text_candidates(purpose, model=None):
+    models = [model] if model else TEXT_PROFILES[purpose]
+    return candidates(models, LLM_API_KEYS, "text")
 
 
-async def embed_budget_left():
-    return bool(EMBED_API_KEYS) and await _has_budget(EMBED_MODELS, EMBED_API_KEYS, "emb")
+def embed_candidates():
+    return candidates(EMBED_MODELS, EMBED_API_KEYS, "emb")
 
 
-async def quota_snapshot():
-    """[{kind, model, key, used, budget}] — расход по парам ключ×модель за сегодня (для /quota)."""
-    today = _today()
-    rows = []
-    for kind, models, keys in (("text", TEXT_PROFILES["autofill"], LLM_API_KEYS),
-                               ("emb", EMBED_MODELS, EMBED_API_KEYS)):
-        for m, budget in models:
-            for idx in range(len(keys)):
-                rows.append({"kind": kind, "model": m, "key": idx, "budget": budget,
-                             "used": await get_usage(f"{today}:{kind}:{m}:k{idx}")})
-    return rows
+def text_available(purpose="autofill"):
+    """Есть ли хоть один текстовый ключ БЕЗ недавнего 429 (гейт фоновых очередей)."""
+    return text_enabled() and _any_fresh(TEXT_PROFILES[purpose], LLM_API_KEYS, "text")
+
+
+def embed_available():
+    return embed_enabled() and _any_fresh(EMBED_MODELS, EMBED_API_KEYS, "emb")
+
+
+# --- Учёт расхода (только для статистики «Расход Gemini сегодня») ---
+async def incr_text(model, key):
+    await incr_usage(f"{today()}:text:{model}:k{_key_id(key, LLM_API_KEYS)}")
+
+
+async def incr_emb(model, key):
+    await incr_usage(f"{today()}:emb:{model}:k{_key_id(key, EMBED_API_KEYS)}")

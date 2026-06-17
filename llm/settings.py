@@ -24,25 +24,22 @@ LLM_API_KEY = LLM_API_KEYS[0] if LLM_API_KEYS else ""
 EMBED_API_KEY = EMBED_API_KEYS[0] if EMBED_API_KEYS else ""
 
 
-def _parse_models(env, default_model, default_budget=10 ** 9):
-    """Список (модель, суточный_бюджет) из env "model:rpd,...". Бюджет — на ПАРУ ключ×модель."""
+def _parse_models(env, default_model):
+    """Список моделей из env "model[,model...]" (приоритет — слева направо). Старый формат
+    "model:rpd" поддерживается для совместимости — число-бюджет после ':' просто отбрасываем."""
     out = []
     for part in (os.getenv(env, "") or "").split(","):
         part = part.strip()
         if not part:
             continue
-        m, _, b = part.rpartition(":")
-        try:
-            out.append((m.strip(), int(b)))
-        except ValueError:
-            out.append((part, default_budget))
-    return out or [(default_model, default_budget)]
+        head, sep, tail = part.rpartition(":")
+        out.append(head.strip() if (sep and tail.strip().isdigit()) else part)
+    return out or [default_model]
 
 
-# purpose → список моделей: "user" — без потолка (живые запросы), "autofill" — с лимитом
-# (фон оставляет запас квоты живым запросам днём).
+# purpose → список моделей в порядке приоритета (запасные, если основная отвалится по 429).
 TEXT_PROFILES = {
     "user": _parse_models("USER_TEXT_MODELS", LLM_MODEL),
-    "autofill": _parse_models("AUTOFILL_TEXT_MODELS", LLM_MODEL, int(os.getenv("TEXT_DAILY_BUDGET", "400"))),
+    "autofill": _parse_models("AUTOFILL_TEXT_MODELS", LLM_MODEL),
 }
-EMBED_MODELS = _parse_models("AUTOFILL_EMBED_MODELS", EMBED_MODEL, int(os.getenv("EMBED_DAILY_BUDGET", "800")))
+EMBED_MODELS = _parse_models("AUTOFILL_EMBED_MODELS", EMBED_MODEL)

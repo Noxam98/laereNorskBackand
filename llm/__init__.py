@@ -14,7 +14,7 @@ from .settings import (
 )
 from .quota import (
     text_enabled, embed_enabled, today, key_counts,
-    text_budget_left, embed_budget_left, quota_snapshot,
+    text_available, embed_available, COOLDOWN_SEC,
 )
 from .client import (
     get_client, get_embed_client, ask_json, ask_model, embed_text, embed_texts, extract_json,

@@ -38,8 +38,8 @@ AUTOFILL_TZ_OFFSET = int(os.getenv("AUTOFILL_TZ_OFFSET", "2"))        # сдви
 AUTOFILL_AVOID_SAMPLE = int(os.getenv("AUTOFILL_AVOID_SAMPLE", "60"))  # фикс-размер списка исключений в промпте
 CLASSIFY_BATCH = int(os.getenv("CLASSIFY_BATCH", "50"))  # слов на один LLM-вызов классификации
 # Профили моделей и ротация ключей/квоты — целиком внутри llm.py (key-free API):
-# llm.ask_json(purpose="autofill"), llm.embed_texts(...), llm.text_budget_left("autofill"),
-# llm.embed_budget_left(), llm.text_enabled().
+# llm.ask_json(purpose="autofill"), llm.embed_texts(...), llm.text_available("autofill"),
+# llm.embed_available(), llm.text_enabled().
 
 
 def _is_night():
@@ -202,7 +202,7 @@ async def describe_all_task():
         if not batch:
             logger.info(f"describe_all: готово, всего {total}")
             break
-        if not await llm.text_budget_left("autofill"):
+        if not llm.text_available("autofill"):
             logger.info(f"describe_all: бюджет исчерпан, всего {total}")
             break
         done = await describe_batch(batch)
@@ -224,7 +224,7 @@ async def describe_loop():
         try:
             if llm.text_enabled():
                 batch = await pool_missing_description(DESCRIBE_BATCH)
-                if batch and await llm.text_budget_left("autofill"):
+                if batch and llm.text_available("autofill"):
                     done = await describe_batch(batch)
                     logger.info(f"describe_loop: +{done}/{len(batch)}")
         except Exception as e:
@@ -284,7 +284,7 @@ async def translate_loop():
                 await asyncio.sleep(0.5)  # быстро добиваем «полные»
                 continue
 
-            if not await llm.text_budget_left("autofill"):
+            if not llm.text_available("autofill"):
                 logger.info("translate_loop: бюджет моделей/ключей исчерпан")
                 await asyncio.sleep(300)
                 continue
@@ -327,7 +327,7 @@ async def reembed_loop():
             if not batch:
                 await asyncio.sleep(300)  # всё пересчитано — ждём дольше
                 continue
-            if not await llm.embed_budget_left():
+            if not llm.embed_available():
                 await asyncio.sleep(900)
                 continue
             # слова без текста (нет переводов) — просто помечаем
@@ -369,8 +369,8 @@ async def autofill_loop():
             if llm.text_enabled():
                 # Есть ли ещё суточный бюджет (квота/ключи) на текст и эмбеддинги. Само
                 # распределение по ключам×моделям — внутри llm. Озвучка (edge) бесплатна.
-                text_ok = await llm.text_budget_left("autofill")
-                emb_ok = await llm.embed_budget_left()
+                text_ok = llm.text_available("autofill")
+                emb_ok = llm.embed_available()
                 # пока идёт пере-эмбеддинг — эмбеддингом занимается ТОЛЬКО батч-цикл reembed_loop
                 # (autofill не долбит по одному, чтобы не жечь дневной лимит запросов и RPM)
                 emb_miss = (await pool_missing_embedding(10)) if (emb_ok and not await sem_embed_pending(1)) else []
