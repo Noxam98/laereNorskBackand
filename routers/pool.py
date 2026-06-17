@@ -15,6 +15,7 @@ from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, ranked_pool
 from task import description_task
 from models import RedescribeBody, RediffBody
+import runtime
 import storage
 
 router = APIRouter()
@@ -109,6 +110,22 @@ async def admin_describe_all(user=Depends(get_admin_user)):
     pending = len(await pool_missing_description(1000000))
     asyncio.create_task(describe_all_task())
     return {"pending": pending, "started": True}
+
+
+@router.get("/admin/control")
+async def admin_get_control(user=Depends(get_admin_user)):
+    """Текущее состояние пауз фоновых задач (autofill/embed/describe)."""
+    return {"paused": runtime.PAUSED}
+
+
+@router.post("/admin/control/{key}")
+async def admin_set_control(key: str, paused: bool, user=Depends(get_admin_user)):
+    """Поставить/снять паузу фоновой задачи. key: autofill|embed|describe."""
+    if key not in runtime.PAUSED:
+        raise HTTPException(status_code=400, detail="unknown control key")
+    runtime.PAUSED[key] = bool(paused)
+    logger.info(f"admin: {key} paused={runtime.PAUSED[key]}")
+    return {"paused": runtime.PAUSED}
 
 
 @router.get("/admin/stats")

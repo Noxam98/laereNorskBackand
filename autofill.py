@@ -5,6 +5,7 @@ from datetime import datetime
 from config import logger
 import errors
 import notify
+import runtime  # рантайм-флаги паузы фоновых задач (с админ-страницы)
 from activity import seconds_idle
 from db import (
     get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
@@ -89,7 +90,7 @@ async def complete_batch(words):
     озвучка каждого (edge, бесплатно). Ключ/модель эмбеддинга — внутри llm.embed_texts.
     Возвращает число посчитанных эмбеддингов."""
     pending = []  # (pid, текст-для-эмбеддинга) — только у кого вектора ещё нет
-    if llm.embed_enabled():
+    if llm.embed_enabled() and not runtime.PAUSED["embed"]:
         for w in words:
             pid = await get_pool_id(w)
             if not pid:
@@ -221,6 +222,8 @@ async def describe_loop():
     Когда очередь пуста — только дешёвый запрос к БД, без обращения к LLM."""
     await asyncio.sleep(15)
     while True:
+        if runtime.PAUSED["describe"]:
+            await asyncio.sleep(20); continue
         try:
             if llm.text_enabled():
                 batch = await pool_missing_description(DESCRIBE_BATCH)
@@ -322,6 +325,8 @@ async def reembed_loop():
     запросам). set_pool_embedding обновляет и vec-индекс. Флаг word_pool.emb_sem."""
     await asyncio.sleep(20)
     while True:
+        if runtime.PAUSED["embed"]:
+            await asyncio.sleep(20); continue
         try:
             batch = await sem_embed_pending(EMB_SEM_BATCH)
             if not batch:
@@ -358,6 +363,8 @@ async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
     while True:
+        if runtime.PAUSED["autofill"]:
+            await asyncio.sleep(20); continue
         night = _is_night()
         interval = AUTOFILL_NIGHT_INTERVAL_SEC if night else AUTOFILL_INTERVAL_SEC
         try:
