@@ -146,11 +146,22 @@ async def classify_batch(items):
         errors.report(e, "classify_batch")
         return 0
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
-    done = 0
-    for r in results:
-        if not isinstance(r, dict) or not r.get("word"):
+    # как и в describe — сопоставляем ответ ВХОДНОМУ слову (нормализованно/позиционно),
+    # чтобы «исправленное» моделью написание не оставляло слово вечно неклассифицированным.
+    words = [it["word"] for it in items]
+    norm_to_word = {normalize_word(w): w for w in words}
+    positional = len(results) == len(words)
+    done, seen = 0, set()
+    for i, r in enumerate(results):
+        if not isinstance(r, dict):
             continue
-        pid = await get_pool_id(r["word"])
+        src = norm_to_word.get(normalize_word(r.get("word") or ""))
+        if src is None and positional:
+            src = words[i]
+        if not src or src in seen:
+            continue
+        seen.add(src)
+        pid = await get_pool_id(src)
         if not pid:
             continue
         level = r.get("level") if r.get("level") in CEFR_LEVELS else None
@@ -182,11 +193,22 @@ async def describe_batch(words):
         errors.report(e, "describe_batch")
         return 0
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
-    done = 0
-    for r in results:
-        if not isinstance(r, dict) or not r.get("word"):
+    # Сохраняем описание по ВХОДНОМУ слову (что спрашивали), а не по тому, как модель его
+    # переписала: по нормализованному имени, иначе позиционно. Иначе слова с «кривым»
+    # написанием (модель его «исправляет») никогда не сохраняются и крутят очередь вечно.
+    norm_to_word = {normalize_word(w): w for w in words}
+    positional = len(results) == len(words)
+    done, seen = 0, set()
+    for i, r in enumerate(results):
+        if not isinstance(r, dict):
             continue
-        pid = await get_pool_id(r["word"])
+        src = norm_to_word.get(normalize_word(r.get("word") or ""))
+        if src is None and positional:
+            src = words[i]
+        if not src or src in seen:
+            continue
+        seen.add(src)
+        pid = await get_pool_id(src)
         if not pid:
             continue
         desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt")}
