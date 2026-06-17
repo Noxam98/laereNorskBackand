@@ -3,6 +3,35 @@ import aiosqlite
 from .core import _conn, _release, _now
 
 
+async def get_user_quiz_words(user_id: int, dict_id=None, limit: int = 80):
+    """Слова из словарей пользователя для онлайн-игры: [{norwegian, translate, embedding}].
+    dict_id=None — из всех словарей. Перевод берётся с учётом override."""
+    conds, params = ["d.user_id = ?"], [user_id]
+    if dict_id:
+        conds.append("d.id = ?"); params.append(dict_id)
+    sql = (f"SELECT wp.norwegian, wp.data, wp.embedding, dw.override "
+           f"FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+           f"JOIN word_pool wp ON wp.id = dw.pool_id "
+           f"WHERE {' AND '.join(conds)} ORDER BY RANDOM() LIMIT ?")
+    params.append(limit)
+    db = await _conn()
+    try:
+        async with db.execute(sql, params) as cur:
+            out = []
+            for r in await cur.fetchall():
+                base = json.loads(r["data"]) if r["data"] else {}
+                tr = dict(base.get("translate", {}) or {})
+                if r["override"]:
+                    ov = json.loads(r["override"])
+                    if ov.get("translate"):
+                        tr = {**tr, **ov["translate"]}
+                if tr:
+                    out.append({"norwegian": r["norwegian"], "translate": tr, "embedding": r["embedding"]})
+            return out
+    finally:
+        await _release(db)
+
+
 async def create_dictionary(user_id: int, name: str):
     name = (name or "").strip()
     if not name:

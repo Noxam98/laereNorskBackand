@@ -225,7 +225,7 @@ async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = N
         conds.append("level = ?"); params.append(level)
     if topic:
         conds.append("id IN (SELECT pool_id FROM word_topics WHERE topic = ?)"); params.append(topic)
-    sql = f"SELECT norwegian, data FROM word_pool WHERE {' AND '.join(conds)} ORDER BY RANDOM() LIMIT ?"
+    sql = f"SELECT norwegian, data, embedding FROM word_pool WHERE {' AND '.join(conds)} ORDER BY RANDOM() LIMIT ?"
     params.append(limit)
     db = await _conn()
     try:
@@ -237,7 +237,7 @@ async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = N
                 except Exception:
                     tr = {}
                 if tr:
-                    out.append({"norwegian": r["norwegian"], "translate": tr})
+                    out.append({"norwegian": r["norwegian"], "translate": tr, "embedding": r["embedding"]})
             return out
     finally:
         await _release(db)

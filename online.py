@@ -14,7 +14,8 @@ import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from config import logger
 from auth import SECRET_KEY, ALGORITHM
-from db import get_user, get_pool_duel_words, save_match
+from db import get_user, get_pool_duel_words, get_user_quiz_words, save_match
+from llm import ranked_pool
 
 router = APIRouter()
 
@@ -69,6 +70,8 @@ def _norm_settings(s):
     return {
         "game": s.get("game") if s.get("game") in GAMES else "quiz",
         "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
+        "source": "dict" if s.get("source") == "dict" else "pool",   # pool=общий пул, dict=словари хоста
+        "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
         "count": _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
@@ -104,7 +107,7 @@ class Room:
                 "players": len(self.players), "max": self.settings["maxPlayers"],
                 "level": self.settings["level"] or "", "topic": self.settings["topic"] or "",
                 "count": self.settings["count"], "dir": self.settings["dir"], "state": self.state,
-                "qtime": self.settings["qtime"], "private": self.settings["private"]}
+                "qtime": self.settings["qtime"], "source": self.settings["source"], "private": self.settings["private"]}
 
     def detail_for(self, ws):
         return {"type": "room", "room": {
@@ -160,43 +163,36 @@ async def _cancel_countdown(room):
 
 # ----------------------------- Игра: Quiz -----------------------------
 
-def _opts_tr(word, lang, pool):
-    """4 варианта-перевода на язык lang (для направления no2int)."""
-    correct = (word["translate"].get(lang) or [None])[0]
-    if not correct:
-        return None
-    distractors = []
-    for w in pool:
-        if w is word:
-            continue
-        t = (w["translate"].get(lang) or [None])[0]
-        if t and t != correct and t not in distractors:
-            distractors.append(t)
-        if len(distractors) == 3:
-            break
-    if len(distractors) < 3:
-        return None
-    options = distractors + [correct]
-    random.shuffle(options)
-    return options, options.index(correct)
+async def _distractor_candidates(target, cand):
+    """Кандидаты-дистракторы для слова: сначала семантически близкие (по эмбеддингу),
+    затем добор случайными из выборки. Формат [{norwegian, translate}]."""
+    out = []
+    neigh = await ranked_pool(target.get("embedding"), target["norwegian"], 16)
+    for w in neigh:  # [{norwegian, data}]
+        tr = (w["data"].get("translate") or {}) if isinstance(w.get("data"), dict) else {}
+        out.append({"norwegian": w["norwegian"], "translate": tr})
+    for w in cand:   # добор/фолбэк (если эмбеддинга нет — это основной источник)
+        if w["norwegian"] != target["norwegian"]:
+            out.append({"norwegian": w["norwegian"], "translate": w.get("translate", {})})
+    return out
 
 
-def _build_quiz(pool, langs, count, direction):
-    """Список вопросов. no2int: варианты-переводы у каждого языка; int2no: варианты —
+async def _build_quiz(cand, langs, count, direction):
+    """Список вопросов. Дистракторы — семантически близкие слова (по эмбеддингам), с
+    фолбэком на случайные. no2int: варианты-переводы у каждого языка; int2no: варианты —
     норвежские слова (общие), промпт — перевод на языке игрока."""
     qs = []
-    cand = list(pool)
-    random.shuffle(cand)
-    for target in cand:
+    pool = list(cand)
+    random.shuffle(pool)
+    for target in pool:
         if len(qs) >= count:
             break
         if not all((target["translate"].get(l) or []) for l in langs):
             continue
+        dcand = await _distractor_candidates(target, pool)
         if direction == "int2no":
             opts = []
-            for w in cand:
-                if w is target:
-                    continue
+            for w in dcand:
                 if w["norwegian"] != target["norwegian"] and w["norwegian"] not in opts:
                     opts.append(w["norwegian"])
                 if len(opts) == 3:
@@ -211,11 +207,23 @@ def _build_quiz(pool, langs, count, direction):
         else:
             opts, correct, ok = {}, {}, True
             for l in langs:
-                built = _opts_tr(target, l, pool)
-                if not built:
+                ctr = (target["translate"].get(l) or [None])[0]
+                if not ctr:
                     ok = False
                     break
-                opts[l], correct[l] = built
+                ds = []
+                for w in dcand:
+                    t = (w["translate"].get(l) or [None])[0]
+                    if t and t != ctr and t not in ds:
+                        ds.append(t)
+                    if len(ds) == 3:
+                        break
+                if len(ds) < 3:
+                    ok = False
+                    break
+                o = ds + [ctr]
+                random.shuffle(o)
+                opts[l], correct[l] = o, o.index(ctr)
             if ok:
                 qs.append({"per_lang": True, "no": target["norwegian"],
                            "options": opts, "correct": correct})
@@ -252,8 +260,12 @@ async def run_quiz(room):
     await _broadcast_rooms()
     s = room.settings
     langs = list({p.lang for p in room.players})
-    pool = await get_pool_duel_words(max(s["count"] * 8, 60), s["level"], s["topic"])
-    questions = _build_quiz(pool, langs, s["count"], s["dir"])
+    n = max(s["count"] * 8, 60)
+    if s["source"] == "dict":   # слова из словарей хоста
+        cand = await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
+    else:                        # общий пул по фильтрам
+        cand = await get_pool_duel_words(n, s["level"], s["topic"])
+    questions = await _build_quiz(cand, langs, s["count"], s["dir"])
     if len(questions) < 1:
         for p in room.players:
             await _send(p.ws, {"type": "game_error", "msg": "not_enough_words"})
