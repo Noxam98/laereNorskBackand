@@ -310,13 +310,18 @@ async def get_pool_meta(word: str):
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT id, level FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute("SELECT id, level, data, forms FROM word_pool WHERE norwegian = ?", (key,)) as cur:
             row = await cur.fetchone()
             if not row:
                 return None
         async with db.execute("SELECT topic FROM word_topics WHERE pool_id = ?", (row["id"],)) as cur:
             topics = [r["topic"] for r in await cur.fetchall()]
-        return {"level": row["level"], "topics": topics}
+        d = json.loads(row["data"]) if row["data"] else {}
+        return {
+            "level": row["level"], "topics": topics,
+            "part_of_speech": d.get("part_of_speech", ""),
+            "forms": json.loads(row["forms"]) if row["forms"] else None,
+        }
     finally:
         await _release(db)
 
