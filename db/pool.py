@@ -1,4 +1,7 @@
 import json
+import os
+import time
+import asyncio
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
@@ -386,23 +389,43 @@ async def get_pool_level_counts():
         await _release(db)
 
 
+# Кеш кандидатов для дистракторов/похожих слов: весь пул целиком, поэтому
+# (а) парсим JSON в отдельном потоке — не блокируем event-loop на горячем пути,
+# (б) держим короткий TTL — повторные запросы (несколько слов подряд) не перегружают БД и CPU.
+_CAND_TTL = float(os.getenv("POOL_CAND_TTL_SEC", "30"))
+_cand_cache = {"rows": None, "ts": 0.0}
+
+
+def _invalidate_candidates():
+    _cand_cache["rows"] = None
+
+
+def _build_candidates(rows):
+    return [{
+        "id": r["id"],
+        "norwegian": r["norwegian"],
+        "data": json.loads(r["data"]) if r["data"] else {},
+        "embedding": r["embedding"],  # сырые байты (декодирует llm)
+    } for r in rows]
+
+
 async def get_pool_candidates():
-    """Все слова пула (id, norwegian, data, embedding) — для подбора дистракторов."""
+    """Все слова пула (id, norwegian, data, embedding) — для подбора дистракторов.
+    Кешируется на _CAND_TTL; разбор JSON по всему пулу вынесен в поток (не блокирует loop)."""
+    now = time.monotonic()
+    cached = _cand_cache["rows"]
+    if cached is not None and (now - _cand_cache["ts"]) < _CAND_TTL:
+        return cached
     db = await _conn()
     try:
         async with db.execute("SELECT id, norwegian, data, embedding FROM word_pool") as cur:
             rows = await cur.fetchall()
-            out = []
-            for r in rows:
-                out.append({
-                    "id": r["id"],
-                    "norwegian": r["norwegian"],
-                    "data": json.loads(r["data"]) if r["data"] else {},
-                    "embedding": r["embedding"],  # сырые байты (декодирует llm)
-                })
-            return out
     finally:
         await _release(db)
+    out = await asyncio.to_thread(_build_candidates, rows)
+    _cand_cache["rows"] = out
+    _cand_cache["ts"] = now
+    return out
 
 
 async def set_pool_description(pool_id: int, description: dict):
@@ -504,6 +527,7 @@ async def delete_pool_word(norwegian: str):
     finally:
         await _release(db)
     await vec_delete(pid)  # убрать из ANN-индекса
+    _invalidate_candidates()  # слово больше не должно всплывать в «похожих»
 
 
 _POOL_SORTS = {
