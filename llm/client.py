@@ -100,24 +100,27 @@ async def ask_model(system_prompt, user_prompt, model=None, api_key=None):
     return None
 
 
-async def ask_json(system_prompt, user_prompt, schema, purpose="user", label="LLM-запрос", model=None):
+async def ask_json(system_prompt, user_prompt, schema, purpose="user", label="LLM-запрос", model=None,
+                   temperature=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста.
-    purpose — профиль ("user" | "autofill"); model — необязательный override. Ключ/429 — внутри."""
+    purpose — профиль ("user" | "autofill"); model — override; temperature — для детерминизма
+    (0 = стабильный вывод, напр. грамм. формы). Ключ/429 — внутри."""
     msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    extra = {} if temperature is None else {"temperature": temperature}
 
     async def attempt(m, key):
         client = get_client().with_options(api_key=key or "not-needed")
         try:
             resp = await client.chat.completions.create(
                 model=m or LLM_MODEL, messages=msgs,
-                response_format={"type": "json_schema", "json_schema": schema},
+                response_format={"type": "json_schema", "json_schema": schema}, **extra,
             )
         except Exception as e:
             # Фолбэк на простой запрос — ТОЛЬКО если провайдер не понял схему (400).
             if errors.classify(e).kind != errors.BAD_REQUEST:
                 raise
             logger.warning(f"structured output unsupported, fallback to plain: {e}")
-            resp = await client.chat.completions.create(model=m or LLM_MODEL, messages=msgs)
+            resp = await client.chat.completions.create(model=m or LLM_MODEL, messages=msgs, **extra)
         return resp
 
     resp = await _run("text", quota.text_candidates(purpose, model), attempt, quota.incr_text, label, "📝")

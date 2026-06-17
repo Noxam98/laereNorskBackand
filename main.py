@@ -10,7 +10,7 @@ from auth import SECRET_KEY, router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
 from autofill import (
-    autofill_loop, describe_loop, translate_loop, reembed_loop,
+    autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop,
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
 )
 
@@ -54,6 +54,8 @@ async def startup():
         logger.info("translate queue enabled: догенерация недостающих переводов")
         asyncio.create_task(reembed_loop())
         logger.info("reembed queue enabled: пере-эмбеддинг пула по смыслу")
+        asyncio.create_task(forms_loop())
+        logger.info("forms queue enabled: грамматические формы по части речи")
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")

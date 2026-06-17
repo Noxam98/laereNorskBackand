@@ -156,6 +156,23 @@ TRANSLATE_BATCH_SCHEMA = {
     },
 }
 
+# --- Грамматические формы по части речи (structured output, батч) ---
+def _forms_schema(name, fields):
+    return {"name": name, "schema": {"type": "object", "properties": {"results": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"word": {"type": "string"}, **{f: {"type": "string"} for f in fields}},
+        "required": ["word"],
+    }}}, "required": ["results"]}}
+
+
+# Существительное: род + склонение.
+NOUN_FORMS_SCHEMA = _forms_schema("noun_forms", ["gender", "def_sg", "indef_pl", "def_pl"])
+# Глагол: спряжение (инфинитив = само слово).
+VERB_FORMS_SCHEMA = _forms_schema("verb_forms", ["present", "past", "perfect"])
+# Прилагательное: степени + согласование.
+ADJ_FORMS_SCHEMA = _forms_schema("adj_forms", ["comparative", "superlative", "neuter", "plural"])
+
+
 # Уточнение перевода группы слов (одинаковые/неточные переводы) на один язык.
 REFINE_SCHEMA = {
     "name": "refine_translate_response",

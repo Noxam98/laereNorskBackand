@@ -13,12 +13,13 @@ from db import (
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     sem_embed_pending, mark_sem_embed,
-    get_pool_sample, get_pool_letter,
+    get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
 )
 import llm  # текст/эмбеддинги через key-free API: ask_json/embed_texts/text_budget_left/...
 from llm import (
     embed_texts, encode_emb, ask_json, semantic_embed_text,
     WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
+    NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA,
     TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
@@ -379,6 +380,81 @@ async def reembed_loop():
         except Exception as e:
             errors.report(e, "reembed_loop")
             await asyncio.sleep(30)
+
+
+# --- Грамматические формы по части речи (фоновая очередь, отдельный промпт на POS) ---
+FORMS_BATCH = int(os.getenv("FORMS_BATCH", "20"))
+FORMS_CHECK_SEC = int(os.getenv("FORMS_CHECK_SEC", "12"))
+_FORMS = {
+    "noun": dict(
+        schema=NOUN_FORMS_SCHEMA, fields=["gender", "def_sg", "indef_pl", "def_pl"],
+        sys=("Ты — эксперт по существительным норвежского (bokmål). Для каждого слова дай ТОЧНЫЕ "
+             "формы (включая нерегулярные): gender (en/ei/et; женский род давай 'ei'), def_sg "
+             "(опр. ед.), indef_pl (неопр. мн.), def_pl (опр. мн.). Поле word — ровно как на входе.")),
+    "verb": dict(
+        schema=VERB_FORMS_SCHEMA, fields=["present", "past", "perfect"],
+        sys=("Ты — эксперт по глаголам норвежского (bokmål). Для каждого инфинитива дай ТОЧНЫЕ "
+             "формы (включая сильные/нерегулярные): present (презенс), past (претеритум), perfect "
+             "(перфект с 'har'). Поле word — ровно как на входе.")),
+    "adjective": dict(
+        schema=ADJ_FORMS_SCHEMA, fields=["comparative", "superlative", "neuter", "plural"],
+        sys=("Ты — эксперт по прилагательным норвежского (bokmål). Для каждого дай ТОЧНЫЕ формы "
+             "(включая нерегулярные степени): comparative, superlative, neuter (средний род -t), "
+             "plural (мн./опр. -e). Поле word — ровно как на входе.")),
+}
+
+
+async def forms_batch(category, rows):
+    """rows: [(pid, norwegian, data)]. Генерит грамм. формы пачкой (temperature=0) и сохраняет.
+    Сопоставление по ВХОДНОМУ слову (как в describe) — модель могла переписать. Возвращает кол-во."""
+    cfg = _FORMS[category]
+    user = "Слова:\n" + "\n".join(f"- {nw}" for _, nw, _ in rows)
+    try:
+        data = await ask_json(cfg["sys"], user, cfg["schema"], purpose="autofill",
+                              label=f"формы {category} ({len(rows)})", temperature=0)
+    except Exception as e:
+        errors.report(e, f"forms_batch({category})")
+        return 0
+    results = (data or {}).get("results", []) if isinstance(data, dict) else []
+    norm_to_pid = {normalize_word(nw): pid for pid, nw, _ in rows}
+    positional = len(results) == len(rows)
+    done, seen = 0, set()
+    for i, r in enumerate(results):
+        if not isinstance(r, dict):
+            continue
+        pid = norm_to_pid.get(normalize_word(r.get("word") or ""))
+        if pid is None and positional:
+            pid = rows[i][0]
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        forms = {f: r[f].strip() for f in cfg["fields"]
+                 if isinstance(r.get(f), str) and r[f].strip() and r[f].strip().lower() not in ("-", "null")}
+        # сохраняем даже пустые формы (только pos) — чтобы слово считалось «обработанным» и не зациклилось
+        await set_pool_forms(pid, {"pos": category, **forms})
+        done += 1
+    return done
+
+
+async def forms_loop():
+    """Фоновая догенерация грамматических форм. Чередуем части речи (свой промпт на каждую),
+    по FORMS_BATCH слов за запрос. Слова без подходящей POS форм не получают (наречия/фразы)."""
+    await asyncio.sleep(30)
+    cats = list(_FORMS.keys())
+    i = 0
+    while True:
+        if runtime.PAUSED["forms"]:
+            await asyncio.sleep(20); continue
+        try:
+            if llm.text_enabled() and llm.text_available("autofill"):
+                cat = cats[i % len(cats)]; i += 1
+                rows = await pos_missing_forms(cat, FORMS_BATCH)
+                if rows:
+                    done = await forms_batch(cat, rows)
+                    logger.info(f"forms_loop[{cat}]: +{done}/{len(rows)}")
+        except Exception as e:
+            errors.report(e, "forms_loop")
+        await asyncio.sleep(FORMS_CHECK_SEC)
 
 
 async def autofill_loop():

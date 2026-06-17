@@ -141,6 +141,11 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN emb_sem INTEGER DEFAULT 0")
         except Exception:
             pass
+        # грамматические формы по части речи (JSON: {pos, ...формы}). NULL = ещё не сгенерированы.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN forms TEXT")
+        except Exception:
+            pass
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""

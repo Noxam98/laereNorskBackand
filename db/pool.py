@@ -48,6 +48,7 @@ async def get_pool_by_id(pool_id: int):
                 "data": json.loads(row["data"]),
                 "description": json.loads(row["description"]) if row["description"] else None,
                 "embedding": row["embedding"],  # сырые байты
+                "forms": json.loads(row["forms"]) if row["forms"] else None,
             }
     finally:
         await _release(db)
@@ -284,6 +285,7 @@ async def get_pool_stats():
             "tts": await one("SELECT COUNT(*) FROM word_pool WHERE tts IS NOT NULL"),
             "description": await one("SELECT COUNT(*) FROM word_pool WHERE description IS NOT NULL"),
             "classified": await one("SELECT COUNT(*) FROM word_pool WHERE level IS NOT NULL"),
+            "forms": await one("SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL"),
         }
     finally:
         await _release(db)
@@ -402,6 +404,34 @@ async def set_pool_description(pool_id: int, description: dict):
         await _release(db)
 
 
+async def set_pool_forms(pool_id: int, forms: dict):
+    """Грамматические формы слова (JSON: {pos, ...}). forms IS NOT NULL = «обработано»."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET forms = ? WHERE id = ?",
+                         (json.dumps(forms, ensure_ascii=False), pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def pos_missing_forms(category: str, limit: int = 20):
+    """[(id, norwegian, data_dict)] — слова заданной части речи БЕЗ грамматических форм."""
+    cond, params = _pos_cond(category)
+    if not cond:
+        return []
+    db = await _conn()
+    try:
+        async with db.execute(
+            f"SELECT id, norwegian, data FROM word_pool WHERE forms IS NULL AND {cond} ORDER BY id LIMIT ?",
+            (*params, limit),
+        ) as cur:
+            return [(r["id"], r["norwegian"], json.loads(r["data"]) if r["data"] else {})
+                    for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
 async def delete_pool_word(norwegian: str):
     """Полностью удалить слово из общего пула (каскадом у всех) + почистить кэш запросов."""
     key = normalize_word(norwegian)
@@ -440,14 +470,33 @@ _MISSING_SQL = {
     "description": "description IS NULL",
     "tts": "tts IS NULL",
     "meta": "level IS NULL",
+    "forms": "forms IS NULL",
 }
+
+# Категория части речи → подстроки в data.part_of_speech (значения разнятся: noun/substantiv/...).
+_POS_LIKE = {
+    "noun": ["%noun%", "%substantiv%", "%сущ%"],
+    "verb": ["%verb%", "%глаг%"],
+    "adjective": ["%adj%", "%прил%"],
+    "adverb": ["%adverb%", "%нареч%"],
+    "phrase": ["%phrase%", "%выраж%", "%фраз%"],
+}
+
+
+def _pos_cond(category):
+    """(sql, params) для фильтра по части речи через json_extract(data.part_of_speech)."""
+    likes = _POS_LIKE.get(category)
+    if not likes:
+        return None, []
+    sub = " OR ".join("lower(COALESCE(json_extract(data,'$.part_of_speech'),'')) LIKE ?" for _ in likes)
+    return f"({sub})", likes
 
 
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
-                        missing: str = None):
-    """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень,
-    фильтр missing (без эмбеддинга/описания/озвучки/уровня), сортировка и пагинация."""
+                        missing: str = None, pos: str = None):
+    """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень/часть речи,
+    фильтр missing (без эмбеддинга/описания/озвучки/уровня/форм), сортировка и пагинация."""
     conds, params = [], []
     key = normalize_word(q) if q else None
     if key:
@@ -462,6 +511,10 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         params.append(level)
     if missing in _MISSING_SQL:
         conds.append(_MISSING_SQL[missing])
+    pos_sql, pos_params = _pos_cond(pos)
+    if pos_sql:
+        conds.append(pos_sql)
+        params += pos_params
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
     order_by = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
@@ -478,7 +531,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
             total = (await cur.fetchone())["c"]
         async with db.execute(
-            f"SELECT id, norwegian, data, level, (tts IS NOT NULL) AS has_tts, "
+            f"SELECT id, norwegian, data, level, forms, (tts IS NOT NULL) AS has_tts, "
             f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
             f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
             (*params, limit, offset),
@@ -503,6 +556,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 "level": r["level"], "topics": topic_map.get(r["id"], []),
                 "hasTts": bool(r["has_tts"]),
                 "hasEmbedding": bool(r["has_emb"]), "hasDescription": bool(r["has_desc"]),
+                "forms": json.loads(r["forms"]) if r["forms"] else None,
             })
         return {"total": total, "words": words}
     finally:
