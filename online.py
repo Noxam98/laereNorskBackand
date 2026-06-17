@@ -71,7 +71,7 @@ def _norm_settings(s):
         "game": s.get("game") if s.get("game") in GAMES else "quiz",
         "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
         "source": "dict" if s.get("source") == "dict" else "pool",   # pool=общий пул, dict=словари хоста
-        "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,
+        "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
         "count": _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
@@ -269,7 +269,7 @@ async def run_quiz(room):
     s = room.settings
     langs = list({p.lang for p in room.players})
     n = max(s["count"] * 8, 60)
-    if s["source"] == "dict":   # слова из словарей хоста
+    if s["source"] == "dict":   # слова из словарей хоста (конкретный по id или все)
         cand = await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
     else:                        # общий пул по фильтрам
         cand = await get_pool_duel_words(n, s["level"], s["topic"])

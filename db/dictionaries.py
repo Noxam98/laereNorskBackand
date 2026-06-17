@@ -5,7 +5,7 @@ from .core import _conn, _release, _now
 
 async def get_user_quiz_words(user_id: int, dict_id=None, limit: int = 80):
     """Слова из словарей пользователя для онлайн-игры: [{norwegian, translate, embedding}].
-    dict_id=None — из всех словарей. Перевод берётся с учётом override."""
+    dict_id=None — из всех словарей, иначе из конкретного. Перевод — с учётом override."""
     conds, params = ["d.user_id = ?"], [user_id]
     if dict_id:
         conds.append("d.id = ?"); params.append(dict_id)
