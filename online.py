@@ -7,6 +7,7 @@
 """
 import json
 import time
+import math
 import asyncio
 import random
 import jwt
@@ -82,6 +83,7 @@ class Player:
         self.lang = lang
         self.ready = False
         self.score = 0
+        self.streak = 0     # верных ответов подряд (для бонуса и показа «🔥 N»)
         self.room = None
 
 
@@ -230,16 +232,21 @@ def _q_correct(q, lang):
     return q["correct"][lang] if q["per_lang"] else q["correct"]
 
 
-def _gain(elapsed, correct):
+def _gain(elapsed, correct, streak):
+    """Очки за верный ответ: резкая зависимость от скорости (экспонента) + бонус за серию.
+    ~880 при мгновенном ответе, ~390 к 4 сек, ~190 к 8 сек; серия даёт до +250."""
     if not correct:
         return 0
-    return max(100, round(1000 * (1 - elapsed / QUESTION_TIME)))
+    speed = round(900 * math.exp(-elapsed / 3.5))
+    bonus = min(max(streak - 1, 0), 5) * 50
+    return 100 + speed + bonus
 
 
 async def run_quiz(room):
     room.state = "playing"
     for p in room.players:
         p.score = 0
+        p.streak = 0
     await _broadcast_rooms()
     s = room.settings
     langs = list({p.lang for p in room.players})
@@ -262,20 +269,19 @@ async def run_quiz(room):
             await asyncio.wait_for(room._qevent.wait(), timeout=QUESTION_TIME)
         except asyncio.TimeoutError:
             pass
-        # скоринг
+        # скоринг: серия (streak) обновляется по верности, очки — скорость + бонус за серию
+        gains = {}
         for p in room.players:
             ans = room._answers.get(p.ws)
-            if ans is not None:
-                choice, elapsed = ans
-                p.score += _gain(elapsed, choice == _q_correct(q, p.lang))
+            correct = ans is not None and ans[0] == _q_correct(q, p.lang)
+            p.streak = p.streak + 1 if correct else 0
+            g = _gain(ans[1], correct, p.streak) if correct else 0
+            gains[p.ws] = g
+            p.score += g
         standings = _standings(room)
         for p in room.players:
-            ans = room._answers.get(p.ws)
-            gained = 0
-            if ans is not None:
-                gained = _gain(ans[1], ans[0] == _q_correct(q, p.lang))
             await _send(p.ws, {"type": "reveal", "correct": _q_correct(q, p.lang),
-                               "gained": gained, "standings": standings})
+                               "gained": gains[p.ws], "streak": p.streak, "standings": standings})
         await asyncio.sleep(REVEAL_PAUSE)
 
     podium = _standings(room)
@@ -290,7 +296,7 @@ async def run_quiz(room):
 
 def _standings(room):
     ranked = sorted(room.players, key=lambda p: -p.score)
-    return [{"name": _name(p.user), "score": p.score, "place": i + 1} for i, p in enumerate(ranked)]
+    return [{"name": _name(p.user), "score": p.score, "place": i + 1, "streak": p.streak} for i, p in enumerate(ranked)]
 
 
 async def _reset_to_lobby(room):
