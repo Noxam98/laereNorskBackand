@@ -42,7 +42,8 @@ async def _run(kind, cands, attempt, incr, label, icon):
         notify.feed(f"{icon} {label} ⛔ ключей нет")
         return None
     last = None
-    last_scope = None
+    last_scope = last_wait = None
+    failed = []  # ключи, давшие 429 (для краткого отчёта одной строкой)
     for model, key, idx in cands:
         try:
             res = await attempt(model, key)
@@ -51,23 +52,20 @@ async def _run(kind, cands, attempt, incr, label, icon):
             if ek != errors.QUOTA:
                 notify.feed(f"{icon} {label} [{model}] · k{idx} ❌ {ek}")
                 raise
-            # из 429 достаём время до сброса (retryDelay) и тип лимита (RPD/RPM/TPM).
+            # из 429 достаём реальное время до сброса (retryDelay) и тип лимита (RPD/RPM/TPM)
             q = errors.quota_info(e)
             wait = q["retry"] or quota.COOLDOWN_SEC
-            if q["scope"] == "RPD":  # дневной лимит — retryDelay врёт, ждём дольше
-                wait = max(wait, quota.RPD_COOLDOWN_SEC)
-            quota.mark_429(kind, model, idx, wait)  # скип ПАРЫ модель×ключ на это время
-            tag = (q["scope"] + " ") if q["scope"] else ""
-            notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️429 {tag}пауза {wait:.0f}с → следующий ключ")
-            last = e
-            last_scope = q["scope"]
+            quota.mark_429(kind, model, idx, wait)  # скип ПАРЫ модель×ключ на retryDelay
+            failed.append(idx); last = e; last_scope = q["scope"]; last_wait = wait
             continue
         quota.advance(kind, model, idx)        # next-запрос начнём со следующего ключа
         await incr(model, key)                 # учёт для статистики
-        notify.feed(f"{icon} {label} [{model}] · k{idx} ✅")
+        skips = f" (429 на k{','.join(map(str, failed))})" if failed else ""
+        notify.feed(f"{icon} {label} [{model}] · k{idx} ✅{skips}")
         return res
+    # все ключи в 429 — одна сводная строка с типом лимита и временем
     tag = (last_scope + " ") if last_scope else ""
-    notify.feed(f"{icon} {label} ⛔ 429 {tag}на ВСЕХ ключах — пауза до восстановления")
+    notify.feed(f"{icon} {label} ⛔ 429 {tag}на всех ключах (k{','.join(map(str, failed))}) · retry ~{last_wait:.0f}с")
     if last:
         raise last
     return None
