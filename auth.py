@@ -10,8 +10,11 @@ import jwt
 from db import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
+    set_user_password,
 )
-from models import UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth
+from models import (
+    UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth, PasswordBody,
+)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
@@ -193,6 +196,16 @@ async def link_google(body: GoogleAuth, user=Depends(get_current_user)):
         raise HTTPException(status_code=409, detail="Account already linked to a different Google account")
     await set_user_google(user["id"], sub, email)
     return {"googleLinked": True, "email": email}
+
+
+@router.post("/me/set_password")
+async def set_password(body: PasswordBody, user=Depends(get_current_user)):
+    """Задать/сменить пароль (в т.ч. первый пароль для Google-аккаунта)."""
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+    hashed = await asyncio.to_thread(hash_password, body.password)
+    await set_user_password(user["id"], hashed)
+    return {"hasPassword": True}
 
 
 @router.post("/me/unlink_google")

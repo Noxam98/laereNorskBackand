@@ -21,6 +21,10 @@ class GoogleAuth(BaseModel):
     credential: str   # ID-token (JWT) от Google Identity Services
 
 
+class PasswordBody(BaseModel):
+    password: str
+
+
 class DictCreate(BaseModel):
     name: str
 

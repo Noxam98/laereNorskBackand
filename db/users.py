@@ -54,6 +54,15 @@ async def create_user(username: str, hashed_password: str):
         await _release(db)
 
 
+async def set_user_password(user_id: int, hashed_password: str):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET password = ? WHERE id = ?", (hashed_password, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def get_user_by_google_sub(google_sub: str):
     db = await _conn()
     try:
