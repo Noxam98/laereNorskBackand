@@ -20,7 +20,7 @@ from .pool import (
     set_pool_meta, pool_missing_meta, pool_missing_description, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
     get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,
-    set_pool_forms, pos_missing_forms, set_pool_pos, pos_uncategorized,
+    set_pool_forms, pos_missing_forms, set_pool_pos, pos_uncategorized, clear_nonformable_forms,
 )
 from .cache import (
     get_cached_query, cache_query, set_cached_query, clear_query_cache, get_usage, get_usage_like, incr_usage,

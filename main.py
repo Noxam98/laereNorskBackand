@@ -44,6 +44,14 @@ async def startup():
             logger.info(f"migrated {migrated} embeddings to binary float16")
     except Exception as e:
         logger.warning(f"embedding migration: {e}")
+    # чистка форм у частей речи, которым они не положены (мусор от прошлой коллизии noun/pronoun, verb/adverb)
+    try:
+        from db import clear_nonformable_forms
+        cleared = await clear_nonformable_forms()
+        if cleared:
+            logger.info(f"cleared grammatical forms from {cleared} non-formable words")
+    except Exception as e:
+        logger.warning(f"forms cleanup: {e}")
     if text_enabled():
         if AUTOFILL_ENABLED:
             asyncio.create_task(autofill_loop())

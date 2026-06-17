@@ -285,7 +285,8 @@ async def get_pool_stats():
             "tts": await one("SELECT COUNT(*) FROM word_pool WHERE tts IS NOT NULL"),
             "description": await one("SELECT COUNT(*) FROM word_pool WHERE description IS NOT NULL"),
             "classified": await one("SELECT COUNT(*) FROM word_pool WHERE level IS NOT NULL"),
-            "forms": await one("SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL"),
+            # формы считаем только у formable-частей речи (иначе числитель > знаменателя)
+            "forms": await one(f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_FORMABLE_SQL}"),
             # сколько слов вообще должны иметь формы (сущ./глаг./прил.) — знаменатель для прогресса
             "formable": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_FORMABLE_SQL}"),
         }
@@ -420,6 +421,18 @@ async def set_pool_forms(pool_id: int, forms: dict):
         await db.execute("UPDATE word_pool SET forms = ? WHERE id = ?",
                          (json.dumps(forms, ensure_ascii=False), pool_id))
         await db.commit()
+    finally:
+        await _release(db)
+
+
+async def clear_nonformable_forms():
+    """Удаляет грамм. формы у слов, чья часть речи их не предполагает (наречия/предлоги/…).
+    Чистит «мусор» от прошлой коллизии (местоимения как сущ., наречия как глаг.). Возвращает кол-во."""
+    db = await _conn()
+    try:
+        cur = await db.execute(f"UPDATE word_pool SET forms = NULL WHERE forms IS NOT NULL AND NOT {_FORMABLE_SQL}")
+        await db.commit()
+        return cur.rowcount or 0
     finally:
         await _release(db)
 
