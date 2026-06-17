@@ -286,6 +286,8 @@ async def get_pool_stats():
             "description": await one("SELECT COUNT(*) FROM word_pool WHERE description IS NOT NULL"),
             "classified": await one("SELECT COUNT(*) FROM word_pool WHERE level IS NOT NULL"),
             "forms": await one("SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL"),
+            # сколько слов вообще должны иметь формы (сущ./глаг./прил.) — знаменатель для прогресса
+            "formable": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_FORMABLE_SQL}"),
         }
     finally:
         await _release(db)
@@ -525,13 +527,40 @@ _POS_LIKE = {
 }
 
 
+_POS_COL = "lower(COALESCE(json_extract(data,'$.part_of_speech'),''))"
+# Исключения от коллизий подстрок: «pronoun» содержит «noun», «adverb» содержит «verb».
+# Без них фильтр noun/verb захватывал бы местоимения/наречия (и Gemini получал бы их формы).
+_POS_NOT = {"noun": ["%pronoun%", "%pronomen%"], "verb": ["%adverb%"]}
+
+
 def _pos_cond(category):
     """(sql, params) для фильтра по части речи через json_extract(data.part_of_speech)."""
     likes = _POS_LIKE.get(category)
     if not likes:
         return None, []
-    sub = " OR ".join("lower(COALESCE(json_extract(data,'$.part_of_speech'),'')) LIKE ?" for _ in likes)
-    return f"({sub})", likes
+    sub = " OR ".join(f"{_POS_COL} LIKE ?" for _ in likes)
+    sql, params = f"({sub})", list(likes)
+    for nx in _POS_NOT.get(category, []):
+        sql += f" AND {_POS_COL} NOT LIKE ?"; params.append(nx)
+    return sql, params
+
+
+def _pos_inline(category):
+    """Чистый SQL-фрагмент по части речи (константы, без плейсхолдеров) — для составных условий."""
+    likes = _POS_LIKE.get(category) or []
+    sql = "(" + " OR ".join(f"{_POS_COL} LIKE '{p}'" for p in likes) + ")"
+    for nx in _POS_NOT.get(category, []):
+        sql += f" AND {_POS_COL} NOT LIKE '{nx}'"
+    return f"({sql})"
+
+
+# Части речи, у которых вообще бывают грамматические формы (склонение/спряжение/степени).
+# Остальные (наречия, предлоги, союзы, числит., междометия, фразы…) форм не получают —
+# их не гоняем через Gemini и не считаем «без форм».
+FORMABLE_POS = ("noun", "verb", "adjective")
+_FORMABLE_SQL = "(" + " OR ".join(_pos_inline(c) for c in FORMABLE_POS) + ")"
+# «Без форм» = только словам, которым формы положены, но их ещё нет.
+_MISSING_SQL["forms"] = f"forms IS NULL AND {_FORMABLE_SQL}"
 
 
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
