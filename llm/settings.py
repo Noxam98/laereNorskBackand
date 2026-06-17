@@ -9,7 +9,7 @@ import os
 GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", GEMINI_OPENAI_URL)
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")   # профиль autofill (массовый фон)
-USER_TEXT_MODEL = "gemini-3.5-flash"                          # профиль user (интерактив: описания, генерация слов)
+USER_TEXT_MODEL = "gemini-3.1-flash-lite"                     # профиль user (интерактив: описания, генерация слов)
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", GEMINI_OPENAI_URL)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "gemini-embedding-2")
 
