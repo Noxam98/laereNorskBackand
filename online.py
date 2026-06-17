@@ -385,6 +385,18 @@ async def ws_online(ws: WebSocket):
                     await _send_room(me.room)
                     await _broadcast_rooms()
 
+            elif t == "update_settings":
+                room = me.room
+                # менять настройки может только хост и только в лобби; хост при выходе
+                # владельца переназначается оставшемуся (см. _leave).
+                if room and room.host is me and room.state == "lobby":
+                    room.settings = _norm_settings(msg.get("settings"))
+                    nm = (msg.get("name") or "").strip()[:40]
+                    if nm:
+                        room.name = nm
+                    await _send_room(room)
+                    await _broadcast_rooms()
+
             elif t == "ready":
                 if me.room and me.room.state == "lobby":
                     me.ready = bool(msg.get("ready"))
