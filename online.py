@@ -19,12 +19,13 @@ from db import get_user, get_pool_duel_words, save_match
 router = APIRouter()
 
 # --- Параметры (дефолты; часть берётся из настроек комнаты) ---
-QUESTION_TIME = 15      # сек на вопрос
+QUESTION_TIME = 15      # дефолт сек на вопрос (если не задано в настройках комнаты)
 COUNTDOWN = 5           # сек обратного отсчёта перед стартом (тиканье на клиенте)
 REVEAL_PAUSE = 4        # сек показа таблицы между вопросами
 MIN_PLAYERS = 2
 MAX_PLAYERS_CAP = 8
 COUNT_MIN, COUNT_MAX = 3, 20
+QTIME_MIN, QTIME_MAX = 5, 30   # границы длительности вопроса
 
 _rooms = {}             # id -> Room
 _watchers = set()       # websockets, смотрящие список комнат
@@ -71,6 +72,7 @@ def _norm_settings(s):
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
         "count": _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
+        "qtime": _clamp(s.get("qtime"), QTIME_MIN, QTIME_MAX, QUESTION_TIME),
         "maxPlayers": _clamp(s.get("maxPlayers"), MIN_PLAYERS, MAX_PLAYERS_CAP, 4),
         "private": bool(s.get("private")),
     }
@@ -102,7 +104,7 @@ class Room:
                 "players": len(self.players), "max": self.settings["maxPlayers"],
                 "level": self.settings["level"] or "", "topic": self.settings["topic"] or "",
                 "count": self.settings["count"], "dir": self.settings["dir"], "state": self.state,
-                "private": self.settings["private"]}
+                "qtime": self.settings["qtime"], "private": self.settings["private"]}
 
     def detail_for(self, ws):
         return {"type": "room", "room": {
@@ -220,12 +222,12 @@ def _build_quiz(pool, langs, count, direction):
     return qs
 
 
-def _q_payload(q, i, total, lang):
+def _q_payload(q, i, total, lang, qtime):
     if q["per_lang"]:   # no2int — показываем норвежское слово, варианты-переводы
         return {"type": "question", "i": i, "total": total, "dir": "no2int",
-                "prompt": q["no"], "options": q["options"][lang], "time": QUESTION_TIME}
+                "prompt": q["no"], "options": q["options"][lang], "time": qtime}
     return {"type": "question", "i": i, "total": total, "dir": "int2no",   # перевод → норв. слова
-            "prompt": q["prompt"][lang], "options": q["options"], "time": QUESTION_TIME}
+            "prompt": q["prompt"][lang], "options": q["options"], "time": qtime}
 
 
 def _q_correct(q, lang):
@@ -257,6 +259,7 @@ async def run_quiz(room):
             await _send(p.ws, {"type": "game_error", "msg": "not_enough_words"})
         await _reset_to_lobby(room)
         return
+    qtime = s["qtime"]
 
     for i, q in enumerate(questions):
         room._answers = {}        # player_ws -> (choice, elapsed)
@@ -264,9 +267,9 @@ async def run_quiz(room):
         room._qstart = time.monotonic()
         room._cur = i
         for p in room.players:
-            await _send(p.ws, _q_payload(q, i, len(questions), p.lang))
+            await _send(p.ws, _q_payload(q, i, len(questions), p.lang, qtime))
         try:
-            await asyncio.wait_for(room._qevent.wait(), timeout=QUESTION_TIME)
+            await asyncio.wait_for(room._qevent.wait(), timeout=qtime)
         except asyncio.TimeoutError:
             pass
         # скоринг: серия (streak) обновляется по верности, очки — скорость + бонус за серию
