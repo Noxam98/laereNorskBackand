@@ -434,10 +434,20 @@ _POOL_SORTS = {
 }
 
 
+# Админ-фильтр «чего не хватает у слова» (значение → SQL-условие).
+_MISSING_SQL = {
+    "embedding": "embedding IS NULL",
+    "description": "description IS NULL",
+    "tts": "tts IS NULL",
+    "meta": "level IS NULL",
+}
+
+
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
-                        topics=None, level: str = None, sort: str = "alpha", order: str = "asc"):
+                        topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
+                        missing: str = None):
     """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень,
-    сортировка и постраничная пагинация. Возвращает {total, words[]}."""
+    фильтр missing (без эмбеддинга/описания/озвучки/уровня), сортировка и пагинация."""
     conds, params = [], []
     key = normalize_word(q) if q else None
     if key:
@@ -450,6 +460,8 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
     if level:
         conds.append("level = ?")
         params.append(level)
+    if missing in _MISSING_SQL:
+        conds.append(_MISSING_SQL[missing])
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
     order_by = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
@@ -466,7 +478,8 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
             total = (await cur.fetchone())["c"]
         async with db.execute(
-            f"SELECT id, norwegian, data, level, (tts IS NOT NULL) AS has_tts "
+            f"SELECT id, norwegian, data, level, (tts IS NOT NULL) AS has_tts, "
+            f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
             f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ) as cur:
@@ -489,6 +502,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 "part_of_speech": d.get("part_of_speech", ""),
                 "level": r["level"], "topics": topic_map.get(r["id"], []),
                 "hasTts": bool(r["has_tts"]),
+                "hasEmbedding": bool(r["has_emb"]), "hasDescription": bool(r["has_desc"]),
             })
         return {"total": total, "words": words}
     finally:

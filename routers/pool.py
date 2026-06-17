@@ -82,11 +82,12 @@ async def tts(word: str, lang: str = None):
 @router.get("/pool")
 async def pool(q: str = None, limit: int = 60, offset: int = 0,
               topics: str = None, level: str = None,
-              sort: str = "alpha", order: str = "asc", user=Depends(get_current_user)):
+              sort: str = "alpha", order: str = "asc", missing: str = None,
+              user=Depends(get_current_user)):
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added") else "alpha"
-    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order)
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing)
     res["facets"] = await get_pool_facets(q, topic_list, lvl)  # динамические счётчики под текущий фильтр
     return res
 
