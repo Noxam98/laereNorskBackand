@@ -10,10 +10,10 @@ import jwt
 from db import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
-    set_user_password,
+    set_user_password, set_user_name,
 )
 from models import (
-    UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth, PasswordBody,
+    UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth, PasswordBody, NameBody,
 )
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
@@ -142,7 +142,7 @@ async def google_login(body: GoogleAuth):
     user = await get_user_by_google_sub(sub)
     if not user:
         username = await _unique_username(email)
-        res = await create_google_user(username, email, sub)
+        res = await create_google_user(username, email, sub, info.get("name"))
         if res.get("error"):
             raise HTTPException(status_code=409, detail="Could not create account")
         user = await get_user(username)
@@ -178,10 +178,19 @@ async def me(user=Depends(get_current_user)):
     return {
         "username": user["username"], "theme": user.get("theme"), "is_admin": is_admin(user),
         "gamePrefs": _parse_game_prefs(user.get("game_prefs")),
+        "name": user.get("display_name"),
         "email": user.get("email"),
         "googleLinked": bool(user.get("google_sub")),
         "hasPassword": bool((user.get("password") or "").strip()),
     }
+
+
+@router.post("/me/name")
+async def set_name(body: NameBody, user=Depends(get_current_user)):
+    """Задать/сменить отображаемое имя (персонализация). Пусто — сбросить."""
+    name = body.name.strip()[:40]
+    await set_user_name(user["id"], name or None)
+    return {"name": name or None}
 
 
 @router.post("/me/link_google")
@@ -195,6 +204,9 @@ async def link_google(body: GoogleAuth, user=Depends(get_current_user)):
     if user.get("google_sub") and user["google_sub"] != sub:
         raise HTTPException(status_code=409, detail="Account already linked to a different Google account")
     await set_user_google(user["id"], sub, email)
+    # если своего имени ещё нет — подставим имя из Google
+    if not (user.get("display_name") or "").strip() and info.get("name"):
+        await set_user_name(user["id"], info["name"])
     return {"googleLinked": True, "email": email}
 
 

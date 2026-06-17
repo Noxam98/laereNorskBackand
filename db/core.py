@@ -107,6 +107,10 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")  # Google account id (sub); NULL = не привязан
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN display_name TEXT")  # отображаемое имя (персонализация)
+        except Exception:
+            pass
         # один Google-аккаунт = максимум один наш юзер (частичный uniq, NULL не считаются)
         try:
             await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub "

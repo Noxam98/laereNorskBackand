@@ -73,13 +73,22 @@ async def get_user_by_google_sub(google_sub: str):
         await _release(db)
 
 
-async def create_google_user(username: str, email: str, google_sub: str):
+async def set_user_name(user_id: int, name: str):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def create_google_user(username: str, email: str, google_sub: str, display_name: str = None):
     """Новый аккаунт через Google: пароля нет ('' — bcrypt его не примет), есть email/google_sub."""
     db = await _conn()
     try:
         cur = await db.execute(
-            "INSERT INTO users (username, password, email, google_sub) VALUES (?, '', ?, ?)",
-            (username, email, google_sub),
+            "INSERT INTO users (username, password, email, google_sub, display_name) VALUES (?, '', ?, ?, ?)",
+            (username, email, google_sub, display_name or None),
         )
         user_id = cur.lastrowid
         await db.execute("INSERT INTO dictionaries (user_id, name, created_at) VALUES (?, ?, ?)", (user_id, "default", _now()))

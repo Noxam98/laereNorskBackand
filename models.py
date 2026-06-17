@@ -25,6 +25,10 @@ class PasswordBody(BaseModel):
     password: str
 
 
+class NameBody(BaseModel):
+    name: str
+
+
 class DictCreate(BaseModel):
     name: str
 
