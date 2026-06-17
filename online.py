@@ -191,55 +191,63 @@ async def _build_quiz(cand, langs, count, direction):
             continue
         dcand = await _distractor_candidates(target, pool)
         if direction == "int2no":
-            opts = []
+            words = []
             for w in dcand:
-                if w["norwegian"] != target["norwegian"] and w["norwegian"] not in opts:
-                    opts.append(w["norwegian"])
-                if len(opts) == 3:
+                if w["norwegian"] != target["norwegian"] and w["norwegian"] not in words:
+                    words.append(w["norwegian"])
+                if len(words) == 3:
                     break
-            if len(opts) < 3:
+            if len(words) < 3:
                 continue
-            options = opts + [target["norwegian"]]
+            options = words + [target["norwegian"]]
             random.shuffle(options)
             qs.append({"per_lang": False, "no": target["norwegian"],
                        "prompt": {l: (target["translate"][l] or [""])[0] for l in langs},
-                       "options": options, "correct": options.index(target["norwegian"])})
+                       "options": options, "keys": options, "correct": options.index(target["norwegian"])})
         else:
-            opts, correct, ok = {}, {}, True
+            opts, keys, correct, ok = {}, {}, {}, True
             for l in langs:
                 ctr = (target["translate"].get(l) or [None])[0]
                 if not ctr:
                     ok = False
                     break
-                ds = []
+                pairs, seen = [], {ctr}   # (norwegian-ключ, перевод-вариант)
                 for w in dcand:
+                    if w["norwegian"] == target["norwegian"]:
+                        continue
                     t = (w["translate"].get(l) or [None])[0]
-                    if t and t != ctr and t not in ds:
-                        ds.append(t)
-                    if len(ds) == 3:
+                    if t and t not in seen:
+                        pairs.append((w["norwegian"], t)); seen.add(t)
+                    if len(pairs) == 3:
                         break
-                if len(ds) < 3:
+                if len(pairs) < 3:
                     ok = False
                     break
-                o = ds + [ctr]
-                random.shuffle(o)
-                opts[l], correct[l] = o, o.index(ctr)
+                pairs.append((target["norwegian"], ctr))
+                random.shuffle(pairs)
+                opts[l] = [t for _, t in pairs]
+                keys[l] = [wd for wd, _ in pairs]   # ключ опции = норвежское слово (общий для всех языков)
+                correct[l] = next(idx for idx, (wd, _) in enumerate(pairs) if wd == target["norwegian"])
             if ok:
                 qs.append({"per_lang": True, "no": target["norwegian"],
-                           "options": opts, "correct": correct})
+                           "options": opts, "keys": keys, "correct": correct})
     return qs
 
 
 def _q_payload(q, i, total, lang, qtime):
     if q["per_lang"]:   # no2int — показываем норвежское слово, варианты-переводы
         return {"type": "question", "i": i, "total": total, "dir": "no2int",
-                "prompt": q["no"], "options": q["options"][lang], "time": qtime}
+                "prompt": q["no"], "options": q["options"][lang], "keys": q["keys"][lang], "time": qtime}
     return {"type": "question", "i": i, "total": total, "dir": "int2no",   # перевод → норв. слова
-            "prompt": q["prompt"][lang], "options": q["options"], "time": qtime}
+            "prompt": q["prompt"][lang], "options": q["options"], "keys": q["keys"], "time": qtime}
 
 
 def _q_correct(q, lang):
     return q["correct"][lang] if q["per_lang"] else q["correct"]
+
+
+def _q_keys(q, lang):
+    return q["keys"][lang] if q["per_lang"] else q["keys"]
 
 
 def _gain(elapsed, correct, streak):
@@ -293,10 +301,18 @@ async def run_quiz(room):
             g = _gain(ans[1], correct, p.streak) if correct else 0
             gains[p.ws] = g
             p.score += g
+        # голоса по словам-ключам: {норвежское_слово: [имена выбравших]} — клиент разложит по кнопкам
+        votes = {}
+        for p in room.players:
+            ans = room._answers.get(p.ws)
+            if ans is not None:
+                kk = _q_keys(q, p.lang)
+                if 0 <= ans[0] < len(kk):
+                    votes.setdefault(kk[ans[0]], []).append(_name(p.user))
         standings = _standings(room)
         for p in room.players:
             await _send(p.ws, {"type": "reveal", "correct": _q_correct(q, p.lang),
-                               "gained": gains[p.ws], "streak": p.streak, "standings": standings})
+                               "gained": gains[p.ws], "streak": p.streak, "standings": standings, "votes": votes})
         await asyncio.sleep(REVEAL_PAUSE)
 
     podium = _standings(room)
@@ -428,6 +444,10 @@ async def ws_online(ws: WebSocket):
                 if room and room.state == "playing" and msg.get("q") == getattr(room, "_cur", -1):
                     if me.ws not in room._answers:
                         room._answers[me.ws] = (msg.get("choice"), time.monotonic() - room._qstart)
+                        # сообщить всем, КТО уже ответил (без выбора) — для живой подсветки игроков
+                        names = [_name(pl.user) for pl in room.players if pl.ws in room._answers]
+                        for pl in room.players:
+                            await _send(pl.ws, {"type": "answered", "names": names})
                         if all(p.ws in room._answers for p in room.players):
                             room._qevent.set()
     except WebSocketDisconnect:
