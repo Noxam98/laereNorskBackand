@@ -416,6 +416,7 @@ async def autofill_loop():
                     prompt = (f"Дай {AUTOFILL_BATCH} распространённых норвежских слов {constraint}. "
                               f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
                     new_words, dup_words = [], []
+                    ok = True
                     try:
                         data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
                                               purpose="autofill", label=f"автозаполнение ({label})")
@@ -428,19 +429,24 @@ async def autofill_loop():
                                     await apply_item_meta(pid, it)
                                 (dup_words if existed else new_words).append(it["word"])
                     except Exception as e:
-                        errors.report(e, "autofill generate")
+                        ok = False
+                        errors.report(e, "autofill generate")  # ошибку уже отчитали — «пусто» не шлём
                     if new_words:
                         await complete_batch(new_words)  # пачкой
                     logger.info(f"autofill: {label} new={len(new_words)} dup={len(dup_words)}")
-                    # Разбивка в ленту: почему добавилось не всё — LLM иногда повторяет
-                    # уже известные слова, несмотря на список «не предлагай».
-                    msg = (f"🆕 автозаполнение ({label}): запрошено {len(new_words) + len(dup_words)} · "
-                           f"новых {len(new_words)} · уже было {len(dup_words)}")
-                    if new_words:
-                        msg += f"\n  ➕ новые: {', '.join(new_words)}"
-                    if dup_words:
-                        msg += f"\n  ↩️ повтор известных: {', '.join(dup_words)}"
-                    notify.feed(msg)
+                    # Разбивка в ленту: LLM иногда повторяет известные слова (несмотря на стоп-лист),
+                    # а иногда не находит новых вовсе — тогда честно пишем «пусто».
+                    if ok and not new_words and not dup_words:
+                        notify.feed(f"🆕 автозаполнение ({label}): пусто — модель не нашла новых слов "
+                                    f"(просили {AUTOFILL_BATCH}, все распространённые уже в пуле)")
+                    elif ok:
+                        msg = (f"🆕 автозаполнение ({label}): просили {AUTOFILL_BATCH} · "
+                               f"новых {len(new_words)} · повтор {len(dup_words)}")
+                        if new_words:
+                            msg += f"\n  ➕ {', '.join(new_words)}"
+                        if dup_words:
+                            msg += f"\n  ↩️ уже были: {', '.join(dup_words)}"
+                        notify.feed(msg)
         except Exception as e:
             errors.report(e, "autofill_loop")
             await asyncio.sleep(120)
