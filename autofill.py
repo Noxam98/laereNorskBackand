@@ -85,6 +85,23 @@ _LETTER_WEIGHTS = {
 AUTOFILL_LETTERS = list(_LETTER_WEIGHTS.keys())
 AUTOFILL_LETTER_W = list(_LETTER_WEIGHTS.values())
 
+# Срез для генерации новых слов — узкий 2-буквенный префикс: его слова влезают в стоп-лист
+# ЦЕЛИКОМ, поэтому «не предлагай известные» реально работает (на одну букву слов уже сотни —
+# случайные 60 не покрывали, модель повторяла известное → дубли).
+AUTOFILL_PREFIX_AVOID = int(os.getenv("AUTOFILL_PREFIX_AVOID", "400"))  # потолок стоп-листа на срез
+AUTOFILL_DRY_LIMIT = int(os.getenv("AUTOFILL_DRY_LIMIT", "3"))  # столько пустых ответов подряд → срез временно пропускаем
+_dry = {}  # срез -> сколько раз подряд не дал новых слов (в памяти; сбрасывается при рестарте)
+
+_VOWELS = "aeiouyæøå"
+_CLUSTER_AFTER = set("skgbpftdvhr")  # согласные, после которых бывают кластеры (kl-, str-, sp-, gr- …)
+_CLUSTER_2ND = "lrjvn"
+
+
+def _pick_prefix():
+    """Случайный правдоподобный 2-буквенный норвежский префикс (1-я буква — по частоте начал)."""
+    first = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
+    pool2 = "bdfghklmnprstv" if first in _VOWELS else _VOWELS + (_CLUSTER_2ND if first in _CLUSTER_AFTER else "")
+    return first + random.choice(pool2)
 
 
 async def complete_batch(words):
@@ -552,20 +569,29 @@ async def autofill_loop():
                     # Генерация новых слов — основной приоритет. Описания не догоняем
                     # фоном (генерятся по запросу при открытии), чтобы пул рос быстрее.
                     nonce = random.randint(1000, 99999)
-                    # 2 из 3 циклов — по букве (системно вычищаем алфавит), 1 из 3 — по теме.
-                    if i % 3 == 0:
-                        topic = AUTOFILL_TOPICS[(i // 3) % len(AUTOFILL_TOPICS)]
-                        avoid = await get_pool_sample(AUTOFILL_AVOID_SAMPLE)
-                        constraint = f"на тему: {topic}"
-                        label = f"topic='{topic}'"
-                    else:
-                        letter = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
-                        avoid = await get_pool_letter(letter, AUTOFILL_AVOID_SAMPLE)
-                        constraint = f"начинающихся на букву «{letter}»"
-                        label = f"letter='{letter}'"
+                    # Срез: 1 из 4 — тема, иначе 2-буквенный префикс (узкий срез → стоп-лист
+                    # по нему полный). «Выдоенные» срезы (несколько пустых ответов подряд)
+                    # пропускаем — до 8 попыток найти свежий.
+                    kind = "topic" if i % 4 == 0 else "prefix"
+                    key = label = constraint = None
+                    for _ in range(8):
+                        if kind == "topic":
+                            key = AUTOFILL_TOPICS[random.randrange(len(AUTOFILL_TOPICS))]
+                            constraint = f"на тему: {key}"; label = f"topic='{key}'"
+                        else:
+                            key = _pick_prefix()
+                            constraint = f"начинающихся на «{key}»"; label = f"prefix='{key}'"
+                        if _dry.get(key, 0) < AUTOFILL_DRY_LIMIT:
+                            break
+                    # Полный стоп-лист по срезу (не 60 случайных): для префикса — все слова
+                    # этого префикса (их десятки — влезают целиком), для темы — выборка.
+                    avoid = (await get_pool_sample(AUTOFILL_AVOID_SAMPLE)) if kind == "topic" \
+                        else (await get_pool_letter(key, AUTOFILL_PREFIX_AVOID))
                     avoid_s = ", ".join(avoid)
-                    prompt = (f"Дай {AUTOFILL_BATCH} распространённых норвежских слов {constraint}. "
-                              f"Только НОВЫЕ и РАЗНЫЕ. НЕ предлагай уже известные: {avoid_s}. (вариант {nonce})")
+                    prompt = (f"Дай {AUTOFILL_BATCH} разных норвежских слов (bokmål) {constraint}. "
+                              f"Подойдут и менее частотные — уровня A2–C1, не только базовые. "
+                              f"Только НОВЫЕ слова, которых НЕТ в списке ниже.\n"
+                              f"Уже в базе ({len(avoid)}): {avoid_s}. (вариант {nonce})")
                     new_words, dup_words = [], []
                     ok = True
                     try:
@@ -584,7 +610,9 @@ async def autofill_loop():
                         errors.report(e, "autofill generate")  # ошибку уже отчитали — «пусто» не шлём
                     if new_words:
                         await complete_batch(new_words)  # пачкой
-                    logger.info(f"autofill: {label} new={len(new_words)} dup={len(dup_words)}")
+                    if ok:  # счётчик «выдоенности» среза — только при успешном запросе
+                        _dry[key] = 0 if new_words else _dry.get(key, 0) + 1
+                    logger.info(f"autofill: {label} new={len(new_words)} dup={len(dup_words)} dry={_dry.get(key, 0)}")
                     # Разбивка в ленту: LLM иногда повторяет известные слова (несмотря на стоп-лист),
                     # а иногда не находит новых вовсе — тогда честно пишем «пусто».
                     if ok and not new_words and not dup_words:
