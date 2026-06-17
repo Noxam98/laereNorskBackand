@@ -10,7 +10,6 @@ from auth import SECRET_KEY, router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
 from online import router as online_router
-from duel import router as duel_router
 from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop,
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
@@ -26,7 +25,6 @@ app.include_router(auth_router)
 app.include_router(words_router)
 app.include_router(pool_router)
 app.include_router(online_router)
-app.include_router(duel_router)
 
 
 @app.on_event("startup")
