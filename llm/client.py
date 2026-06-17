@@ -42,6 +42,7 @@ async def _run(kind, cands, attempt, incr, label, icon):
         notify.feed(f"{icon} {label} ⛔ ключей нет")
         return None
     last = None
+    last_scope = None
     for model, key, idx in cands:
         try:
             res = await attempt(model, key)
@@ -50,19 +51,23 @@ async def _run(kind, cands, attempt, incr, label, icon):
             if ek != errors.QUOTA:
                 notify.feed(f"{icon} {label} [{model}] · k{idx} ❌ {ek}")
                 raise
-            # из 429 достаём реальное время до сброса (retryDelay) и тип лимита (RPD/RPM/TPM)
+            # из 429 достаём время до сброса (retryDelay) и тип лимита (RPD/RPM/TPM).
             q = errors.quota_info(e)
-            quota.mark_429(kind, model, idx, q["retry"])  # скип ПАРЫ модель×ключ на retryDelay
-            wait = q["retry"] if q["retry"] else quota.COOLDOWN_SEC
+            wait = q["retry"] or quota.COOLDOWN_SEC
+            if q["scope"] == "RPD":  # дневной лимит — retryDelay врёт, ждём дольше
+                wait = max(wait, quota.RPD_COOLDOWN_SEC)
+            quota.mark_429(kind, model, idx, wait)  # скип ПАРЫ модель×ключ на это время
             tag = (q["scope"] + " ") if q["scope"] else ""
-            notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️429 {tag}retry {wait:.0f}с → следующий ключ")
+            notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️429 {tag}пауза {wait:.0f}с → следующий ключ")
             last = e
+            last_scope = q["scope"]
             continue
         quota.advance(kind, model, idx)        # next-запрос начнём со следующего ключа
         await incr(model, key)                 # учёт для статистики
         notify.feed(f"{icon} {label} [{model}] · k{idx} ✅")
         return res
-    notify.feed(f"{icon} {label} ⛔ 429 на всех ключах")
+    tag = (last_scope + " ") if last_scope else ""
+    notify.feed(f"{icon} {label} ⛔ 429 {tag}на ВСЕХ ключах — пауза до восстановления")
     if last:
         raise last
     return None

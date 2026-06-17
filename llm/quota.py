@@ -8,6 +8,9 @@ from db import incr_usage
 from .settings import LLM_API_KEYS, EMBED_API_KEYS, TEXT_PROFILES, EMBED_MODELS
 
 COOLDOWN_SEC = int(os.getenv("KEY_429_COOLDOWN_SEC", "10"))
+# Для дневного лимита (RPD) retryDelay в ответе короткий и обманчивый (лимит за секунды
+# не освобождается) — поэтому при RPD ставим длинный кулдаун, чтобы не долбить впустую.
+RPD_COOLDOWN_SEC = int(os.getenv("KEY_429_RPD_COOLDOWN_SEC", "300"))
 
 _blocked = {}    # (kind, model, idx) -> monotonic-время, до которого ключ скипаем после 429
 _rr_cursor = {}  # (kind, model) -> индекс последнего успешно использованного ключа (round-robin)
