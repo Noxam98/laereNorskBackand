@@ -5,4 +5,5 @@ PAUSED = {
     "embed": False,      # фоновые эмбеддинги (reembed_loop + досчёт в autofill)
     "describe": False,   # генерация описаний (describe_loop)
     "forms": False,      # грамматические формы по части речи (forms_loop)
+    "pos": False,        # переразметка части речи у «прочее» (pos_loop)
 }

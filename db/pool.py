@@ -415,6 +415,35 @@ async def set_pool_forms(pool_id: int, forms: dict):
         await _release(db)
 
 
+async def set_pool_pos(pool_id: int, pos: str):
+    """Проставить/исправить часть речи в data.part_of_speech."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET data = json_set(data, '$.part_of_speech', ?) WHERE id = ?",
+                         (pos, pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def pos_uncategorized(limit: int = 20):
+    """[(id, norwegian, data_dict)] — слова, у которых part_of_speech пустой или НЕ из таксономии
+    (т.е. показываются как «прочее»). Кандидаты на переразметку части речи."""
+    all_pats = [p for pats in _POS_LIKE.values() for p in pats]
+    not_cond = " AND ".join(
+        "lower(COALESCE(json_extract(data,'$.part_of_speech'),'')) NOT LIKE ?" for _ in all_pats)
+    db = await _conn()
+    try:
+        async with db.execute(
+            f"SELECT id, norwegian, data FROM word_pool WHERE {not_cond} ORDER BY id LIMIT ?",
+            (*all_pats, limit),
+        ) as cur:
+            return [(r["id"], r["norwegian"], json.loads(r["data"]) if r["data"] else {})
+                    for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
 async def pos_missing_forms(category: str, limit: int = 20):
     """[(id, norwegian, data_dict)] — слова заданной части речи БЕЗ грамматических форм."""
     cond, params = _pos_cond(category)
@@ -476,10 +505,16 @@ _MISSING_SQL = {
 # Категория части речи → подстроки в data.part_of_speech (значения разнятся: noun/substantiv/...).
 _POS_LIKE = {
     "noun": ["%noun%", "%substantiv%", "%сущ%"],
-    "verb": ["%verb%", "%глаг%"],
-    "adjective": ["%adj%", "%прил%"],
-    "adverb": ["%adverb%", "%нареч%"],
-    "phrase": ["%phrase%", "%выраж%", "%фраз%"],
+    "verb": ["%verb%", "%глаг%", "%дієсл%"],
+    "adjective": ["%adjective%", "%adjektiv%", "%adj%", "%прил%", "%прикм%"],
+    "adverb": ["%adverb%", "%нареч%", "%присл%"],
+    "preposition": ["%preposition%", "%preposisjon%", "%предлог%", "%прийм%"],
+    "conjunction": ["%conjunction%", "%konjunksjon%", "%союз%", "%сполуч%"],
+    "pronoun": ["%pronoun%", "%pronomen%", "%местоим%", "%займен%"],
+    "determiner": ["%determiner%", "%determinativ%", "%артикл%", "%определит%"],
+    "numeral": ["%numeral%", "%tallord%", "%числит%", "%числ%"],
+    "interjection": ["%interjection%", "%interjeksjon%", "%междомет%", "%виг%"],
+    "phrase": ["%phrase%", "%uttrykk%", "%фраз%", "%выраж%"],
 }
 
 

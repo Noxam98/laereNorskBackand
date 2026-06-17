@@ -156,6 +156,21 @@ TRANSLATE_BATCH_SCHEMA = {
     },
 }
 
+# Канонические части речи (bokmål). Ключи — стабильные, англ.; UI-подписи во фронте.
+POS_KEYS = ["noun", "verb", "adjective", "adverb", "preposition",
+            "conjunction", "pronoun", "determiner", "numeral", "interjection", "phrase"]
+
+# Переразметка части речи: для слов с пустой/нераспознанной part_of_speech.
+POS_REFINE_SCHEMA = {
+    "name": "pos_refine",
+    "schema": {"type": "object", "properties": {"results": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"word": {"type": "string"}, "part_of_speech": {"type": "string", "enum": POS_KEYS}},
+        "required": ["word", "part_of_speech"],
+    }}}, "required": ["results"]},
+}
+
+
 # --- Грамматические формы по части речи (structured output, батч) ---
 def _forms_schema(name, fields):
     return {"name": name, "schema": {"type": "object", "properties": {"results": {"type": "array", "items": {

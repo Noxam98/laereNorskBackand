@@ -14,12 +14,13 @@ from db import (
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
+    pos_uncategorized, set_pool_pos,
 )
 import llm  # текст/эмбеддинги через key-free API: ask_json/embed_texts/text_budget_left/...
 from llm import (
     embed_texts, encode_emb, ask_json, semantic_embed_text,
     WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
-    NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA,
+    NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA, POS_REFINE_SCHEMA, POS_KEYS,
     TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
@@ -380,6 +381,58 @@ async def reembed_loop():
         except Exception as e:
             errors.report(e, "reembed_loop")
             await asyncio.sleep(30)
+
+
+# --- Переразметка части речи для слов с пустой/нераспознанной POS («прочее») ---
+POS_BATCH = int(os.getenv("POS_BATCH", "20"))
+POS_CHECK_SEC = int(os.getenv("POS_CHECK_SEC", "12"))
+_POS_SYS = (
+    "Ты — лингвист по норвежскому (bokmål). Для каждого слова определи часть речи СТРОГО "
+    "одним ключом из списка: noun (существительное), verb (глагол), adjective (прилагательное), "
+    "adverb (наречие), preposition (предлог), conjunction (союз), pronoun (местоимение), "
+    "determiner (детерминатив/артикль), numeral (числительное), interjection (междометие), "
+    "phrase (устойчивое выражение из нескольких слов). Поле word — ровно как на входе."
+)
+
+
+async def pos_loop():
+    """Фоновая переразметка части речи: берёт слова с пустой/нераспознанной POS, определяет
+    правильную (enum) и пишет в data.part_of_speech. Идёт перед формами (форм без верной POS нет)."""
+    await asyncio.sleep(25)
+    while True:
+        if runtime.PAUSED["pos"]:
+            await asyncio.sleep(20); continue
+        try:
+            if llm.text_enabled() and llm.text_available("autofill"):
+                rows = await pos_uncategorized(POS_BATCH)
+                if rows:
+                    user = "Слова:\n" + "\n".join(f"- {nw}" for _, nw, _ in rows)
+                    try:
+                        data = await ask_json(_POS_SYS, user, POS_REFINE_SCHEMA, purpose="autofill",
+                                              label=f"часть речи ({len(rows)})", temperature=0)
+                    except Exception as e:
+                        errors.report(e, "pos_loop")
+                        data = None
+                    results = (data or {}).get("results", []) if isinstance(data, dict) else []
+                    norm_to_pid = {normalize_word(nw): pid for pid, nw, _ in rows}
+                    positional = len(results) == len(rows)
+                    done, seen = 0, set()
+                    for i, r in enumerate(results):
+                        if not isinstance(r, dict):
+                            continue
+                        pid = norm_to_pid.get(normalize_word(r.get("word") or ""))
+                        if pid is None and positional:
+                            pid = rows[i][0]
+                        pos = r.get("part_of_speech")
+                        if not pid or pid in seen or pos not in POS_KEYS:
+                            continue
+                        seen.add(pid)
+                        await set_pool_pos(pid, pos)
+                        done += 1
+                    logger.info(f"pos_loop: размечено {done}/{len(rows)}")
+        except Exception as e:
+            errors.report(e, "pos_loop")
+        await asyncio.sleep(POS_CHECK_SEC)
 
 
 # --- Грамматические формы по части речи (фоновая очередь, отдельный промпт на POS) ---

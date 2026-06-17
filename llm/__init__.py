@@ -24,6 +24,7 @@ from .schemas import (
     WORDS_SCHEMA, DESC_SCHEMA, DIFF_SCHEMA, CLASSIFY_SCHEMA,
     DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA, REFINE_SCHEMA,
     NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA,
+    POS_REFINE_SCHEMA, POS_KEYS,
 )
 from .embeddings import (
     semantic_embed_text, encode_emb, decode_emb,
