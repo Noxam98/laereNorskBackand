@@ -111,6 +111,19 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN display_name TEXT")  # отображаемое имя (персонализация)
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN online_prefs TEXT")  # последние настройки онлайн-комнаты (JSON)
+        except Exception:
+            pass
+        # Лог результатов онлайн-матчей (для статистики/будущего лидерборда).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS match_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data TEXT NOT NULL
+        )
+        """)
         # один Google-аккаунт = максимум один наш юзер (частичный uniq, NULL не считаются)
         try:
             await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub "

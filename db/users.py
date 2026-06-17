@@ -73,6 +73,27 @@ async def get_user_by_google_sub(google_sub: str):
         await _release(db)
 
 
+async def set_online_prefs(user_id: int, prefs_json: str):
+    """Запомнить последние настройки онлайн-комнаты (чтобы не настраивать каждый раз)."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET online_prefs = ? WHERE id = ?", (prefs_json, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def save_match(game: str, data_json: str):
+    """Сохранить результат онлайн-матча в match_log."""
+    db = await _conn()
+    try:
+        await db.execute("INSERT INTO match_log (game, created_at, data) VALUES (?, ?, ?)",
+                         (game, _now(), data_json))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def set_user_name(user_id: int, name: str):
     db = await _conn()
     try:
