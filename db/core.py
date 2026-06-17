@@ -99,6 +99,20 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN current_dict TEXT")  # последний выбранный словарь
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN email TEXT")  # email от Google; NULL у парольных аккаунтов
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")  # Google account id (sub); NULL = не привязан
+        except Exception:
+            pass
+        # один Google-аккаунт = максимум один наш юзер (частичный uniq, NULL не считаются)
+        try:
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub "
+                             "ON users(google_sub) WHERE google_sub IS NOT NULL")
+        except Exception:
+            pass
 
         # Общий пул сгенерированных слов: каждое норвежское слово хранится один раз
         # и переиспользуется всеми пользователями.

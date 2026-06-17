@@ -17,6 +17,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class GoogleAuth(BaseModel):
+    credential: str   # ID-token (JWT) от Google Identity Services
+
+
 class DictCreate(BaseModel):
     name: str
 

@@ -2,6 +2,8 @@ uvicorn[standard]~=0.34.0
 fastapi[standard]
 pydantic~=2.10.6
 pyjwt
+google-auth
+requests
 bcrypt
 aiosqlite
 python-multipart

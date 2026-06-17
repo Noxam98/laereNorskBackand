@@ -52,3 +52,51 @@ async def create_user(username: str, hashed_password: str):
         return {"error": "Username already exists"}
     finally:
         await _release(db)
+
+
+async def get_user_by_google_sub(google_sub: str):
+    db = await _conn()
+    try:
+        async with db.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        await _release(db)
+
+
+async def create_google_user(username: str, email: str, google_sub: str):
+    """Новый аккаунт через Google: пароля нет ('' — bcrypt его не примет), есть email/google_sub."""
+    db = await _conn()
+    try:
+        cur = await db.execute(
+            "INSERT INTO users (username, password, email, google_sub) VALUES (?, '', ?, ?)",
+            (username, email, google_sub),
+        )
+        user_id = cur.lastrowid
+        await db.execute("INSERT INTO dictionaries (user_id, name, created_at) VALUES (?, ?, ?)", (user_id, "default", _now()))
+        await db.commit()
+        return {"user_id": user_id}
+    except aiosqlite.IntegrityError:
+        return {"error": "User already exists"}
+    finally:
+        await _release(db)
+
+
+async def set_user_google(user_id: int, google_sub: str, email: str):
+    """Привязать Google к существующему аккаунту. IntegrityError, если этот sub уже занят."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET google_sub = ?, email = ? WHERE id = ?", (google_sub, email, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def clear_user_google(user_id: int):
+    """Отвязать Google (email оставляем как контакт)."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET google_sub = NULL WHERE id = ?", (user_id,))
+        await db.commit()
+    finally:
+        await _release(db)
