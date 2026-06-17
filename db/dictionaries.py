@@ -149,11 +149,13 @@ def _build_word(row):
         if "translate" in ov:
             base["translate"] = {**base.get("translate", {}), **ov["translate"]}
     desc = json.loads(row["description"]) if row["description"] else None
+    forms_raw = row["forms"] if "forms" in row.keys() else None
     return {
         "id": row["dw_id"],
         "word": base.get("word"),
         "translate": base.get("translate", {}),
         "part_of_speech": base.get("part_of_speech", ""),
+        "forms": json.loads(forms_raw) if forms_raw else None,
         "description": {"description": desc} if desc else None,
         "descriptionState": "loaded" if desc else "empty",
         "hasTts": bool(row["has_tts"]),
@@ -172,7 +174,7 @@ async def get_user_data(user_id: int):
         for d in dicts:
             async with db.execute("""
                 SELECT dw.id AS dw_id, dw.override, dw.correct, dw.incorrect,
-                       wp.data, wp.description, (wp.tts IS NOT NULL) AS has_tts
+                       wp.data, wp.description, wp.forms, (wp.tts IS NOT NULL) AS has_tts
                 FROM dict_words dw
                 JOIN word_pool wp ON wp.id = dw.pool_id
                 WHERE dw.dict_id = ?

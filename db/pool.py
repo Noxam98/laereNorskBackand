@@ -310,7 +310,7 @@ async def get_pool_meta(word: str):
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT id, level, data, forms FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute("SELECT id, level, data, forms, (tts IS NOT NULL) AS has_tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
             row = await cur.fetchone()
             if not row:
                 return None
@@ -321,6 +321,7 @@ async def get_pool_meta(word: str):
             "level": row["level"], "topics": topics,
             "part_of_speech": d.get("part_of_speech", ""),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
+            "hasTts": bool(row["has_tts"]),
         }
     finally:
         await _release(db)
