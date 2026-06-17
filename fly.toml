@@ -5,6 +5,16 @@ primary_region = "arn"
 
 [env]
   DATABASE_PATH = "/data/users.db"
+  # Несекретный тюнинг фоновых задач — под версионированием здесь, а не в Fly-секретах.
+  # (Секреты остаются только для ключей/токенов/SECRET_KEY/AWS.)
+  AUTOFILL_ENABLED = "true"
+  AUTOFILL_DAILY_BUDGET = "60"
+  AUTOFILL_INTERVAL_SEC = "150"
+  AUTOFILL_BATCH = "10"
+  AUTOFILL_IDLE_SEC = "300"
+  EMBED_DAILY_BUDGET = "1000"
+  EMB_SEM_BATCH = "50"
+  EMB_SEM_CHECK_SEC = "60"
 
 [http_service]
   internal_port = 8080
