@@ -320,6 +320,7 @@ async def get_pool_meta(word: str):
         return {
             "level": row["level"], "topics": topics,
             "part_of_speech": d.get("part_of_speech", ""),
+            "translate": d.get("translate", {}),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
             "hasTts": bool(row["has_tts"]),
         }
