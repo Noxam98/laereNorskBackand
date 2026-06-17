@@ -17,11 +17,11 @@ if ! "$FLY" volumes list -a "$APP" 2>/dev/null | grep -q "data"; then
   "$FLY" volumes create data --region "$REGION" --size 1 -a "$APP" --yes
 fi
 
-# 3. Секреты из .env
+# 3. Секреты из .env. ТОЛЬКО чувствительное: ключи, токены, SECRET_KEY.
+# Несекретная конфигурация (модели, эндпоинты, имена) живёт в llm/settings.py и fly.toml [env].
 set -a; source .env; set +a
 "$FLY" secrets set -a "$APP" \
-  LLM_BASE_URL="$LLM_BASE_URL" LLM_API_KEY="$LLM_API_KEY" LLM_MODEL="$LLM_MODEL" \
-  EMBED_BASE_URL="$EMBED_BASE_URL" EMBED_API_KEY="$EMBED_API_KEY" EMBED_MODEL="$EMBED_MODEL" \
+  LLM_API_KEY="$LLM_API_KEY" EMBED_API_KEY="$EMBED_API_KEY" \
   SECRET_KEY="$SECRET_KEY" CORS_ORIGINS="${CORS_ORIGINS:-*}" \
   TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}" TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}" \
   TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-true}" NOTIFY_COOLDOWN_SEC="${NOTIFY_COOLDOWN_SEC:-900}" \

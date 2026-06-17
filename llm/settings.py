@@ -2,12 +2,16 @@
 Только данные из окружения — ни запросов, ни логики (это нижний слой пакета llm)."""
 import os
 
-# --- LLM-провайдер (OpenAI-совместимый): Gemini / Groq / OpenRouter / любой через env ---
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek/deepseek-r1:free")
-# Эмбеддинги (Gemini по умолчанию, OpenAI-совместимый эндпоинт; провайдер через env).
-EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
+# --- Несекретная конфигурация моделей/эндпоинтов ---
+# Это НЕ секреты, поэтому реальные значения живут здесь, под версионированием (а не в Fly-секретах).
+# env-переменные оставлены опциональным override (другой провайдер/локальные эксперименты),
+# но дефолты — рабочие прод-значения, так что без env всё работает само.
+GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", GEMINI_OPENAI_URL)
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")   # профиль autofill (массовый фон)
+USER_TEXT_MODEL = "gemini-3.5-flash"                          # профиль user (интерактив: описания, генерация слов)
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", GEMINI_OPENAI_URL)
+EMBED_MODEL = os.getenv("EMBED_MODEL", "gemini-embedding-2")
 
 
 def _parse_keys(multi_env, single_env):
@@ -39,7 +43,7 @@ def _parse_models(env, default_model):
 
 # purpose → список моделей в порядке приоритета (запасные, если основная отвалится по 429).
 TEXT_PROFILES = {
-    "user": _parse_models("USER_TEXT_MODELS", LLM_MODEL),
+    "user": _parse_models("USER_TEXT_MODELS", USER_TEXT_MODEL),
     "autofill": _parse_models("AUTOFILL_TEXT_MODELS", LLM_MODEL),
 }
 EMBED_MODELS = _parse_models("AUTOFILL_EMBED_MODELS", EMBED_MODEL)
