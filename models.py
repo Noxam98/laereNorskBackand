@@ -29,6 +29,13 @@ class NameBody(BaseModel):
     name: str
 
 
+class AiWordsBody(BaseModel):
+    level: str = ""
+    topic: str = ""
+    count: int = 10
+    lang: str = "ru"
+
+
 class PoolEditBody(BaseModel):
     translate: dict = {}   # {no?, ru?, ukr?, en?, pl?, lt?: [варианты]}
     lang: str = "ru"       # язык интерфейса — на нём вернуть причину ревью

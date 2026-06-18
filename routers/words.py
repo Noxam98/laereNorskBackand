@@ -18,9 +18,20 @@ from llm import (
 )
 from tts import schedule_tts
 from task import description_task
-from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords, RefineWords
+from autofill import ai_game_words
+from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords, RefineWords, AiWordsBody
 
 router = APIRouter()
+
+
+@router.post("/games/ai_words")
+async def games_ai_words(body: AiWordsBody, user=Depends(get_current_user)):
+    """AI-подбор слов для одиночной игры по уровню/теме (как в онлайне). Возвращает набор
+    [{no, translate}] — слова попадают в общий пул и обогащаются фоном."""
+    mark_activity()
+    count = max(3, min(30, body.count or 10))
+    words = await ai_game_words(body.lang or "ru", body.level or None, body.topic or None, count)
+    return {"words": [{"no": w["norwegian"], "translate": w["translate"]} for w in words]}
 
 
 def c2pos(c):
