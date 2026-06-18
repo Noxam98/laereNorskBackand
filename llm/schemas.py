@@ -89,7 +89,8 @@ DIFF_SCHEMA = {
     },
 }
 
-# Ревью правки слова: одобрить/отклонить + причина.
+# Ревью правки слова: одобрить/отклонить + причина + СТАНДАРТИЗОВАННОЕ слово (при апруве):
+# исправленная орфография норвежского, часть речи, переводы на 5 языков.
 REVIEW_SCHEMA = {
     "name": "edit_review_response",
     "schema": {
@@ -97,6 +98,23 @@ REVIEW_SCHEMA = {
         "properties": {
             "approved": {"type": "boolean"},  # одобрить правку
             "reason": {"type": "string"},     # почему одобрено / что не так (на языке пользователя)
+            "word": {                          # заполняется при approved=true (исправленный канон)
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},            # норвежское слово (bokmål, с исправленной опечаткой)
+                    "part_of_speech": {"type": "string"},  # noun | verb | adjective | ...
+                    "translate": {
+                        "type": "object",
+                        "properties": {
+                            "ru": {"type": "array", "items": {"type": "string"}},
+                            "ukr": {"type": "array", "items": {"type": "string"}},
+                            "en": {"type": "array", "items": {"type": "string"}},
+                            "pl": {"type": "array", "items": {"type": "string"}},
+                            "lt": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                },
+            },
         },
         "required": ["approved", "reason"],
     },

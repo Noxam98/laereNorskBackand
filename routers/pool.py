@@ -8,12 +8,12 @@ from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
     set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta, get_pool_stats, get_usage_like,
-    get_cached_query, cache_query, set_cached_query, update_pool_word,
+    get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
 )
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item
 from task import description_task
 from models import RedescribeBody, RediffBody, PoolEditBody
 import runtime
@@ -196,18 +196,23 @@ async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
     tr = body.translate or {}
+    hint = (body.hint or "").strip()
     lang_name = LANG_NAMES.get(body.lang, "русский")
     mark_activity()
     review_sys = (
-        "Ты — модератор словаря норвежского (bokmål). Пользователь предлагает правку слова и/или переводов. "
-        "Проверь строго: (1) норвежское слово ('no') — реальное, корректно написанное слово bokmål; "
-        "(2) каждый перевод точно соответствует норвежскому слову и своему языку. Одобряй (approved=true) "
-        "только если правка корректна и не портит данные; при ошибке/сомнении — approved=false. "
-        f"Поле reason — 1-2 предложения на языке «{lang_name}»: если одобрено — чем правка корректна; если нет — что именно не так."
+        "Ты — модератор словаря норвежского (bokmål). Пользователь предлагает правку слова и/или переводов "
+        "(может дать подсказку о части речи). Проверь: норвежское слово реально существует (возможна "
+        "орфографическая опечатка пользователя). "
+        "• Если слово реально (пусть с опечаткой) — approved=true и верни поле word в СТАНДАРТИЗОВАННОМ виде, "
+        "как при обычной генерации: исправленное правильное написание (bokmål), part_of_speech "
+        "(noun/verb/adjective/adverb/preposition/conjunction/pronoun/determiner/numeral/interjection/phrase; "
+        "учти подсказку пользователя), переводы на ru/ukr/en/pl/lt (1-3 варианта). "
+        "• Если слова не существует, или это смысловая ошибка, или непонятно — approved=false (word не нужен). "
+        f"reason — 1-2 предложения на языке «{lang_name}»: что исправлено / почему отклонено."
     )
     user_prompt = (f"Текущее норвежское слово: >>{normalize_word(word)}<<\n"
-                   f"Предлагаемая правка (переводы по языкам; 'no' — норвежское слово):\n"
-                   f"{json.dumps(tr, ensure_ascii=False)}")
+                   f"Предлагаемая правка (переводы по языкам; 'no' — норвежское слово):\n{json.dumps(tr, ensure_ascii=False)}"
+                   + (f"\nПодсказка пользователя: {hint}" if hint else ""))
     try:
         verdict = await ask_json(review_sys, user_prompt, REVIEW_SCHEMA, purpose="user", label="ревью правки слова")
     except Exception as e:
@@ -217,12 +222,22 @@ async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user
     reason = (verdict.get("reason") or "") if isinstance(verdict, dict) else ""
     if not approved:
         return {"approved": False, "reason": reason}
-    res = await update_pool_word(word, tr)
+
+    # Стандартизованное слово от нейросети (исправленная орфография). Фолбэк — пользовательский ввод.
+    wd = verdict.get("word") if isinstance(verdict.get("word"), dict) else {}
+    new_no = (wd.get("word") or "").strip() or (tr.get("no") or [normalize_word(word)])[0]
+    item = normalize_word_item({
+        "word": new_no,
+        "part_of_speech": wd.get("part_of_speech") or "",
+        "translate": {k: v for k, v in (wd.get("translate") or {}).items() if v},
+    })
+    res = await replace_pool_word(word, new_no, item)
     if res.get("error") == "not_found":
         raise HTTPException(status_code=404, detail="Not in pool")
     if res.get("error") == "exists":
         raise HTTPException(status_code=409, detail="Word already exists")
-    return {"approved": True, "ok": True, "reason": reason, "norwegian": res.get("norwegian")}
+    return {"approved": True, "ok": True, "reason": reason, "norwegian": res.get("norwegian"),
+            "no": new_no, "translate": item.get("translate", {}), "part_of_speech": item.get("part_of_speech", "")}
 
 
 @router.get("/pool/{word}/synonyms")

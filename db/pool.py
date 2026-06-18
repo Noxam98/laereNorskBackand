@@ -179,6 +179,35 @@ async def update_pool_word(old_norwegian: str, translate: dict):
         await _release(db)
 
 
+async def replace_pool_word(old_norwegian: str, new_norwegian: str, data: dict):
+    """Заменить слово в пуле стандартизованными данными (исправленное норв. слово + переводы +
+    часть речи) и СБРОСИТЬ производное (эмбеддинг/формы/озвучку/флаги) — фон пересоздаст их
+    заново для нового написания. pool_id сохраняется (ссылки словарей не рвутся).
+    Возвращает {ok, norwegian} либо {error: not_found|exists}."""
+    old_key = normalize_word(old_norwegian)
+    new_key = normalize_word(new_norwegian) or old_key
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (old_key,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"error": "not_found"}
+        pid = row["id"]
+        if new_key != old_key:
+            async with db.execute("SELECT 1 FROM word_pool WHERE norwegian = ? AND id != ?", (new_key, pid)) as c2:
+                if await c2.fetchone():
+                    return {"error": "exists"}
+        await db.execute(
+            "UPDATE word_pool SET data = ?, norwegian = ?, embedding = NULL, emb_sem = 0, "
+            "forms = NULL, tts = NULL, tts_tr_done = 0, translate_done = 0 WHERE id = ?",
+            (json.dumps(data, ensure_ascii=False), new_key, pid),
+        )
+        await db.commit()
+        return {"ok": True, "norwegian": new_key}
+    finally:
+        await _release(db)
+
+
 async def update_pool_translate(pool_id: int, translate: dict):
     """Записать обновлённый словарь translate в data слова; сбросить tts_tr_done,
     чтобы фон озвучил новые языки."""
