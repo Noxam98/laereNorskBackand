@@ -434,6 +434,15 @@ async def ws_online(ws: WebSocket):
                     await _send_room(me.room)
                     await _maybe_start(me.room)
 
+            elif t == "force_start":
+                # хост может стартовать вручную (для теста) — без требования «все готовы»/≥2
+                room = me.room
+                if room and room.host is me and room.state == "lobby" and room.players:
+                    room.state = "countdown"
+                    await _send_room(room)
+                    await _broadcast_rooms()
+                    room.task = asyncio.create_task(_countdown_then_play(room))
+
             elif t == "leave":
                 async with _lock:
                     await _leave(me)
