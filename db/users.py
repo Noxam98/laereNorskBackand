@@ -73,6 +73,16 @@ async def get_user_by_google_sub(google_sub: str):
         await _release(db)
 
 
+async def set_user_game_mode(user_id: int, mode: str):
+    """Запомнить последний выбранный режим в хабе «Игры» (solo|online)."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET game_mode = ? WHERE id = ?", (mode, user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def set_online_prefs(user_id: int, prefs_json: str):
     """Запомнить последние настройки онлайн-комнаты (чтобы не настраивать каждый раз)."""
     db = await _conn()

@@ -138,6 +138,10 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN online_prefs TEXT")  # последние настройки онлайн-комнаты (JSON)
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN game_mode TEXT")  # последний режим в хабе «Игры» (solo|online)
+        except Exception:
+            pass
         # Лог результатов онлайн-матчей (для статистики/будущего лидерборда).
         await db.execute("""
         CREATE TABLE IF NOT EXISTS match_log (

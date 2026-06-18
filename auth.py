@@ -10,7 +10,7 @@ import jwt
 from db import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
-    set_user_password, set_user_name, set_online_prefs,
+    set_user_password, set_user_name, set_online_prefs, set_user_game_mode,
 )
 from models import (
     UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth, PasswordBody, NameBody,
@@ -183,7 +183,16 @@ async def me(user=Depends(get_current_user)):
         "googleLinked": bool(user.get("google_sub")),
         "hasPassword": bool((user.get("password") or "").strip()),
         "onlinePrefs": _parse_game_prefs(user.get("online_prefs")),
+        "gameMode": user.get("game_mode"),
     }
+
+
+@router.post("/me/game_mode")
+async def save_game_mode(body: dict, user=Depends(get_current_user)):
+    """Запомнить последний режим в хабе «Игры» (solo|online)."""
+    mode = body.get("mode") if body.get("mode") in ("solo", "online") else "solo"
+    await set_user_game_mode(user["id"], mode)
+    return {"gameMode": mode}
 
 
 @router.post("/me/online_prefs")

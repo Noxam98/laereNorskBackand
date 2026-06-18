@@ -14,7 +14,7 @@ from .core import (
 from .users import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
-    set_user_password, set_user_name, set_online_prefs, save_match,
+    set_user_password, set_user_name, set_online_prefs, save_match, set_user_game_mode,
 )
 from .pool import (
     get_or_create_pool, get_pool_id, get_pool_by_id,
