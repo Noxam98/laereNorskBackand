@@ -31,9 +31,20 @@ MAX_PLAYERS_CAP = 8
 COUNT_MIN, COUNT_MAX = 3, 20
 QTIME_MIN, QTIME_MAX = 5, 30   # границы длительности вопроса
 
+ANIMALS = ["fox", "hare", "reindeer", "wolf", "elk", "lynx"]  # бегуны гонки (выбор в лобби)
+
 _rooms = {}             # id -> Room
 _watchers = set()       # websockets, смотрящие список комнат
 _lock = asyncio.Lock()
+
+
+def _assign_animal(room, player):
+    """Первый свободный зверь в комнате (или по индексу, если все заняты)."""
+    used = {getattr(p, "animal", None) for p in room.players if p is not player}
+    for a in ANIMALS:
+        if a not in used:
+            return a
+    return ANIMALS[len(room.players) % len(ANIMALS)]
 
 
 def _name(user):
@@ -93,6 +104,7 @@ class Player:
         self.ready = False
         self.score = 0
         self.streak = 0     # верных ответов подряд (для бонуса и показа «🔥 N»)
+        self.animal = None  # выбранный зверь для гонки
         self.room = None
 
 
@@ -121,7 +133,7 @@ class Room:
         return {"type": "room", "room": {
             "id": self.id, "name": self.name, "settings": self.settings, "state": self.state,
             "hostId": self.host.user["id"], "aiStatus": self.ai_status,
-            "players": [{"name": _name(p.user), "ready": p.ready, "score": p.score,
+            "players": [{"name": _name(p.user), "ready": p.ready, "score": p.score, "animal": p.animal,
                          "isHost": p is self.host, "isYou": p.ws is ws} for p in self.players],
         }}
 
@@ -393,7 +405,7 @@ async def _build_race(room, cand, langs):
 
 
 def _race_positions(room):
-    return [{"id": p.user["id"], "name": _name(p.user),
+    return [{"id": p.user["id"], "name": _name(p.user), "animal": p.animal,
              "progress": getattr(p, "race_correct", 0), "total": len(room.race_words),
              "state": getattr(p, "race_state", "neutral"),
              "finished": bool(getattr(p, "race_rank", 0)),
@@ -413,7 +425,7 @@ def _race_standings(room):
         return (0, p.race_rank) if getattr(p, "race_rank", 0) else (1, -getattr(p, "race_correct", 0))
     ranked = sorted(room.players, key=key)
     return [{"name": _name(p.user), "place": i + 1, "progress": getattr(p, "race_correct", 0),
-             "total": len(room.race_words), "finished": bool(getattr(p, "race_rank", 0))}
+             "total": len(room.race_words), "finished": bool(getattr(p, "race_rank", 0)), "animal": p.animal}
             for i, p in enumerate(ranked)]
 
 
@@ -636,6 +648,7 @@ async def ws_online(ws: WebSocket):
                         await _leave(me)
                     room = Room(me, msg.get("name"), _norm_settings(msg.get("settings")))
                     me.room = room
+                    me.animal = _assign_animal(room, me)
                     _rooms[room.id] = room
                     if room.settings["source"] == "ai":
                         _kick_ai(room)   # начать подготовку набора сразу в лобби
@@ -659,6 +672,7 @@ async def ws_online(ws: WebSocket):
                         me.ready = False
                         me.room = room
                         room.players.append(me)
+                        me.animal = _assign_animal(room, me)
                 if me.room:
                     await _send_room(me.room)
                     await _broadcast_rooms()
@@ -681,6 +695,12 @@ async def ws_online(ws: WebSocket):
                         room.ai_words = None
                     await _send_room(room)
                     await _broadcast_rooms()
+
+            elif t == "pick_animal":
+                # выбор зверя в лобби (гонка); дубликаты разрешены, по умолчанию все разные
+                if me.room and me.room.state == "lobby" and msg.get("animal") in ANIMALS:
+                    me.animal = msg.get("animal")
+                    await _send_room(me.room)
 
             elif t == "ready":
                 # для AI-комнаты нельзя готовиться, пока набор не готов
