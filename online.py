@@ -24,6 +24,8 @@ router = APIRouter()
 QUESTION_TIME = 15      # дефолт сек на вопрос (если не задано в настройках комнаты)
 COUNTDOWN = 5           # сек обратного отсчёта перед стартом (тиканье на клиенте)
 REVEAL_PAUSE = 4        # сек показа таблицы между вопросами
+RACE_GRACE = 25         # сек «добивания» остальным после финиша лидера (гонка)
+RACE_MAX = 300          # предохранитель: жёсткий потолок длительности гонки
 MIN_PLAYERS = 2
 MAX_PLAYERS_CAP = 8
 COUNT_MIN, COUNT_MAX = 3, 20
@@ -70,6 +72,7 @@ def _norm_settings(s):
     s = s or {}
     return {
         "game": s.get("game") if s.get("game") in GAMES else "quiz",
+        "answer": "choice" if s.get("answer") == "choice" else "type",  # гонка: печать / выбор из 4
         "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
         "source": s.get("source") if s.get("source") in ("pool", "dict", "ai") else "pool",  # pool / словари хоста / AI-подбор
         "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
@@ -108,6 +111,7 @@ class Room:
 
     def summary(self):
         return {"id": self.id, "name": self.name, "game": self.settings["game"],
+                "answer": self.settings["answer"],
                 "players": len(self.players), "max": self.settings["maxPlayers"],
                 "level": self.settings["level"] or "", "topic": self.settings["topic"] or "",
                 "count": self.settings["count"], "dir": self.settings["dir"], "state": self.state,
@@ -163,6 +167,19 @@ async def _cancel_countdown(room):
         room.state = "lobby"
         await _send_room(room)
         await _broadcast_rooms()
+
+
+# ----------------------------- Источник слов (общий для quiz/race) -----------------------------
+
+async def _candidates(room):
+    """Кандидаты-слова под настройки комнаты: AI-набор (готов в лобби) / словари хоста / общий пул."""
+    s = room.settings
+    n = max(s["count"] * 8, 60)
+    if s["source"] == "ai":      # AI-подбор: набор уже подготовлен в лобби (_prepare_ai)
+        return room.ai_words or await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"])
+    if s["source"] == "dict":    # слова из словарей хоста (конкретный по id или все)
+        return await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
+    return await get_pool_duel_words(n, s["level"], s["topic"])  # общий пул по фильтрам
 
 
 # ----------------------------- Игра: Quiz -----------------------------
@@ -274,13 +291,7 @@ async def run_quiz(room):
     langs = list({p.lang for p in room.players})
     for p in room.players:   # пока готовим слова (особенно AI-подбор — несколько секунд)
         await _send(p.ws, {"type": "preparing"})
-    n = max(s["count"] * 8, 60)
-    if s["source"] == "ai":      # AI-подбор: набор уже подготовлен в лобби (_prepare_ai)
-        cand = room.ai_words or await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"])
-    elif s["source"] == "dict":  # слова из словарей хоста (конкретный по id или все)
-        cand = await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
-    else:                        # общий пул по фильтрам
-        cand = await get_pool_duel_words(n, s["level"], s["topic"])
+    cand = await _candidates(room)
     questions = await _build_quiz(cand, langs, s["count"], s["dir"])
     if len(questions) < 1:
         for p in room.players:
@@ -346,8 +357,190 @@ async def _reset_to_lobby(room):
     await _broadcast_rooms()
 
 
+# ----------------------------- Игра: Race (гонка слов) -----------------------------
+# Асинхронная (в отличие от quiz): каждый идёт по своему списку в своём темпе, сервер —
+# судья (проверяет ответы, чтобы их нельзя было подсмотреть в клиенте) и транслирует
+# позиции машин всем. Верно с первого раза → рывок вперёд; ошибка → «глохнет», слово
+# уходит в конец очереди. Победитель — первый, кто верно ответил все слова.
+
+def _norm_answer(s):
+    """Нормализация печатного ответа для сравнения: регистр, пробелы, артикли å/en/ei/et."""
+    s = (s or "").strip().lower()
+    s = " ".join(s.split())
+    for art in ("å ", "en ", "ei ", "et "):
+        if s.startswith(art):
+            s = s[len(art):]
+            break
+    return s
+
+
+async def _build_race(room, cand, langs):
+    """Набор для гонки. В режиме «выбор» — те же вопросы, что у quiz (4 варианта).
+    В режиме «печать» — список слов [{no, translate}] с переводами на все языки игроков."""
+    s = room.settings
+    if s["answer"] == "choice":
+        return await _build_quiz(cand, langs, s["count"], s["dir"])
+    pool = list(cand)
+    random.shuffle(pool)
+    out = []
+    for w in pool:
+        if len(out) >= s["count"]:
+            break
+        if not all((w["translate"].get(l) or []) for l in langs):
+            continue   # нужен перевод на всех языках комнаты (и для промпта, и для проверки)
+        out.append({"no": w["norwegian"], "translate": w["translate"]})
+    return out
+
+
+def _race_positions(room):
+    return [{"id": p.user["id"], "name": _name(p.user),
+             "progress": getattr(p, "race_correct", 0), "total": len(room.race_words),
+             "state": getattr(p, "race_state", "neutral"),
+             "finished": bool(getattr(p, "race_rank", 0)),
+             "place": getattr(p, "race_rank", 0) or None} for p in room.players]
+
+
+async def _race_broadcast(room):
+    base = _race_positions(room)
+    for p in room.players:
+        snap = [{**x, "isYou": x["id"] == p.user["id"]} for x in base]
+        await _send(p.ws, {"type": "race_pos", "positions": snap})
+
+
+def _race_standings(room):
+    """Финишировавшие — по порядку финиша; недоехавшие — по прогрессу."""
+    def key(p):
+        return (0, p.race_rank) if getattr(p, "race_rank", 0) else (1, -getattr(p, "race_correct", 0))
+    ranked = sorted(room.players, key=key)
+    return [{"name": _name(p.user), "place": i + 1, "progress": getattr(p, "race_correct", 0),
+             "total": len(room.race_words), "finished": bool(getattr(p, "race_rank", 0))}
+            for i, p in enumerate(ranked)]
+
+
+async def _race_serve(room, p):
+    """Отдать игроку текущее слово очереди (с новым токеном — против гонок/двойных ответов)."""
+    if not p.race_queue:
+        return
+    p.race_token += 1
+    item = room.race_words[p.race_queue[0]]
+    s = room.settings
+    if s["answer"] == "choice":
+        pl = _q_payload(item, p.race_correct, len(room.race_words), p.lang, 0)
+        await _send(p.ws, {"type": "race_word", "token": p.race_token, "mode": "choice",
+                           "dir": pl["dir"], "prompt": pl["prompt"], "options": pl["options"],
+                           "keys": pl["keys"], "i": p.race_correct, "total": len(room.race_words)})
+    else:
+        prompt = (item["translate"].get(p.lang) or [""])[0] if s["dir"] == "int2no" else item["no"]
+        await _send(p.ws, {"type": "race_word", "token": p.race_token, "mode": "type",
+                           "dir": s["dir"], "prompt": prompt,
+                           "i": p.race_correct, "total": len(room.race_words)})
+
+
+def _race_check(room, item, p, msg):
+    s = room.settings
+    if s["answer"] == "choice":
+        ch = msg.get("choice")
+        return ch is not None and ch == _q_correct(item, p.lang)
+    if s["dir"] == "int2no":
+        accepted = item["translate"].get("no") or [item["no"]]
+    else:
+        accepted = item["translate"].get(p.lang) or []
+    guess = _norm_answer(msg.get("text"))
+    return bool(guess) and guess in {_norm_answer(a) for a in accepted}
+
+
+async def _race_grace(room):
+    """После финиша лидера — окно добивания остальным, затем гонка завершается."""
+    leader = next((_name(p.user) for p in room.players if getattr(p, "race_rank", 0) == 1), "")
+    try:
+        for sec in range(RACE_GRACE, 0, -1):
+            for p in room.players:
+                await _send(p.ws, {"type": "race_grace", "sec": sec, "leader": leader})
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        return
+    room.race_over.set()
+
+
+async def _race_answer(room, p, msg):
+    """Обработка ответа игрока в гонке (вызывается из WS-цикла)."""
+    if getattr(p, "race_rank", 0) or not getattr(p, "race_queue", None):
+        return
+    if msg.get("token") != getattr(p, "race_token", 0):
+        return   # устаревший токен (двойной/запоздалый ответ) — игнор
+    item = room.race_words[p.race_queue[0]]
+    if _race_check(room, item, p, msg):
+        p.race_queue.pop(0)
+        p.race_correct += 1
+        if not p.race_queue:                     # доехал — фиксируем место
+            room.race_ranks += 1
+            p.race_rank = room.race_ranks
+            p.race_state = "finished"
+        else:
+            p.race_state = "moving"
+        await _send(p.ws, {"type": "race_result", "correct": True, "token": p.race_token})
+    else:
+        p.race_queue.append(p.race_queue.pop(0))  # неверное слово — в конец очереди
+        p.race_state = "stalled"
+        await _send(p.ws, {"type": "race_result", "correct": False, "token": p.race_token})
+    await _race_broadcast(room)
+    if p.race_state != "finished":
+        await _race_serve(room, p)               # следующее слово → клиент «заводит» машину
+    # условия завершения гонки
+    if all(getattr(q, "race_rank", 0) for q in room.players):
+        room.race_over.set()
+    elif room.race_ranks >= 1 and getattr(room, "race_grace_task", None) is None:
+        room.race_grace_task = asyncio.create_task(_race_grace(room))
+
+
+async def run_race(room):
+    room.state = "playing"
+    await _broadcast_rooms()
+    s = room.settings
+    langs = list({p.lang for p in room.players})
+    for p in room.players:
+        await _send(p.ws, {"type": "preparing"})
+    cand = await _candidates(room)
+    words = await _build_race(room, cand, langs)
+    if len(words) < 2:
+        for p in room.players:
+            await _send(p.ws, {"type": "game_error", "msg": "not_enough_words"})
+        await _reset_to_lobby(room)
+        return
+    room.race_words = words
+    room.race_ranks = 0
+    room.race_over = asyncio.Event()
+    room.race_grace_task = None
+    queue0 = list(range(len(words)))   # один и тот же порядок для всех — честная гонка
+    for p in room.players:
+        p.race_queue = list(queue0)
+        p.race_correct = 0
+        p.race_state = "neutral"
+        p.race_rank = 0
+        p.race_token = 0
+    for p in room.players:
+        await _send(p.ws, {"type": "race_go", "total": len(words)})
+    await _race_broadcast(room)
+    for p in room.players:
+        await _race_serve(room, p)
+    try:
+        await asyncio.wait_for(room.race_over.wait(), timeout=RACE_MAX)
+    except asyncio.TimeoutError:
+        pass
+    if getattr(room, "race_grace_task", None):
+        room.race_grace_task.cancel()
+    podium = _race_standings(room)
+    for p in room.players:
+        await _send(p.ws, {"type": "ended", "game": "race", "podium": podium})
+    try:
+        await save_match("race", json.dumps({"settings": room.settings, "podium": podium}, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"save_match: {e}")
+    await _reset_to_lobby(room)
+
+
 # Реестр игр — добавлять новые типы сюда (ключ → корутина run(room)).
-GAMES = {"quiz": run_quiz}
+GAMES = {"quiz": run_quiz, "race": run_race}
 
 
 # ----------------------------- AI-набор слов (готовится в лобби) -----------------------------
@@ -408,6 +601,11 @@ async def _leave(me):
         room.host = room.players[0]
     if room.state == "countdown":
         await _cancel_countdown(room)
+    # гонка: ушедший игрок не должен подвешивать комнату — пересчитываем условие финиша
+    if room.state == "playing" and room.settings["game"] == "race" and getattr(room, "race_over", None):
+        await _race_broadcast(room)
+        if all(getattr(q, "race_rank", 0) for q in room.players):
+            room.race_over.set()
     await _send_room(room)
     await _broadcast_rooms()
 
@@ -513,6 +711,11 @@ async def ws_online(ws: WebSocket):
                 async with _lock:
                     await _leave(me)
                 await _send(ws, {"type": "left"})
+
+            elif t == "answer" and me.room and me.room.settings["game"] == "race":
+                room = me.room
+                if room.state == "playing":
+                    await _race_answer(room, me, msg)
 
             elif t == "answer":
                 room = me.room
