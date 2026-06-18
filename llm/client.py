@@ -41,10 +41,19 @@ async def _run(kind, cands, attempt, incr, label, icon):
     if not cands:
         notify.feed(f"{icon} {label} ⛔ ключей нет")
         return None
+    primary = cands[0][0]   # основная модель (первая в цепочке)
+    models_tried = []
+    prev_model = None
     last = None
     last_scope = last_wait = None
     failed = []  # ключи, давшие 429 (для краткого отчёта одной строкой)
     for model, key, idx in cands:
+        if model != prev_model:
+            if prev_model is not None:
+                # дошли до следующей модели — значит у предыдущей кончилась квота на всех ключах
+                notify.feed(f"{icon} {label}: ⚠️ у «{prev_model}» закончилась квота (429 на всех ключах) — переключаюсь на запасную «{model}»")
+            prev_model = model
+            models_tried.append(model)
         try:
             res = await attempt(model, key)
         except Exception as e:
@@ -61,11 +70,13 @@ async def _run(kind, cands, attempt, incr, label, icon):
         quota.advance(kind, model, idx)        # next-запрос начнём со следующего ключа
         await incr(model, key)                 # учёт для статистики
         skips = f" (429 на k{','.join(map(str, failed))})" if failed else ""
-        notify.feed(f"{icon} {label} [{model}] · k{idx} ✅{skips}")
+        fb = " · на запасной модели" if model != primary else ""
+        notify.feed(f"{icon} {label} [{model}] · k{idx} ✅{skips}{fb}")
         return res
-    # все ключи в 429 — одна сводная строка с типом лимита и временем
+    # все ключи всех моделей в 429 — одна сводная строка с типом лимита и временем
     tag = (last_scope + " ") if last_scope else ""
-    notify.feed(f"{icon} {label} ⛔ 429 {tag}на всех ключах (k{','.join(map(str, failed))}) · retry ~{last_wait:.0f}с")
+    extra = f" (модели: {', '.join(models_tried)})" if len(models_tried) > 1 else ""
+    notify.feed(f"{icon} {label} ⛔ 429 {tag}на всех ключах{extra} (k{','.join(map(str, failed))}) · retry ~{last_wait:.0f}с")
     if last:
         raise last
     return None
