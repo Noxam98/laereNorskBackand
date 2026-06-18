@@ -243,6 +243,29 @@ async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = N
         await _release(db)
 
 
+async def get_pool_words_by_names(names):
+    """Слова пула по списку норвежских имён: [{norwegian, translate, embedding}] (для AI-набора)."""
+    if not names:
+        return []
+    marks = ",".join("?" for _ in names)
+    db = await _conn()
+    try:
+        async with db.execute(
+            f"SELECT norwegian, data, embedding FROM word_pool WHERE norwegian IN ({marks})", list(names)
+        ) as cur:
+            out = []
+            for r in await cur.fetchall():
+                try:
+                    tr = (json.loads(r["data"]) or {}).get("translate", {}) or {}
+                except Exception:
+                    tr = {}
+                if tr:
+                    out.append({"norwegian": r["norwegian"], "translate": tr, "embedding": r["embedding"]})
+            return out
+    finally:
+        await _release(db)
+
+
 async def get_pool_letter(letter: str, limit: int = 120):
     """Норвежские слова пула, начинающиеся на букву (исключения для генерации по букве)."""
     key = normalize_word(letter)

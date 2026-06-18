@@ -20,7 +20,7 @@ from .pool import (
     get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,
     pool_missing_embedding, pool_missing_tts, tr_tts_pending, mark_tr_tts_done,
     translate_pending, mark_translate_done, update_pool_translate,
-    sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter, get_pool_duel_words,
+    sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter, get_pool_duel_words, get_pool_words_by_names,
     set_pool_meta, pool_missing_meta, pool_missing_description, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
     get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,

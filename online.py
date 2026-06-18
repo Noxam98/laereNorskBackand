@@ -16,6 +16,7 @@ from config import logger
 from auth import SECRET_KEY, ALGORITHM
 from db import get_user, get_pool_duel_words, get_user_quiz_words, save_match
 from llm import ranked_pool
+from autofill import ai_game_words
 
 router = APIRouter()
 
@@ -70,7 +71,7 @@ def _norm_settings(s):
     return {
         "game": s.get("game") if s.get("game") in GAMES else "quiz",
         "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
-        "source": "dict" if s.get("source") == "dict" else "pool",   # pool=общий пул, dict=словари хоста
+        "source": s.get("source") if s.get("source") in ("pool", "dict", "ai") else "pool",  # pool / словари хоста / AI-подбор
         "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
@@ -268,8 +269,12 @@ async def run_quiz(room):
     await _broadcast_rooms()
     s = room.settings
     langs = list({p.lang for p in room.players})
+    for p in room.players:   # пока готовим слова (особенно AI-подбор — несколько секунд)
+        await _send(p.ws, {"type": "preparing"})
     n = max(s["count"] * 8, 60)
-    if s["source"] == "dict":   # слова из словарей хоста (конкретный по id или все)
+    if s["source"] == "ai":      # AI-подбор: генерация под уровень/тему/язык хоста
+        cand = await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"])
+    elif s["source"] == "dict":  # слова из словарей хоста (конкретный по id или все)
         cand = await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
     else:                        # общий пул по фильтрам
         cand = await get_pool_duel_words(n, s["level"], s["topic"])

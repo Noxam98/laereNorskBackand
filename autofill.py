@@ -14,14 +14,14 @@ from db import (
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
-    pos_uncategorized, set_pool_pos,
+    pos_uncategorized, set_pool_pos, get_pool_words_by_names,
 )
 import llm  # текст/эмбеддинги через key-free API: ask_json/embed_texts/text_budget_left/...
 from llm import (
     embed_texts, encode_emb, ask_json, semantic_embed_text,
     WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
     NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA, POS_REFINE_SCHEMA, POS_KEYS,
-    TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, normalize_word_item, apply_item_meta,
+    TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, LANG_NAMES, normalize_word_item, apply_item_meta,
 )
 from tts import synth_tts, _tts_lock
 from task import task
@@ -525,6 +525,55 @@ async def forms_loop():
         except Exception as e:
             errors.report(e, "forms_loop")
         await asyncio.sleep(FORMS_CHECK_SEC)
+
+
+async def ai_game_words(lang, level, topic, count):
+    """AI-набор слов для онлайн-игры: 1 LLM-вызов под уровень/тему/язык (без «само-переводящихся»),
+    прогон по пулу (переиспуск/создание), вектора новым (батч). Формы/tts добьются фоном.
+    Возвращает [{norwegian, translate, embedding}] для построения викторины."""
+    lang_name = LANG_NAMES.get(lang, lang)
+    topic_label = TOPIC_TAGS.get(topic, topic) if topic else None
+    nonce = random.randint(1000, 99999)
+    prompt = (
+        f"Подбери {count + 3} распространённых, но РАЗНЫХ норвежских слов (bokmål) для игры-викторины. "
+        + (f"Уровень CEFR — около {level}. " if level else "")
+        + (f"Тема: {topic_label}. " if topic_label else "")
+        + f"Игроки будут переводить их на язык: {lang_name}. "
+        f"НЕ включай слова, чей перевод на {lang_name} совпадает или почти совпадает с самим норвежским "
+        f"словом (интернационализмы/когнаты — они выдают ответ). Каждое слово однозначное и переводимое. "
+        f"(вариант {nonce})"
+    )
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                              purpose="autofill", label="AI-набор для игры")
+    except Exception as e:
+        errors.report(e, "ai_game_words")
+        return []
+    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    names, new_emb = [], []   # имена для набора; (pid, текст) — новым на эмбеддинг
+    for it in items:
+        if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
+            continue
+        tr = it.get("translate", {}) or {}
+        target = (tr.get(lang) or [None])[0]
+        if target and target.strip().lower() == it["word"].strip().lower():
+            continue  # «само-переводящееся» — пропускаем
+        existed = await get_pool_id(it["word"])
+        data_item = normalize_word_item(it)
+        pid = await get_or_create_pool(it["word"], data_item)
+        if not pid:
+            continue
+        await apply_item_meta(pid, it)
+        names.append(it["word"])
+        if not existed:   # новое слово → нужен вектор
+            new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
+    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
+        vecs = await embed_texts([t for _, t in new_emb])
+        if vecs and len(vecs) == len(new_emb):
+            for (pid, _), vec in zip(new_emb, vecs):
+                await set_pool_embedding(pid, encode_emb(vec))
+                await mark_sem_embed(pid)
+    return await get_pool_words_by_names(names)
 
 
 async def autofill_loop():
