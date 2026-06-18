@@ -143,6 +143,42 @@ async def mark_translate_done(pool_id: int):
         await _release(db)
 
 
+async def update_pool_word(old_norwegian: str, translate: dict):
+    """Правка слова в ОБЩЕМ пуле (для всех): обновить переводы (любые из ru/ukr/en/pl/lt/no)
+    и, если изменилось норвежское слово (translate['no']), — переименовать (norwegian-ключ +
+    data.word/translate.no). Сбрасывает emb_sem (пере-эмбеддинг по смыслу) и tts_tr_done.
+    Возвращает {ok, norwegian} либо {error: not_found|exists}."""
+    key = normalize_word(old_norwegian)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id, data FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"error": "not_found"}
+        pid = row["id"]
+        data = json.loads(row["data"]) if row["data"] else {}
+        tr = dict(data.get("translate", {}) or {})
+        for k, v in (translate or {}).items():
+            if isinstance(v, list) and v:
+                tr[k] = v
+        data["translate"] = tr
+        new_no = (tr.get("no") or [None])[0]
+        new_key = normalize_word(new_no) if new_no else key
+        if new_key != key:
+            async with db.execute("SELECT 1 FROM word_pool WHERE norwegian = ? AND id != ?", (new_key, pid)) as c2:
+                if await c2.fetchone():
+                    return {"error": "exists"}
+            data["word"] = new_no
+        await db.execute(
+            "UPDATE word_pool SET data = ?, norwegian = ?, emb_sem = 0, tts_tr_done = 0, translate_done = 1 WHERE id = ?",
+            (json.dumps(data, ensure_ascii=False), new_key, pid),
+        )
+        await db.commit()
+        return {"ok": True, "norwegian": new_key}
+    finally:
+        await _release(db)
+
+
 async def update_pool_translate(pool_id: int, translate: dict):
     """Записать обновлённый словарь translate в data слова; сбросить tts_tr_done,
     чтобы фон озвучил новые языки."""

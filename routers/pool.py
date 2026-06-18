@@ -7,14 +7,14 @@ from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
     set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta, get_pool_stats, get_usage_like,
-    get_cached_query, cache_query, set_cached_query,
+    get_cached_query, cache_query, set_cached_query, update_pool_word,
 )
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, ranked_pool
 from task import description_task
-from models import RedescribeBody, RediffBody
+from models import RedescribeBody, RediffBody, PoolEditBody
 import runtime
 import storage
 
@@ -185,6 +185,18 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_curr
     description = desc.get("description", desc)
     await set_pool_description(pid, description)
     return {"description": description}
+
+
+@router.post("/pool/{word}/edit")
+async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user)):
+    """Правка слова в общем пуле (норвежское слово + переводы) — меняется для всех."""
+    res = await update_pool_word(word, body.translate or {})
+    if res.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Not in pool")
+    if res.get("error") == "exists":
+        raise HTTPException(status_code=409, detail="Word already exists")
+    mark_activity()
+    return res
 
 
 @router.get("/pool/{word}/synonyms")

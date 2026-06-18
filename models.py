@@ -29,6 +29,10 @@ class NameBody(BaseModel):
     name: str
 
 
+class PoolEditBody(BaseModel):
+    translate: dict = {}   # {no?, ru?, ukr?, en?, pl?, lt?: [варианты]}
+
+
 class DictCreate(BaseModel):
     name: str
 
