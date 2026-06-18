@@ -30,6 +30,8 @@ app.include_router(online_router)
 @app.on_event("startup")
 async def startup():
     await init_db()
+    import runtime
+    await runtime.load_persisted()  # восстановить паузы фоновых задач из БД
     if SECRET_KEY == "your_secret_key":
         logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
     import notify

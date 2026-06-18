@@ -9,6 +9,7 @@
 from .core import (
     DATABASE_URL, init_db, normalize_word, normalize_query,
     SQLITE_VEC_OK, vec_upsert, vec_delete, vec_nearest_rows,
+    get_setting, set_setting,
 )
 from .users import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,

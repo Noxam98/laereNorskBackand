@@ -125,6 +125,7 @@ async def admin_set_control(key: str, paused: bool, user=Depends(get_admin_user)
     if key not in runtime.PAUSED:
         raise HTTPException(status_code=400, detail="unknown control key")
     runtime.PAUSED[key] = bool(paused)
+    await runtime.persist()  # сохранить в БД, чтобы пережило рестарт/передеплой
     logger.info(f"admin: {key} paused={runtime.PAUSED[key]}")
     return {"paused": runtime.PAUSED}
 

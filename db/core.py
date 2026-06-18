@@ -69,6 +69,29 @@ async def _release(db):
     await db.close()
 
 
+async def get_setting(key: str, default=None):
+    """Прочитать значение из key-value таблицы настроек (app_settings)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT value FROM app_settings WHERE key=?", (key,)) as cur:
+            row = await cur.fetchone()
+        return row["value"] if row else default
+    finally:
+        await _release(db)
+
+
+async def set_setting(key: str, value: str):
+    """Записать значение в key-value таблицу настроек (app_settings)."""
+    db = await _conn()
+    try:
+        await db.execute(
+            "INSERT INTO app_settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 def normalize_word(norwegian: str) -> str:
     return (norwegian or "").strip().lower()
 
@@ -205,6 +228,15 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS usage (
             day TEXT PRIMARY KEY,
             n INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+
+        # Простое key-value хранилище настроек рантайма (напр. паузы фоновых задач),
+        # чтобы состояние переживало рестарт/передеплой.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
         """)
 
