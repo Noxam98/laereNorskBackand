@@ -31,6 +31,7 @@ class NameBody(BaseModel):
 
 class PoolEditBody(BaseModel):
     translate: dict = {}   # {no?, ru?, ukr?, en?, pl?, lt?: [варианты]}
+    lang: str = "ru"       # язык интерфейса — на нём вернуть причину ревью
 
 
 class DictCreate(BaseModel):

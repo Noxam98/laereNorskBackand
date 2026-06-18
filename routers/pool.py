@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from config import logger
 import errors
 import asyncio
+import json
 from datetime import datetime
 from db import (
     normalize_word, get_pool_tts, set_pool_tts, get_pool_id, get_pool_by_id,
@@ -12,7 +13,7 @@ from db import (
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, ranked_pool
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool
 from task import description_task
 from models import RedescribeBody, RediffBody, PoolEditBody
 import runtime
@@ -189,14 +190,39 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_curr
 
 @router.post("/pool/{word}/edit")
 async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user)):
-    """Правка слова в общем пуле (норвежское слово + переводы) — меняется для всех."""
-    res = await update_pool_word(word, body.translate or {})
+    """Правка слова в общем пуле (норвежское слово + переводы) — меняется для всех.
+    Сначала ревью нейросетью: применяем только при approved, иначе возвращаем причину."""
+    pid = await get_pool_id(word)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    tr = body.translate or {}
+    lang_name = LANG_NAMES.get(body.lang, "русский")
+    mark_activity()
+    review_sys = (
+        "Ты — модератор словаря норвежского (bokmål). Пользователь предлагает правку слова и/или переводов. "
+        "Проверь строго: (1) норвежское слово ('no') — реальное, корректно написанное слово bokmål; "
+        "(2) каждый перевод точно соответствует норвежскому слову и своему языку. Одобряй (approved=true) "
+        "только если правка корректна и не портит данные; при ошибке/сомнении — approved=false. "
+        f"Поле reason — 1-2 предложения на языке «{lang_name}»: если одобрено — чем правка корректна; если нет — что именно не так."
+    )
+    user_prompt = (f"Текущее норвежское слово: >>{normalize_word(word)}<<\n"
+                   f"Предлагаемая правка (переводы по языкам; 'no' — норвежское слово):\n"
+                   f"{json.dumps(tr, ensure_ascii=False)}")
+    try:
+        verdict = await ask_json(review_sys, user_prompt, REVIEW_SCHEMA, purpose="user", label="ревью правки слова")
+    except Exception as e:
+        errors.report(e, "pool_edit_review")
+        raise HTTPException(status_code=502, detail="Review failed")
+    approved = bool(verdict.get("approved")) if isinstance(verdict, dict) else False
+    reason = (verdict.get("reason") or "") if isinstance(verdict, dict) else ""
+    if not approved:
+        return {"approved": False, "reason": reason}
+    res = await update_pool_word(word, tr)
     if res.get("error") == "not_found":
         raise HTTPException(status_code=404, detail="Not in pool")
     if res.get("error") == "exists":
         raise HTTPException(status_code=409, detail="Word already exists")
-    mark_activity()
-    return res
+    return {"approved": True, "ok": True, "reason": reason, "norwegian": res.get("norwegian")}
 
 
 @router.get("/pool/{word}/synonyms")

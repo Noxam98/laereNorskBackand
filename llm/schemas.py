@@ -89,6 +89,19 @@ DIFF_SCHEMA = {
     },
 }
 
+# Ревью правки слова: одобрить/отклонить + причина.
+REVIEW_SCHEMA = {
+    "name": "edit_review_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "approved": {"type": "boolean"},  # одобрить правку
+            "reason": {"type": "string"},     # почему одобрено / что не так (на языке пользователя)
+        },
+        "required": ["approved", "reason"],
+    },
+}
+
 # Пакетная классификация слов: уровень CEFR + 1-3 темы из канонического списка.
 CLASSIFY_SCHEMA = {
     "name": "classify_response",
