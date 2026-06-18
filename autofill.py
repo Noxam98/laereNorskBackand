@@ -527,9 +527,10 @@ async def forms_loop():
         await asyncio.sleep(FORMS_CHECK_SEC)
 
 
-async def ai_game_words(lang, level, topic, count):
+async def ai_game_words(lang, level, topic, count, on_phase=None):
     """AI-набор слов для онлайн-игры: 1 LLM-вызов под уровень/тему/язык (без «само-переводящихся»),
     прогон по пулу (переиспуск/создание), вектора новым (батч). Формы/tts добьются фоном.
+    on_phase(p) — асинхронный колбэк прогресса ('indexing' перед эмбеддингами).
     Возвращает [{norwegian, translate, embedding}] для построения викторины."""
     lang_name = LANG_NAMES.get(lang, lang)
     topic_label = TOPIC_TAGS.get(topic, topic) if topic else None
@@ -568,6 +569,8 @@ async def ai_game_words(lang, level, topic, count):
         if not existed:   # новое слово → нужен вектор
             new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
     if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
+        if on_phase:
+            await on_phase("indexing")
         vecs = await embed_texts([t for _, t in new_emb])
         if vecs and len(vecs) == len(new_emb):
             for (pid, _), vec in zip(new_emb, vecs):
