@@ -491,6 +491,14 @@ async def ws_online(ws: WebSocket):
                     await _send_room(me.room)
                     await _maybe_start(me.room)
 
+            elif t == "retry_ai":
+                # повторить генерацию AI-набора после ошибки (хост, в лобби)
+                room = me.room
+                if room and room.host is me and room.state == "lobby" and room.settings["source"] == "ai":
+                    _kick_ai(room)
+                    await _send_room(room)
+                    await _broadcast_rooms()
+
             elif t == "force_start":
                 # хост может стартовать вручную (для теста) — без требования «все готовы»/≥2
                 room = me.room
