@@ -79,6 +79,25 @@ async def tts(word: str, lang: str = None):
         return Response(content=mp3, media_type="audio/mpeg", headers=_TTS_HEADERS)
 
 
+@router.post("/pool/{word}/revoice")
+async def pool_revoice(word: str, user=Depends(get_current_user)):
+    """Переозвучить норвежское слово — перегенерировать аудио и перезаписать кэш."""
+    key = normalize_word(word)
+    if not await get_pool_id(key):
+        raise HTTPException(status_code=404, detail="Not in pool")
+    mark_activity()
+    async with _tts_lock:
+        try:
+            mp3 = await synth_tts(key)
+        except Exception as e:
+            logger.warning(f"revoice failed: {e}")
+            raise HTTPException(status_code=502, detail="TTS provider error")
+        if not mp3:
+            raise HTTPException(status_code=502, detail="No audio")
+        await set_pool_tts(key, mp3)
+    return {"ok": True}
+
+
 # --- Shared pool ---
 @router.get("/pool")
 async def pool(q: str = None, limit: int = 60, offset: int = 0,
