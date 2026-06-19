@@ -14,8 +14,8 @@ from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item
-from task import description_task
-from models import RedescribeBody, RediffBody, PoolEditBody
+from task import description_task, desc_user_prompt
+from models import RedescribeBody, RediffBody, PoolEditBody, AskBody
 import runtime
 import storage
 
@@ -158,7 +158,7 @@ async def pool_description(word: str, model: str = None, user=Depends(get_curren
     if p and p.get("description"):
         return {"description": p["description"]}
     mark_activity()
-    desc = await ask_json(description_task, f"Слово на норвежском: >>{normalize_word(word)}<<", DESC_SCHEMA,
+    desc = await ask_json(description_task, desc_user_prompt(normalize_word(word), p.get("data") if p else None), DESC_SCHEMA,
                           purpose="user", label="описание слова", model=model)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
@@ -176,16 +176,42 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_curr
         raise HTTPException(status_code=404, detail="Not in pool")
     hint = (body.hint or "").strip()
     mark_activity()
-    user_prompt = f"Слово на норвежском: >>{normalize_word(word)}<<"
-    if hint:
-        user_prompt += ("\nВАЖНО: предыдущее описание было неверным. Правильное значение/уточнение "
-                        f"от пользователя (учти обязательно): {hint}")
+    p = await get_pool_by_id(pid)
+    extra = ("ВАЖНО: предыдущее описание было неверным. Правильное значение/уточнение "
+             f"от пользователя (учти обязательно): {hint}") if hint else ""
+    user_prompt = desc_user_prompt(normalize_word(word), p.get("data") if p else None, extra)
     desc = await ask_json(description_task, user_prompt, DESC_SCHEMA, purpose="user", label="переописание слова")
     if not isinstance(desc, dict):
         raise HTTPException(status_code=502, detail="No JSON")
     description = desc.get("description", desc)
     await set_pool_description(pid, description)
     return {"description": description}
+
+
+@router.post("/pool/{word}/ask")
+async def pool_ask(word: str, body: AskBody, user=Depends(get_current_user)):
+    """Свободный вопрос пользователя о слове — нейросеть отвечает с учётом части речи и
+    переводов (контекст значения), кратко, на языке интерфейса."""
+    pid = await get_pool_id(word)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    q = (body.question or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Empty question")
+    p = await get_pool_by_id(pid)
+    lang_name = LANG_NAMES.get(body.lang, "русский")
+    mark_activity()
+    sys = ("Ты — дружелюбный преподаватель норвежского (bokmål). Кратко и по делу ответь на "
+           f"вопрос пользователя об этом норвежском слове. Отвечай на языке «{lang_name}», 1–5 "
+           "предложений, можно с примером. Если вопрос не относится к слову/языку — мягко вернись к теме.")
+    ctx = desc_user_prompt(normalize_word(word), p.get("data") if p else None, f"Вопрос пользователя: {q}")
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+    try:
+        res = await ask_json(sys, ctx, schema, purpose="user", label="вопрос о слове")
+    except Exception as e:
+        info = errors.report(e, "pool_ask")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
+    return {"answer": (res or {}).get("answer", "") if isinstance(res, dict) else ""}
 
 
 @router.post("/pool/{word}/edit")

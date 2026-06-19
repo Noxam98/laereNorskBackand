@@ -112,3 +112,26 @@ description_task = '''
 Никакого текста вне JSON.
 '''
 
+
+
+def desc_user_prompt(norwegian, data=None, extra=""):
+    """Пользовательский промпт для описания слова: само слово + часть речи + все
+    известные переводы, чтобы нейросеть описала ИМЕННО это значение (а не другой
+    смысл того же написания). Используется в выдаче описаний (поодиночке и пакетно)."""
+    data = data or {}
+    pos = (data.get("part_of_speech") or "").strip()
+    tr = data.get("translate") or {}
+    pairs = []
+    for l in ("ru", "ukr", "en", "pl", "lt"):
+        vals = [v for v in (tr.get(l) or []) if v]
+        if vals:
+            pairs.append(f"{l}: {', '.join(vals)}")
+    s = f"Слово на норвежском (bokmål): >>{norwegian}<<"
+    if pos:
+        s += f"\nЧасть речи: {pos}"
+    if pairs:
+        s += ("\nОпиши ИМЕННО это значение (соответствующее переводам ниже), а не другой "
+              "смысл того же написания:\n" + "\n".join(pairs))
+    if extra:
+        s += "\n" + extra
+    return s

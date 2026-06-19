@@ -56,6 +56,17 @@ async def startup():
             logger.info(f"cleared grammatical forms from {cleared} non-formable words")
     except Exception as e:
         logger.warning(f"forms cleanup: {e}")
+    # Разовый сброс всех описаний (фон догенерит заново под новый промпт — с частью речи и
+    # переводами). Гард по версии-настройке: выполняется один раз на это значение.
+    try:
+        from db import get_setting, set_setting, clear_all_descriptions
+        DESC_RESET_VER = "v2_pos_translate"
+        if await get_setting("desc_reset") != DESC_RESET_VER:
+            await clear_all_descriptions()
+            await set_setting("desc_reset", DESC_RESET_VER)
+            logger.info("all word descriptions reset — will be regenerated with richer prompt")
+    except Exception as e:
+        logger.warning(f"desc reset: {e}")
     if text_enabled():
         if AUTOFILL_ENABLED:
             asyncio.create_task(autofill_loop())

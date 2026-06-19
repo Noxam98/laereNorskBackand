@@ -17,7 +17,7 @@ from llm import (
     ranked_pool, text_enabled, TOPIC_KEYS, CEFR_LEVELS, refine_translations,
 )
 from tts import schedule_tts
-from task import description_task
+from task import description_task, desc_user_prompt
 from autofill import ai_game_words
 from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords, RefineWords, AiWordsBody
 
@@ -231,8 +231,11 @@ async def word_description(dw_id: int, model: str = None, user=Depends(get_curre
         raise HTTPException(status_code=404, detail="Not found")
     if dw["description"]:
         return {"description": json.loads(dw["description"])}
+    data = json.loads(dw["data"]) if dw["data"] else {}
+    if dw["override"]:
+        data = {**data, **json.loads(dw["override"])}
     try:
-        desc = await ask_json(description_task, f"Слово на норвежском: >>{dw['norwegian']}<<", DESC_SCHEMA,
+        desc = await ask_json(description_task, desc_user_prompt(dw["norwegian"], data), DESC_SCHEMA,
                               purpose="user", label="описание слова", model=model)
     except Exception as e:
         info = errors.report(e, "word_description")

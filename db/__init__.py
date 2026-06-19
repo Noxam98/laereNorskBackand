@@ -22,7 +22,7 @@ from .pool import (
     pool_missing_embedding, pool_missing_tts, tr_tts_pending, mark_tr_tts_done,
     translate_pending, mark_translate_done, update_pool_translate, update_pool_word, replace_pool_word,
     sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter, get_pool_duel_words, get_pool_words_by_names,
-    set_pool_meta, pool_missing_meta, pool_missing_description, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
+    set_pool_meta, pool_missing_meta, pool_missing_description, clear_all_descriptions, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
     get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,
     set_pool_forms, pos_missing_forms, set_pool_pos, pos_uncategorized, clear_nonformable_forms,

@@ -104,6 +104,11 @@ class RedescribeBody(BaseModel):
     hint: str | None = None   # подсказка о правильном значении слова
 
 
+class AskBody(BaseModel):
+    question: str = ""        # вопрос пользователя о слове
+    lang: str = "ru"          # язык ответа
+
+
 class RediffBody(BaseModel):
     a: str
     b: str

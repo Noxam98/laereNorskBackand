@@ -364,11 +364,26 @@ async def set_pool_meta(pool_id: int, level: str = None, topics=None):
 
 
 async def pool_missing_description(limit: int = 1):
-    """Слова без описания — для фоновой догенерации."""
+    """Слова без описания — для фоновой догенерации. Возвращает [{word, pos, translate}],
+    чтобы описание генерилось под конкретное значение (часть речи + переводы)."""
     db = await _conn()
     try:
-        async with db.execute("SELECT norwegian FROM word_pool WHERE description IS NULL LIMIT ?", (limit,)) as cur:
-            return [r["norwegian"] for r in await cur.fetchall()]
+        async with db.execute("SELECT norwegian, data FROM word_pool WHERE description IS NULL LIMIT ?", (limit,)) as cur:
+            out = []
+            for r in await cur.fetchall():
+                d = json.loads(r["data"]) if r["data"] else {}
+                out.append({"word": r["norwegian"], "pos": d.get("part_of_speech", ""), "translate": d.get("translate", {})})
+            return out
+    finally:
+        await _release(db)
+
+
+async def clear_all_descriptions():
+    """Сбросить ВСЕ описания (description=NULL) — фон догенерит заново под новый промпт."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET description = NULL")
+        await db.commit()
     finally:
         await _release(db)
 
