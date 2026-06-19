@@ -5,7 +5,7 @@ from config import logger
 import errors
 import notify
 from db import (
-    get_user_data, create_dictionary, delete_dictionary, add_word_to_dict,
+    get_user_data, create_dictionary, rename_dictionary, delete_dictionary, add_word_to_dict,
     delete_dict_word, move_dict_word, set_word_override, record_result, get_dict_word,
     get_or_create_pool, get_pool_id, get_pool_candidates, delete_pool_word,
     set_pool_description, get_pool_ids, update_pool_translate,
@@ -55,6 +55,14 @@ async def create_dict(body: DictCreate, user=Depends(get_current_user)):
 @router.delete("/dictionaries/{dict_id}")
 async def remove_dict(dict_id: int, user=Depends(get_current_user)):
     res = await delete_dictionary(user["id"], dict_id)
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@router.post("/dictionaries/{dict_id}/rename")
+async def rename_dict(dict_id: int, body: DictCreate, user=Depends(get_current_user)):
+    res = await rename_dictionary(user["id"], dict_id, body.name)
     if res.get("error"):
         raise HTTPException(status_code=400, detail=res["error"])
     return res

@@ -47,6 +47,25 @@ async def create_dictionary(user_id: int, name: str):
         await _release(db)
 
 
+async def rename_dictionary(user_id: int, dict_id: int, name: str):
+    name = (name or "").strip()
+    if not name:
+        return {"error": "Empty name"}
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id FROM dictionaries WHERE id = ? AND user_id = ?", (dict_id, user_id)) as cur:
+            if not await cur.fetchone():
+                return {"error": "Not found"}
+        try:
+            await db.execute("UPDATE dictionaries SET name = ? WHERE id = ? AND user_id = ?", (name, dict_id, user_id))
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            return {"error": "Dictionary already exists"}
+        return {"id": dict_id, "name": name}
+    finally:
+        await _release(db)
+
+
 async def delete_dictionary(user_id: int, dict_id: int):
     db = await _conn()
     try:
