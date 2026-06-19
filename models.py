@@ -109,6 +109,28 @@ class AskBody(BaseModel):
     lang: str = "ru"          # язык ответа
 
 
+# --- «Учёба» (интервальные повторения) ---
+class LearningAnswer(BaseModel):
+    pool_id: int
+    correct: bool
+    elapsed: float | None = None
+    mode: str | None = None   # choice | input | study | …
+
+
+class PlacementBody(BaseModel):
+    lang: str = "ru"
+    answers: list = []        # [{no, level, answer}]
+
+
+class LearningStatusBody(BaseModel):
+    action: str = ""          # know | reset | unarchive
+
+
+class SuggestBody(BaseModel):
+    count: int = 10
+    level: str = ""           # A1..C2 или пусто (автоопределение)
+
+
 class RediffBody(BaseModel):
     a: str
     b: str

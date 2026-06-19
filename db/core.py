@@ -142,6 +142,10 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN game_mode TEXT")  # последний режим в хабе «Игры» (solo|online)
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN start_level TEXT")  # уровень по входному тесту (старт «Учёбы»)
+        except Exception:
+            pass
         # Лог результатов онлайн-матчей (для статистики/будущего лидерборда).
         await db.execute("""
         CREATE TABLE IF NOT EXISTS match_log (
@@ -268,6 +272,31 @@ async def init_db():
             created_at TEXT NOT NULL,
             UNIQUE(dict_id, pool_id),
             FOREIGN KEY(dict_id) REFERENCES dictionaries(id) ON DELETE CASCADE,
+            FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
+        )
+        """)
+        # «Учёба»: состояние интервальных повторений на пару (пользователь, слово пула).
+        # Слова берутся из словарей пользователя; здесь — сила/статус/расписание повторений.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_words (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            pool_id INTEGER NOT NULL,
+            strength INTEGER NOT NULL DEFAULT 0,
+            reps INTEGER NOT NULL DEFAULT 0,
+            lapses INTEGER NOT NULL DEFAULT 0,
+            ease REAL NOT NULL DEFAULT 2.5,
+            interval_days REAL NOT NULL DEFAULT 0,
+            due_at TEXT,
+            correct INTEGER NOT NULL DEFAULT 0,
+            incorrect INTEGER NOT NULL DEFAULT 0,
+            streak INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            modes TEXT,                       -- JSON: сколько раз верно пройдено в каждом режиме
+            last_seen TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, pool_id),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
         )
         """)

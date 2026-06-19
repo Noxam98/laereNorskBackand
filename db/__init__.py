@@ -35,3 +35,8 @@ from .dictionaries import (
     move_dict_word, set_word_override, record_result, get_dict_word, get_user_data,
     get_user_quiz_words,
 )
+from .learning import (
+    get_learning as learning_get, learning_stats, get_due as learning_due,
+    apply_result as learning_answer, set_status as learning_set_status, suggest_words as learning_suggest,
+    build_placement as learning_placement, grade_placement as learning_grade,
+)
