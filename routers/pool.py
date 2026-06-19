@@ -205,7 +205,8 @@ async def pool_ask(word: str, body: AskBody, user=Depends(get_current_user)):
            f"вопрос пользователя об этом норвежском слове. Отвечай на языке «{lang_name}», 1–5 "
            "предложений, можно с примером. Если вопрос не относится к слову/языку — мягко вернись к теме.")
     ctx = desc_user_prompt(normalize_word(word), p.get("data") if p else None, f"Вопрос пользователя: {q}")
-    schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+    schema = {"name": "word_answer", "schema": {
+        "type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}
     try:
         res = await ask_json(sys, ctx, schema, purpose="user", label="вопрос о слове")
     except Exception as e:
