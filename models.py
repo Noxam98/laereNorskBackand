@@ -46,6 +46,10 @@ class DictCreate(BaseModel):
     name: str
 
 
+class StudyingBody(BaseModel):
+    studying: bool   # включить/выключить словарь в «Учёбе»
+
+
 class AddWords(BaseModel):
     prompt: str
     model: Optional[str] = None
