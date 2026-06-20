@@ -229,7 +229,7 @@ async def edit_word(dw_id: int, body: WordOverride, user=Depends(get_current_use
 
 @router.post("/words/{dw_id}/result")
 async def word_result(dw_id: int, body: ResultBody, user=Depends(get_current_user)):
-    return await record_result(user["id"], dw_id, body.correct, mode=body.mode, elapsed=body.elapsed)
+    return await record_result(user["id"], dw_id, body.correct, mode=body.mode, elapsed=body.elapsed, direction=body.direction)
 
 
 @router.get("/words/{dw_id}/description")

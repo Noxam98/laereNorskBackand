@@ -5,7 +5,7 @@ from auth import get_current_user
 from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
-    learning_placement, learning_grade, learning_activity, learning_set_level,
+    learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
 )
 from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody
 
@@ -38,7 +38,7 @@ async def learning_activity_route(days: int = 119, user=Depends(get_current_user
 @router.post("/learning/answer")
 async def learning_answer_route(body: LearningAnswer, user=Depends(get_current_user)):
     mark_activity()
-    return await learning_answer(user["id"], body.pool_id, body.correct, body.elapsed, body.mode)
+    return await learning_answer(user["id"], body.pool_id, body.correct, body.elapsed, body.mode, body.direction)
 
 
 @router.get("/learning/placement")
@@ -48,14 +48,18 @@ async def learning_placement_route(lang: str = "ru", per: int = 4, user=Depends(
 
 @router.post("/learning/placement")
 async def learning_grade_route(body: PlacementBody, user=Depends(get_current_user)):
-    return await learning_grade(user["id"], body.lang, body.answers)
+    res = await learning_grade(user["id"], body.lang, body.answers)
+    # стартовый набор под определённый уровень — чтобы было что учить сразу
+    seed = await learning_seed_starter(user["id"], res.get("level"))
+    return {**res, "seeded": seed.get("seeded", 0)}
 
 
 @router.post("/learning/level")
 async def learning_level_route(body: LevelBody, user=Depends(get_current_user)):
     """Самооценка уровня (self-report): сохранить как стартовый, уточним по сессиям."""
     await learning_set_level(user["id"], body.level)
-    return {"ok": True, "level": body.level}
+    seed = await learning_seed_starter(user["id"], body.level)
+    return {"ok": True, "level": body.level, "seeded": seed.get("seeded", 0)}
 
 
 @router.post("/learning/{pool_id}/status")

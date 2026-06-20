@@ -74,8 +74,9 @@ class WordOverride(BaseModel):
 
 class ResultBody(BaseModel):
     correct: bool
-    mode: Optional[str] = None       # вид игры (choice/input/study) — кормит SRS «Учёбы»
+    mode: Optional[str] = None       # вид игры (choice/build/input/study) — кормит SRS «Учёбы»
     elapsed: Optional[float] = None  # время ответа, сек
+    direction: Optional[str] = None  # no2int | int2no — направление клетки рампы
 
 
 class MoveWords(BaseModel):
@@ -116,7 +117,8 @@ class LearningAnswer(BaseModel):
     pool_id: int
     correct: bool
     elapsed: float | None = None
-    mode: str | None = None   # choice | input | study | …
+    mode: str | None = None        # choice | build | input | study | …
+    direction: str | None = None   # no2int | int2no — направление клетки рампы
 
 
 class PlacementBody(BaseModel):

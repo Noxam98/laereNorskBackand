@@ -11,10 +11,13 @@ LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 LEVEL_TARGETS = {"A1": 250, "A2": 500, "B1": 1000, "B2": 2000, "C1": 3500, "C2": 5000}
 _INTERVAL_CAP = 365
 _FAST_SEC = 3.0   # быстрый верный ответ → слово «лёгкое», сильнее растёт
-# «Выучено» = в каждом ТЕСТОВОМ виде игры пройдено N раз подряд без ошибок.
-# study (карточки) — пассивный, в зачёт не идёт.
-REQUIRED_MODES = ["choice", "input"]
-MASTER_PER_MODE = 2                     # сколько раз подряд без ошибок нужно в каждом виде
+# «Выучено» = пройдена вся РАМПА сложности: 4 клетки (тип игры × направление), по 1 верному
+# в каждой. Рампа «узнавание → сборка → ввод», всё ведёт к производству норвежского.
+# study (карточки) — пассивный шаг 0, в зачёт не идёт.
+# Каждая клетка хранит признак прохождения: '1' — пройдена, '' — не пройдена/сброшена ошибкой.
+REQUIRED_CELLS = ["choice_no2int", "choice_int2no", "build_int2no", "input_int2no"]
+# build (собери из букв) осмыслен только в направлении родной→норв
+_DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": ("no2int", "int2no")}
 # Прогресс — скользящее окно: новые попытки вытесняют старые (ёмкость). Сила слова считается
 # по последним CAPACITY попыткам, а не за всю историю — старые успехи «выпадают» со временем.
 CAPACITY = 8
@@ -64,8 +67,8 @@ def _due_str(days):
 
 
 def _mastered_by_modes(modes):
-    """Выучено: в каждом тестовом режиме последние MASTER_PER_MODE попыток — все верные (без ошибок)."""
-    return all((modes or {}).get(m, "") == "1" * MASTER_PER_MODE for m in REQUIRED_MODES)
+    """Выучено: все 4 клетки рампы пройдены (каждая == '1')."""
+    return all((modes or {}).get(c, "") == "1" for c in REQUIRED_CELLS)
 
 
 def status_of(row, modes=None):
@@ -92,10 +95,14 @@ def _is_due(row):
 
 # ---------------- запись результата ответа (SRS) ----------------
 
-async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None, mode: str = None):
+async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
+                       mode: str = None, direction: str = None):
     """Обновить состояние слова после ответа (создаёт строку при первом ответе).
-    mode — режим (choice/input/study/…): копим серию верных ПОДРЯД в каждом режиме;
-    ошибка обнуляет серию режима. «Выучено» = серия ≥ MASTER_PER_MODE во всех тестовых режимах."""
+    mode — тип игры (choice/build/input/study/…), direction — направление ('no2int'|'int2no').
+    Клетка рампы = f'{mode}_{direction}': верный ответ → '1', ошибка → '' (сброс этой клетки).
+    study (карточки) — пассив, в мастери не пишем. build допустим только direction='int2no'.
+    direction=None (обратная совместимость) — клетку не трогаем, но hist/счётчики обновляем как раньше.
+    «Выучено» = все 4 клетки рампы пройдены (REQUIRED_CELLS)."""
     db = await _conn()
     try:
         async with db.execute("SELECT * FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id)) as cur:
@@ -112,8 +119,11 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         bit = "1" if correct else "0"
         ease = st["ease"]; interval = st["interval_days"]
         modes["hist"] = _push(modes.get("hist", ""), bit, CAPACITY)   # общее окно для силы
-        if mode:
-            modes[mode] = _push(modes.get(mode, ""), bit, MASTER_PER_MODE)  # окно режима для «без ошибок»
+        # клетка рампы — только для тестовых типов с заданным направлением (study/без direction — пассив)
+        if mode and mode != "study" and direction and direction in _DIR_ALLOWED.get(mode, ()):
+            cell = f"{mode}_{direction}"
+            if cell in REQUIRED_CELLS:
+                modes[cell] = "1" if correct else ""   # верно → пройдена; ошибка → сброс именно этой клетки
         strength = _strength_from(modes["hist"])
         if correct:
             fast = elapsed is not None and elapsed <= _FAST_SEC
@@ -156,7 +166,7 @@ async def set_status(user_id: int, pool_id: int, action: str):
     db = await _conn()
     try:
         if action == "know":
-            m = {mm: "1" * MASTER_PER_MODE for mm in REQUIRED_MODES}
+            m = {c: "1" for c in REQUIRED_CELLS}   # все клетки рампы пройдены
             m["hist"] = "1" * CAPACITY
             fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
@@ -418,6 +428,28 @@ async def grade_placement(user_id, lang, answers):
     return {"level": level, "perLevel": per_lvl}
 
 
+STARTER_GOAL = 20   # сколько слов гарантируем новичку после калибровки, чтобы было что учить
+
+
+async def seed_starter(user_id, level, target=STARTER_GOAL):
+    """Досыпать новых слов под уровень до target, если у пользователя их почти нет.
+    Вызывается после входного теста / самооценки — чтобы Учёба не была пустой."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT pool_id) AS n FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
+            (user_id,)) as cur:
+            row = await cur.fetchone()
+            have = (row["n"] if row else 0) or 0
+    finally:
+        await _release(db)
+    need = target - have
+    if need <= 0:
+        return {"seeded": 0, "had": have}
+    res = await suggest_words(user_id, count=need, level=level)
+    return {"seeded": res.get("added", 0), "had": have}
+
+
 async def estimate_level(user_id):
     """Рабочий уровень для подсказок — текущий уровень по целям (первый незакрытый)."""
     return (await learning_stats(user_id))["currentLevel"]
@@ -442,7 +474,17 @@ async def suggest_words(user_id, count=10, level=None):
     finally:
         await _release(db)
     if not dicts:
-        return {"added": 0, "words": [], "level": lvl, "error": "no_dict"}
+        # на всякий случай (старые аккаунты без словаря) — создаём дефолтный
+        from .dictionaries import create_dictionary
+        await create_dictionary(user_id, "default")
+        db2 = await _conn()
+        try:
+            async with db2.execute("SELECT id, name FROM dictionaries WHERE user_id = ? ORDER BY created_at, id", (user_id,)) as cur:
+                dicts = [dict(r) for r in await cur.fetchall()]
+        finally:
+            await _release(db2)
+        if not dicts:
+            return {"added": 0, "words": [], "level": lvl, "error": "no_dict"}
     target = next((d for d in dicts if d["name"] == cur_name), dicts[0])
     # кандидаты по уровню, с запасом, исключаем уже имеющиеся
     cand = await get_pool_duel_words(max(count * 4, 40), lvl, None)
