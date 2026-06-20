@@ -5,7 +5,7 @@ import json
 import pytest
 from datetime import datetime, timedelta
 from db.learning import (
-    apply_result, grade_gate_exam, build_audit, grade_audit, status_of,
+    apply_result, grade_gate_exam, build_audit, grade_audit, build_session, status_of,
     PACK_FIRST, SAMPLE, FIRST_AUDIT_DAYS, AUDIT_CAP, THROTTLE,
 )
 from db.core import _conn, _release, _now
@@ -90,6 +90,26 @@ async def test_build_audit_picks_overdue_capped_and_ordered(fresh_db):
         assert len(q["options"]) == 4
 
 
+async def test_build_audit_ignores_non_certified(fresh_db):
+    """Аудит берёт ТОЛЬКО сертифицированные слова: mastered, но несертифицированное
+    слово с просроченным audit_due на аудит не попадает (его проверят ворота, не аудит)."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    cert_pid, _, cert_ru = pack[0]
+    # сертифицированному ставим просрочку — он должен попасть
+    await _set_audit_due(uid, cert_pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+    # отдельное mastered, но НЕсертифицированное слово с просроченным audit_due — мимо аудита
+    pid2, _ = await seed_word(did, "lonewolf", "одиночка")
+    await _master(uid, pid2)
+    await _set_audit_due(uid, pid2, (datetime.utcnow() - timedelta(days=50)).isoformat())
+    row2 = await _row(uid, pid2)
+    assert row2["certified"] == 0   # ворота он не сдавал
+    ex = await build_audit(uid, cap=AUDIT_CAP, lang="ru")
+    picked = {q["pool_id"] for q in ex["questions"]}
+    assert cert_pid in picked
+    assert pid2 not in picked
+
+
 async def test_grade_audit_correct_pushes_due_further(fresh_db):
     uid, did = await seed_user()
     pack = await _seed_certified_pack(uid, did, PACK_FIRST)
@@ -119,6 +139,9 @@ async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     # вернулось в очередь изучения: due проставлен на ближайшее, lapses вырос
     assert row["due_at"] is not None
     assert (row["lapses"] or 0) >= 1
+    # и реально снова попадает в программу занятия (на доучивание)
+    sess = await build_session(uid, size=PACK_FIRST)
+    assert pid in {w["pool_id"] for w in sess["words"]}
 
 
 async def test_grade_audit_throttle_when_many_forgot(fresh_db):
