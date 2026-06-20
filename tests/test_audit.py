@@ -6,6 +6,7 @@ import pytest
 from datetime import datetime, timedelta
 from db.learning import (
     apply_result, grade_gate_exam, build_audit, grade_audit, build_session, status_of,
+    new_words_blocked, audit_throttled, suggest_words, learning_stats,
     PACK_FIRST, SAMPLE, FIRST_AUDIT_DAYS, AUDIT_CAP, THROTTLE,
 )
 from db.core import _conn, _release, _now
@@ -124,6 +125,33 @@ async def test_grade_audit_correct_pushes_due_further(fresh_db):
     assert due > datetime.utcnow() + timedelta(days=FIRST_AUDIT_DAYS * 2 - 1)
 
 
+async def test_grade_audit_interval_grows_monotonically_across_cycles(fresh_db):
+    """Срок до следующего аудита РАСТЁТ между успешными циклами при аудите ВОВРЕМЯ:
+    30 → 60 → 120 → 240 …, а не залипает на 60. Каждый цикл слово делаем просроченным
+    на 1 день (аудит вовремя, overdue≈0) и сдаём верно — интервал должен удваиваться."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    pid, no, ru = pack[0]
+
+    expected = [60, 120, 240]   # после 30(старт) при аудите вовремя — удвоение каждый цикл
+    prev_interval = None
+    for exp in expected:
+        # аудит вовремя: due просрочен лишь на 1 день (overdue≈0, не должно влиять на рост)
+        await _set_audit_due(uid, pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+        res = await grade_audit(uid, [{"pool_id": pid, "answer": ru}], lang="ru")
+        assert res["refreshed"] == 1 and res["forgot"] == 0
+        row = await _row(uid, pid)
+        interval = row["audit_interval"]
+        assert round(interval) == exp, f"ожидали интервал {exp}, получили {interval}"
+        # монотонный рост
+        if prev_interval is not None:
+            assert interval > prev_interval
+        prev_interval = interval
+        # и audit_due согласован с интервалом (now + interval)
+        due = datetime.fromisoformat(row["audit_due"])
+        assert abs((due - (datetime.utcnow() + timedelta(days=exp))).total_seconds()) < 3600
+
+
 async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     uid, did = await seed_user()
     pack = await _seed_certified_pack(uid, did, PACK_FIRST)
@@ -163,3 +191,33 @@ async def test_grade_audit_throttle_when_many_forgot(fresh_db):
     assert res["forgot"] == forgot
     assert res["throttle"] is True
     assert (forgot / n) > THROTTLE
+    # тормоз РЕАЛЬНО применён на бэкенде: персистится и закрывает приток новых слов
+    assert await audit_throttled(uid) is True
+    assert await new_words_blocked(uid) is True
+    # «Докинуть» новых заблокировано тормозом
+    sug = await suggest_words(uid, count=5)
+    assert sug["added"] == 0 and sug.get("blocked") is True
+    # build_session не вводит новые (0 попыток) слова, пока тормоз активен
+    pid_new, _ = await seed_word(did, "helt_nytt", "совсем_новое")
+    sess = await build_session(uid, size=AUDIT_CAP + 10)
+    assert pid_new not in {w["pool_id"] for w in sess["words"]}
+    # статистика отражает тормоз
+    stats = await learning_stats(uid)
+    assert stats["audit"]["throttled"] is True
+
+
+async def test_grade_audit_no_throttle_keeps_new_flowing(fresh_db):
+    """Мало забытого (≤ THROTTLE) → тормоз не включается, приток новых открыт."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    # все аудиты сданы верно → forgot=0
+    answers = []
+    for i in range(10):
+        pid, no, ru = pack[i]
+        await _set_audit_due(uid, pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+        answers.append({"pool_id": pid, "answer": ru})
+    res = await grade_audit(uid, answers, lang="ru")
+    assert res["forgot"] == 0 and res["throttle"] is False
+    assert await audit_throttled(uid) is False
+    # после сертификации ворота уже сданы (had_cert), пачка пуста → новые открыты
+    assert await new_words_blocked(uid) is False

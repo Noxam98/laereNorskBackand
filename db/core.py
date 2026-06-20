@@ -146,6 +146,11 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN start_level TEXT")  # уровень по входному тесту (старт «Учёбы»)
         except Exception:
             pass
+        try:
+            # до какого момента притормозить приток новых слов (мягкий тормоз аудита при >THROTTLE забытого), §2.4-B
+            await db.execute("ALTER TABLE users ADD COLUMN audit_throttle_until TEXT")
+        except Exception:
+            pass
         # Лог результатов онлайн-матчей (для статистики/будущего лидерборда).
         await db.execute("""
         CREATE TABLE IF NOT EXISTS match_log (
@@ -306,6 +311,11 @@ async def init_db():
             pass
         try:
             await db.execute("ALTER TABLE user_words ADD COLUMN audit_due TEXT")  # когда слову пора на аудит забывания (§2.4-B)
+        except Exception:
+            pass
+        try:
+            # длина последнего интервала аудита в днях — чтобы при успехе срок РОС (prev × рост), §2.4-B
+            await db.execute("ALTER TABLE user_words ADD COLUMN audit_interval REAL DEFAULT 0")
         except Exception:
             pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
