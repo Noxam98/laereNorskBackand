@@ -1,16 +1,23 @@
 """Авто-добор «Учёбы» (feat/auto-replenish): система ДОСЫПАЕТ новые слова САМА,
-когда живой пул (new+learning) иссякает, — без кнопки «Докинуть».
+когда ПУЛ НОВЫХ иссякает, — без кнопки «Докинуть».
 
-Логика в build_session (db/learning.py): если ворота НЕ закрыты И живой пул < WIP_LIMIT —
+Семантика — «закрыть ПУСТОТУ, а не навязывать «Базу»: досыпаем ТОЛЬКО когда у юзера
+не осталось ни одного доступного нового слова (status == new нет). Пока есть хоть одно
+своё новое (из включённого словаря) — добор НЕ срабатывает, «База» не подмешивается.
+
+Логика в build_session (db/learning.py): если ворота НЕ закрыты (не ждём экзамен, нет
+тормоза аудита) И нет доступных новых (new == 0) И есть свободный слот (in_work < WIP_LIMIT) —
 suggest_words досыпает кандидатов уровня из «Базы» (word_pool) в скрытый авто-словарь,
 после чего сессия пересобирается и становится непустой.
 
 Что проверяем (через публичный build_session, без подгонки под детали реализации):
-  (1) пустой живой пул + есть слова «Базы» под уровень → добор сработал: в скрытом авто-словаре
+  (1) пустой пул новых + есть слова «Базы» под уровень → добор сработал: в скрытом авто-словаре
       появились слова, сессия непустая;
   (2) ворота закрыты (несданная пачка >= порога) → добор НЕ срабатывает (новые заблокированы);
-  (3) живой пул уже >= WIP_LIMIT (свои новые в включённом словаре) → не досыпает, без переполнения;
-  (4) у юзера есть свои новые (включённый словарь studying=1) → «База» не подмешивается.
+  (2b) мягкий тормоз аудита (audit_throttle_until в будущем) → добор НЕ срабатывает;
+  (3) пул уже полон (свои новые == WIP_LIMIT) → не досыпает, без переполнения;
+  (4) у юзера есть свои новые (даже < WIP_LIMIT) → «База» не подмешивается;
+  (4b) частичный пул: 5 своих новых + «База» → «База» не подмешивается (критерий «есть свои новые»).
 """
 import json
 import pytest
@@ -140,3 +147,50 @@ async def test_no_replenish_when_user_has_own_new_words(fresh_db):
     assert len(res["words"]) >= 1
     assert all(w["pool_id"] in own_set for w in res["words"])
     assert all(w["no"].startswith("mine") for w in res["words"])
+
+
+# ---------------- (4b) частичный пул своих новых → «База» НЕ подмешивается ----------------
+
+@pytest.mark.asyncio
+async def test_no_replenish_when_user_has_partial_own_new_words(fresh_db):
+    """Ключевой случай семантики «есть свои новые → не подмешивать»: своих новых МЕНЬШЕ
+    WIP_LIMIT, но они есть → пул новых не пуст → «База» не подмешивается (не «добиваем до WIP_LIMIT»)."""
+    uid, did = await seed_user()
+    # всего 5 своих новых (пул не пуст, но < WIP_LIMIT) во включённом словаре
+    own = [(await seed_word(did, f"mine{i}", f"моё{i}"))[0] for i in range(5)]
+    own_set = set(own)
+    # «База» под тот же уровень есть — но раз пул новых не пуст, добор не должен сработать
+    await _seed_base(12, level="A1")
+
+    res = await build_session(uid, size=10)
+
+    # «База» не подмешана: скрытый авто-словарь пуст
+    assert await _hidden_word_count(uid) == 0
+    # сессия собрана только из своих слов
+    assert len(res["words"]) >= 1
+    assert all(w["pool_id"] in own_set for w in res["words"])
+    assert all(w["no"].startswith("mine") for w in res["words"])
+
+
+# ---------------- (2b) мягкий тормоз аудита → НЕ досыпает ----------------
+
+@pytest.mark.asyncio
+async def test_no_replenish_when_audit_throttled(fresh_db):
+    """Пул новых пуст и «База» есть, но активен мягкий тормоз аудита (§2.4-B,
+    users.audit_throttle_until в будущем) → ворота для притока новых закрыты, добор НЕ срабатывает."""
+    uid, _did = await seed_user()
+    await _seed_base(12, level="A1")
+    # включаем мягкий тормоз: throttle_until далеко в будущем
+    db = await _conn()
+    try:
+        future = "2999-01-01T00:00:00"
+        await db.execute("UPDATE users SET audit_throttle_until = ? WHERE id = ?", (future, uid))
+        await db.commit()
+    finally:
+        await _release(db)
+
+    res = await build_session(uid, size=10)
+
+    # тормоз заблокировал приток новых: скрытый авто-словарь пуст, в сессии нет «Базы»
+    assert await _hidden_word_count(uid) == 0
+    assert [w for w in res["words"] if w["no"].startswith("base")] == []
