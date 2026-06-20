@@ -163,7 +163,12 @@ async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     modes = json.loads(row["modes"] or "{}")
     assert row["certified"] == 0
     assert row["audit_due"] is None
-    assert status_of(row, modes) != "mastered"
+    # снова не-mastered и вернулось именно в изучение (review/learning/weak)
+    st = status_of(row, modes)
+    assert st != "mastered"
+    assert st in ("review", "learning", "weak")
+    # клетки рампы сброшены (де-мастеринг)
+    assert all(modes.get(c, "") != "1" for c in ("choice_no2int", "input_int2no"))
     # вернулось в очередь изучения: due проставлен на ближайшее, lapses вырос
     assert row["due_at"] is not None
     assert (row["lapses"] or 0) >= 1
