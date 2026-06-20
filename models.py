@@ -74,6 +74,8 @@ class WordOverride(BaseModel):
 
 class ResultBody(BaseModel):
     correct: bool
+    mode: Optional[str] = None       # вид игры (choice/input/study) — кормит SRS «Учёбы»
+    elapsed: Optional[float] = None  # время ответа, сек
 
 
 class MoveWords(BaseModel):
@@ -120,6 +122,10 @@ class LearningAnswer(BaseModel):
 class PlacementBody(BaseModel):
     lang: str = "ru"
     answers: list = []        # [{no, level, answer}]
+
+
+class LevelBody(BaseModel):
+    level: str                # самооценка уровня (A1..C2)
 
 
 class LearningStatusBody(BaseModel):

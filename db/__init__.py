@@ -39,4 +39,5 @@ from .learning import (
     get_learning as learning_get, learning_stats, get_due as learning_due,
     apply_result as learning_answer, set_status as learning_set_status, suggest_words as learning_suggest,
     build_placement as learning_placement, grade_placement as learning_grade, get_activity as learning_activity,
+    set_start_level as learning_set_level,
 )

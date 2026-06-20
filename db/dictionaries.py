@@ -158,18 +158,32 @@ async def set_word_override(user_id: int, dw_id: int, override: dict):
         await _release(db)
 
 
-async def record_result(user_id: int, dw_id: int, correct: bool):
+async def record_result(user_id: int, dw_id: int, correct: bool, mode: str = None, elapsed: float = None):
     db = await _conn()
     try:
         col = "correct" if correct else "incorrect"
+        async with db.execute("""
+            SELECT dw.pool_id FROM dict_words dw
+            JOIN dictionaries d ON d.id = dw.dict_id
+            WHERE dw.id = ? AND d.user_id = ?
+        """, (dw_id, user_id)) as cur:
+            row = await cur.fetchone()
+        pool_id = row["pool_id"] if row else None
         await db.execute(f"""
             UPDATE dict_words SET {col} = {col} + 1
             WHERE id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)
         """, (dw_id, user_id))
         await db.commit()
-        return {"ok": True}
     finally:
         await _release(db)
+    # Игра кормит SRS «Учёбы»: любой ответ обновляет силу/интервал; mode — для серии «без ошибок».
+    if pool_id is not None:
+        try:
+            from .learning import apply_result
+            await apply_result(user_id, pool_id, correct, elapsed=elapsed, mode=mode)
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 async def get_dict_word(user_id: int, dw_id: int):

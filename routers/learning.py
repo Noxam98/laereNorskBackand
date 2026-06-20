@@ -5,9 +5,9 @@ from auth import get_current_user
 from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
-    learning_placement, learning_grade, learning_activity,
+    learning_placement, learning_grade, learning_activity, learning_set_level,
 )
-from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody
+from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody
 
 router = APIRouter()
 
@@ -49,6 +49,13 @@ async def learning_placement_route(lang: str = "ru", per: int = 4, user=Depends(
 @router.post("/learning/placement")
 async def learning_grade_route(body: PlacementBody, user=Depends(get_current_user)):
     return await learning_grade(user["id"], body.lang, body.answers)
+
+
+@router.post("/learning/level")
+async def learning_level_route(body: LevelBody, user=Depends(get_current_user)):
+    """Самооценка уровня (self-report): сохранить как стартовый, уточним по сессиям."""
+    await learning_set_level(user["id"], body.level)
+    return {"ok": True, "level": body.level}
 
 
 @router.post("/learning/{pool_id}/status")
