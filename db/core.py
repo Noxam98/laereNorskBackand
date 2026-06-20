@@ -264,6 +264,16 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """)
+        # скрытый авто-словарь (для «докинуть»/стартовый набор) — не показываем в «Мой словарь»
+        try:
+            await db.execute("ALTER TABLE dictionaries ADD COLUMN hidden INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        # флаг «в обучении»: Учёба берёт слова только из словарей со studying=1 (по умолчанию — да)
+        try:
+            await db.execute("ALTER TABLE dictionaries ADD COLUMN studying INTEGER DEFAULT 1")
+        except Exception:
+            pass
 
         # Слова в словаре пользователя: ссылка на общий пул + персональные правки и статистика.
         await db.execute("""

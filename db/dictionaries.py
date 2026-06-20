@@ -47,6 +47,61 @@ async def create_dictionary(user_id: int, name: str):
         await _release(db)
 
 
+HIDDEN_DICT_NAME = "__auto__"   # имя скрытого авто-словаря для «докинуть»/стартового набора
+
+
+async def get_or_create_hidden_dict(user_id: int) -> int:
+    """Получить-или-создать скрытый авто-словарь пользователя (hidden=1, studying=1).
+    Сюда «докидываем» новые слова, чтобы не засорять личные словари; в Учёбе он виден
+    (studying=1), в «Мой словарь» — нет (hidden=1). Возвращает dict_id."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id FROM dictionaries WHERE user_id = ? AND COALESCE(hidden, 0) = 1 ORDER BY created_at, id LIMIT 1",
+            (user_id,)) as cur:
+            row = await cur.fetchone()
+        if row:
+            return row["id"]
+        try:
+            cur = await db.execute(
+                "INSERT INTO dictionaries (user_id, name, created_at, hidden, studying) VALUES (?, ?, ?, 1, 1)",
+                (user_id, HIDDEN_DICT_NAME, _now()))
+            await db.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            # имя занято (старый явный словарь с таким именем) — сделаем его скрытым и переиспользуем
+            async with db.execute(
+                "SELECT id FROM dictionaries WHERE user_id = ? AND name = ?", (user_id, HIDDEN_DICT_NAME)) as cur:
+                row = await cur.fetchone()
+            if row:
+                await db.execute("UPDATE dictionaries SET hidden = 1, studying = 1 WHERE id = ?", (row["id"],))
+                await db.commit()
+                return row["id"]
+            raise
+    finally:
+        await _release(db)
+
+
+async def set_dictionary_studying(user_id: int, dict_id: int, studying: bool):
+    """Тоггл флага «в обучении» на личном словаре. Скрытый авто-словарь нельзя выключать."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COALESCE(hidden, 0) AS hidden FROM dictionaries WHERE id = ? AND user_id = ?",
+            (dict_id, user_id)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"error": "Not found"}
+        if row["hidden"]:
+            return {"error": "Cannot change studying for the hidden dictionary"}
+        await db.execute("UPDATE dictionaries SET studying = ? WHERE id = ? AND user_id = ?",
+                         (1 if studying else 0, dict_id, user_id))
+        await db.commit()
+        return {"id": dict_id, "studying": bool(studying)}
+    finally:
+        await _release(db)
+
+
 async def rename_dictionary(user_id: int, dict_id: int, name: str):
     name = (name or "").strip()
     if not name:
@@ -230,7 +285,8 @@ async def get_user_data(user_id: int):
     """Полная структура словарей пользователя в формате, который ждёт фронтенд."""
     db = await _conn()
     try:
-        async with db.execute("SELECT id, name FROM dictionaries WHERE user_id = ? ORDER BY created_at, id", (user_id,)) as cur:
+        # скрытый авто-словарь (hidden=1) не показываем в «Мой словарь»
+        async with db.execute("SELECT id, name, COALESCE(studying, 1) AS studying FROM dictionaries WHERE user_id = ? AND COALESCE(hidden, 0) = 0 ORDER BY created_at, id", (user_id,)) as cur:
             dicts = [dict(r) for r in await cur.fetchall()]
         result = []
         for d in dicts:
@@ -243,7 +299,7 @@ async def get_user_data(user_id: int):
                 ORDER BY dw.id
             """, (d["id"],)) as cur:
                 words = [_build_word(r) for r in await cur.fetchall()]
-            result.append({"id": d["id"], "dictName": d["name"], "words": words})
+            result.append({"id": d["id"], "dictName": d["name"], "studying": bool(d["studying"]), "words": words})
         async with db.execute("SELECT current_dict FROM users WHERE id = ?", (user_id,)) as cur:
             urow = await cur.fetchone()
         current = urow["current_dict"] if urow else None

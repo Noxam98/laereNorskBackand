@@ -238,7 +238,8 @@ async def _fetch_user_words(db, user_id):
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
                uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
         FROM (SELECT DISTINCT pool_id FROM dict_words
-              WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)) up
+              WHERE dict_id IN (SELECT id FROM dictionaries
+                                WHERE user_id = ? AND COALESCE(studying, 1) = 1)) up
         JOIN word_pool wp ON wp.id = up.pool_id
         LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
     """, (user_id, user_id)) as cur:
@@ -914,39 +915,24 @@ async def estimate_level(user_id):
 
 
 async def suggest_words(user_id, count=10, level=None):
-    """«Докинуть слов»: добавить в словарь пользователя новые слова пула по его уровню,
-    которых у него ещё нет. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
+    """«Докинуть слов»: добавить НОВЫЕ слова пула по уровню пользователя, которых у него ещё нет,
+    в СКРЫТЫЙ авто-словарь (hidden=1, studying=1) — чтобы не засорять личные словари, но они
+    были видны в Учёбе. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
     Гейт ворот: пока несданная пачка открыта на экзамен — приток новых слов закрыт."""
     from .pool import get_pool_duel_words, get_pool_id
-    from .dictionaries import add_word_to_dict
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
     if await new_words_blocked(user_id):
         return {"added": 0, "words": [], "level": None, "blocked": True}
     lvl = level if level in LEVELS else await estimate_level(user_id)
+    # целевой — скрытый авто-словарь (получить-или-создать)
+    target_id = await get_or_create_hidden_dict(user_id)
     db = await _conn()
     try:
+        # уже имеющиеся слова — по ВСЕМ словарям пользователя (чтобы не дублировать существующие)
         async with db.execute("SELECT DISTINCT pool_id FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)", (user_id,)) as cur:
             have = {r["pool_id"] for r in await cur.fetchall()}
-        # целевой словарь: текущий пользователя или первый
-        async with db.execute("SELECT current_dict FROM users WHERE id = ?", (user_id,)) as cur:
-            row = await cur.fetchone()
-        cur_name = row["current_dict"] if row else None
-        async with db.execute("SELECT id, name FROM dictionaries WHERE user_id = ? ORDER BY created_at, id", (user_id,)) as cur:
-            dicts = [dict(r) for r in await cur.fetchall()]
     finally:
         await _release(db)
-    if not dicts:
-        # на всякий случай (старые аккаунты без словаря) — создаём дефолтный
-        from .dictionaries import create_dictionary
-        await create_dictionary(user_id, "default")
-        db2 = await _conn()
-        try:
-            async with db2.execute("SELECT id, name FROM dictionaries WHERE user_id = ? ORDER BY created_at, id", (user_id,)) as cur:
-                dicts = [dict(r) for r in await cur.fetchall()]
-        finally:
-            await _release(db2)
-        if not dicts:
-            return {"added": 0, "words": [], "level": lvl, "error": "no_dict"}
-    target = next((d for d in dicts if d["name"] == cur_name), dicts[0])
     # кандидаты по уровню, с запасом, исключаем уже имеющиеся
     cand = await get_pool_duel_words(max(count * 4, 40), lvl, None)
     added = []
@@ -956,8 +942,8 @@ async def suggest_words(user_id, count=10, level=None):
         pid = await get_pool_id(w["norwegian"])
         if not pid or pid in have:
             continue
-        res = await add_word_to_dict(user_id, target["id"], pid)
+        res = await add_word_to_dict(user_id, target_id, pid)
         if res.get("id") and not res.get("duplicate"):
             added.append({"no": w["norwegian"], "translate": w.get("translate", {})})
             have.add(pid)
-    return {"added": len(added), "words": added, "level": lvl, "dict": target["name"]}
+    return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}

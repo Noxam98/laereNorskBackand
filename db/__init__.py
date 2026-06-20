@@ -33,7 +33,7 @@ from .cache import (
 from .dictionaries import (
     create_dictionary, rename_dictionary, delete_dictionary, add_word_to_dict, delete_dict_word,
     move_dict_word, set_word_override, record_result, get_dict_word, get_user_data,
-    get_user_quiz_words,
+    get_user_quiz_words, set_dictionary_studying, get_or_create_hidden_dict,
 )
 from .learning import (
     get_learning as learning_get, learning_stats, get_due as learning_due,
