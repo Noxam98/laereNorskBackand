@@ -1,7 +1,7 @@
 """Мастери-рампа из 4 клеток: choice_no2int → choice_int2no → build_int2no → input_int2no.
 Каждая клетка хранит '1' (пройдена) / '' (сброс ошибкой); mastered = все 4 == '1'."""
 import pytest
-from db.learning import apply_result, REQUIRED_CELLS, _mastered_by_modes, status_of
+from db.learning import apply_result, REQUIRED_CELLS, CAPACITY, _mastered_by_modes, status_of
 from tests.conftest import seed_user, seed_word
 
 
@@ -72,3 +72,36 @@ async def test_direction_none_backward_compat(fresh_db):
     assert all(c not in r["modes"] for c in REQUIRED_CELLS)
     assert r["modes"]["hist"] == "1"
     assert r["strength"] >= 0
+
+
+async def test_strength_tracks_hist(fresh_db):
+    """Сила = доля верных в скользящем окне hist; растёт на верных, падает на ошибках."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "fisk", "рыба")
+    # первый верный → hist '1' → 100%
+    r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
+    assert r["modes"]["hist"] == "1"
+    assert r["strength"] == 100
+    # ошибка → hist '10' → 1 верный из 2 → 50%
+    r = await apply_result(uid, pid, False, mode="choice", direction="no2int")
+    assert r["modes"]["hist"] == "10"
+    assert r["strength"] == 50
+    # ещё два верных → hist '1011' → 3 из 4 → 75%
+    r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
+    r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
+    assert r["modes"]["hist"] == "1011"
+    assert r["strength"] == 75
+
+
+async def test_strength_window_capacity(fresh_db):
+    """Окно силы ограничено CAPACITY: старые исходы вытесняются, сила растёт к 100."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "stol", "стул")
+    # одна ошибка, затем CAPACITY верных — ошибка должна «выпасть» из окна
+    await apply_result(uid, pid, False, mode="choice", direction="no2int")
+    r = None
+    for _ in range(CAPACITY):
+        r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
+    assert len(r["modes"]["hist"]) == CAPACITY
+    assert r["modes"]["hist"] == "1" * CAPACITY
+    assert r["strength"] == 100
