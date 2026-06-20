@@ -300,6 +300,17 @@ async def init_db():
             FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
         )
         """)
+        # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_activity (
+            user_id INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            answers INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(user_id, day),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
         await db.execute("PRAGMA journal_mode = WAL")  # параллельные чтения + один писатель
         await db.commit()
 

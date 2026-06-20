@@ -5,7 +5,7 @@ from auth import get_current_user
 from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
-    learning_placement, learning_grade,
+    learning_placement, learning_grade, learning_activity,
 )
 from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody
 
@@ -28,6 +28,11 @@ async def learning_stats_route(user=Depends(get_current_user)):
 @router.get("/learning/due")
 async def learning_due_route(limit: int = 20, user=Depends(get_current_user)):
     return await learning_due(user["id"], limit=limit)
+
+
+@router.get("/learning/activity")
+async def learning_activity_route(days: int = 119, user=Depends(get_current_user)):
+    return await learning_activity(user["id"], days=max(7, min(370, days)))
 
 
 @router.post("/learning/answer")
