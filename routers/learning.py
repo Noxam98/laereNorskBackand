@@ -1,16 +1,18 @@
 """Раздел «Учёба»: интервальные повторения над всеми словами пользователя,
-статусы/фильтры, Smart Review, статистика прогресса и «докинуть слов» по уровню."""
+статусы/фильтры, Smart Review, статистика прогресса.
+Новые слова система ДОСЫПАЕТ сама (авто-добор в build_session при пустом пуле новых) —
+ручного эндпоинта «докинуть» больше нет."""
 from fastapi import APIRouter, Depends
 from auth import get_current_user
 from activity import mark_activity
 from db import (
-    learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
+    learning_get, learning_stats, learning_due, learning_answer, learning_set_status,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
     learning_session,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
 )
-from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody, GateExamBody, AuditBody
+from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody
 
 router = APIRouter()
 
@@ -107,10 +109,3 @@ async def learning_audit_grade_route(body: AuditBody, user=Depends(get_current_u
 @router.post("/learning/{pool_id}/status")
 async def learning_status_route(pool_id: int, body: LearningStatusBody, user=Depends(get_current_user)):
     return await learning_set_status(user["id"], pool_id, body.action)
-
-
-@router.post("/learning/suggest")
-async def learning_suggest_route(body: SuggestBody, user=Depends(get_current_user)):
-    mark_activity()
-    count = max(1, min(50, body.count or 10))
-    return await learning_suggest(user["id"], count=count, level=(body.level or None))
