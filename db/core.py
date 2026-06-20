@@ -300,6 +300,10 @@ async def init_db():
             FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
         )
         """)
+        try:
+            await db.execute("ALTER TABLE user_words ADD COLUMN certified INTEGER DEFAULT 0")  # слово сдало зачётный экзамен-ворота
+        except Exception:
+            pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (

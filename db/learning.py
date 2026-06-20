@@ -24,6 +24,12 @@ CAPACITY = 8
 DAILY_GOAL = 20   # дневная цель по умолчанию (слов/ответов)
 _LEVEL_ORDER = {lv: i for i, lv in enumerate(LEVELS)}
 
+# --- Зачётный экзамен-ворота (§2.4-A): пейсит приток новых слов ---
+PACK_FIRST = 50   # первый порог (до первой сертификации)
+PACK = 100        # порог последующих пачек
+SAMPLE = 30       # сколько случайных вопросов в выборке экзамена
+PASS = 27         # сколько нужно верных, чтобы сдать
+
 
 async def _activity_metrics(db, user_id):
     """Стрик, дневная цель, точность по журналу активности."""
@@ -209,7 +215,7 @@ async def _fetch_user_words(db, user_id):
     async with db.execute("""
         SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
-               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen
+               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen, uw.certified
         FROM (SELECT DISTINCT pool_id FROM dict_words
               WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)) up
         JOIN word_pool wp ON wp.id = up.pool_id
@@ -241,7 +247,7 @@ def _shape(r):
         "level": r.get("level"), "topics": r.get("topics", []), "hasTts": bool(r.get("has_tts")),
         "status": status_of(r, modes), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
         "modes": modes, "correct": r.get("correct") or 0, "incorrect": r.get("incorrect") or 0, "due": _is_due(r),
-        "last_seen": r.get("last_seen"),
+        "last_seen": r.get("last_seen"), "certified": bool(r.get("certified")),
     }
 
 
@@ -333,6 +339,10 @@ async def build_session(user_id, size=20):
 
     # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
     in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
+    # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим
+    pack_n = sum(1 for e in enriched if e["status"] == "mastered" and not _is_certified(e["row"]))
+    had_cert = any(_is_certified(e["row"]) for e in enriched)
+    gate_open = pack_n >= (PACK if had_cert else PACK_FIRST)
 
     # пулы по приоритету
     def attempts(e):
@@ -359,8 +369,9 @@ async def build_session(user_id, size=20):
             # mastered как «новые» не вводим (они и так не попадают в пулы выше)
             if e["status"] in ("mastered", "archived"):
                 continue
-            # лимит одновременно-в-работе: новое слово (0 попыток) не вводим, если уже >= WIP_LIMIT
-            if attempts(e) == 0 and in_work >= WIP_LIMIT:
+            # лимит одновременно-в-работе: новое слово (0 попыток) не вводим, если уже >= WIP_LIMIT;
+            # а также пока открыты ворота зачётного экзамена (приток новых заморожен)
+            if attempts(e) == 0 and (in_work >= WIP_LIMIT or gate_open):
                 continue
             step = _next_step(e["row"], e["modes"])
             if not step:
@@ -378,6 +389,179 @@ async def build_session(user_id, size=20):
             if len(session) >= size:
                 return {"words": session}
     return {"words": session}
+
+
+# ---------------- зачётный экзамен-ворота (§2.4-A) ----------------
+
+def _is_certified(r):
+    return bool(r.get("certified"))
+
+
+def _pack_rows(rows):
+    """«Несданная пачка» = выученные (mastered), ещё не сертифицированные слова."""
+    out = []
+    for r in rows:
+        try:
+            modes = json.loads(r.get("modes") or "{}")
+        except Exception:
+            modes = {}
+        if status_of(r, modes) == "mastered" and not _is_certified(r):
+            out.append(r)
+    return out
+
+
+async def _had_certification(db, user_id):
+    """Была ли уже хоть одна сертификация (для выбора порога: первый — PACK_FIRST)."""
+    async with db.execute(
+        "SELECT 1 FROM user_words WHERE user_id = ? AND certified = 1 LIMIT 1", (user_id,)) as cur:
+        return (await cur.fetchone()) is not None
+
+
+async def gate_status(user_id):
+    """Состояние ворот: {pack, threshold, open}.
+    pack — размер несданной пачки; threshold — PACK_FIRST до первой сертификации, дальше PACK;
+    open — ворота открыты на сдачу (pack достиг порога)."""
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+        had = await _had_certification(db, user_id)
+    finally:
+        await _release(db)
+    pack = len(_pack_rows(rows))
+    threshold = PACK if had else PACK_FIRST
+    return {"pack": pack, "threshold": threshold, "open": pack >= threshold}
+
+
+async def new_words_blocked(user_id):
+    """Ворота ждут сдачи → приток новых слов закрыт."""
+    return (await gate_status(user_id))["open"]
+
+
+def _gate_question(r, lang, distractor_pool):
+    """Вопрос-выбор: норвежское слово + 4 варианта перевода (как build_placement).
+    distractor_pool — список строк-переводов других слов для дистракторов."""
+    import random
+    data = json.loads(r["data"]) if r.get("data") else {}
+    corr = (data.get("translate", {}).get(lang) or [None])[0]
+    if not corr:
+        return None
+    distract = []
+    for t in distractor_pool:
+        if t and t != corr and t not in distract:
+            distract.append(t)
+        if len(distract) == 3:
+            break
+    if len(distract) < 3:
+        return None
+    opts = distract + [corr]
+    random.shuffle(opts)
+    return {"no": r["norwegian"], "pool_id": r["pool_id"], "options": opts}
+
+
+async def build_gate_exam(user_id, lang="ru"):
+    """До SAMPLE случайных вопросов из несданной пачки.
+    Формат вопроса как в build_placement: {no, pool_id, options:[4]}."""
+    import random
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+    finally:
+        await _release(db)
+    pack = _pack_rows(rows)
+    # дистракторы — переводы любых слов пользователя на нужный язык
+    distractor_pool = []
+    for r in rows:
+        data = json.loads(r["data"]) if r.get("data") else {}
+        t = (data.get("translate", {}).get(lang) or [None])[0]
+        if t:
+            distractor_pool.append(t)
+    random.shuffle(pack)
+    questions = []
+    for r in pack:
+        if len(questions) >= SAMPLE:
+            break
+        random.shuffle(distractor_pool)
+        q = _gate_question(r, lang, distractor_pool)
+        if q:
+            questions.append(q)
+    return {"questions": questions, "sample": SAMPLE, "pass": PASS}
+
+
+def _demote_fields(modes):
+    """Демоут слова: сбросить клетки рампы, силу/историю/ease вниз, certified=0.
+    Возвращает (modes_json, strength, ease)."""
+    m = {k: v for k, v in (modes or {}).items() if k not in REQUIRED_CELLS and k != "hist"}
+    m["hist"] = ""
+    for c in REQUIRED_CELLS:
+        m[c] = ""
+    return json.dumps(m, ensure_ascii=False), 0, 1.3
+
+
+async def _demote(db, user_id, r):
+    """Перевести слово mastered→review: сброс клеток рампы, силы/ease вниз, certified=0,
+    вернуть в ближайшую ротацию (due завтра, lapses+1, reps→review-уровень)."""
+    try:
+        modes = json.loads(r.get("modes") or "{}")
+    except Exception:
+        modes = {}
+    modes_json, strength, ease = _demote_fields(modes)
+    await db.execute("""
+        UPDATE user_words
+        SET modes = ?, strength = ?, ease = ?, certified = 0,
+            reps = MAX(1, reps), lapses = lapses + 1, interval_days = 1, streak = 0,
+            due_at = ?, last_seen = ?
+        WHERE user_id = ? AND pool_id = ?
+    """, (modes_json, strength, ease, _due_str(1), _now(), user_id, r["pool_id"]))
+
+
+async def grade_gate_exam(user_id, answers, lang="ru"):
+    """Оценить зачётный экзамен. answers: [{pool_id, answer}].
+    Верных ≥ PASS → сертифицировать всю текущую несданную пачку (certified=1), {passed:True}.
+    Иначе провал: демоут каждого промаха (mastered→review) + столько же самых слабых слов
+    пачки по strength (штраф ×2 промаха). {passed:False, demoted:N}."""
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+        pack = _pack_rows(rows)
+        by_pid = {r["pool_id"]: r for r in pack}
+        # сверка ответов — по правильному переводу слова на язык lang
+        correct_n = 0
+        missed_pids = []
+        for a in (answers or []):
+            pid = a.get("pool_id")
+            r = by_pid.get(pid)
+            if not r:
+                continue
+            data = json.loads(r["data"]) if r.get("data") else {}
+            tr = data.get("translate", {}).get(lang) or []
+            ans = (a.get("answer") or "").strip().lower()
+            if ans and any(ans == (t or "").strip().lower() for t in tr):
+                correct_n += 1
+            else:
+                missed_pids.append(pid)
+
+        if correct_n >= PASS:
+            if pack:
+                marks = ",".join("?" for _ in pack)
+                await db.execute(
+                    f"UPDATE user_words SET certified = 1 WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
+                    [user_id] + [r["pool_id"] for r in pack])
+                await db.commit()
+            return {"passed": True}
+
+        # провал: демоут промахов + столько же самых слабых по силе из пачки (штраф ×2)
+        missed = [by_pid[p] for p in missed_pids if p in by_pid]
+        missed_set = {r["pool_id"] for r in missed}
+        rest = sorted([r for r in pack if r["pool_id"] not in missed_set],
+                      key=lambda r: (r.get("strength") or 0, r.get("due_at") or ""))
+        penalty = rest[:len(missed)]   # столько же самых слабых
+        to_demote = missed + penalty
+        for r in to_demote:
+            await _demote(db, user_id, r)
+        await db.commit()
+        return {"passed": False, "demoted": len(to_demote)}
+    finally:
+        await _release(db)
 
 
 async def learning_stats(user_id):
@@ -417,10 +601,16 @@ async def learning_stats(user_id):
     retention = round(100 * mastered_n / (mastered_n + weak_n)) if (mastered_n + weak_n) else None
     week_cut = (datetime.utcnow() - timedelta(days=7)).isoformat()
     mastered_week = sum(1 for w in items if w["status"] in ("mastered", "archived") and (w.get("last_seen") or "") >= week_cut)
+    # ворота зачётного экзамена: размер несданной пачки и порог
+    pack_n = sum(1 for w in items if w["status"] == "mastered" and not w["certified"])
+    had_cert = any(w["certified"] for w in items)
+    threshold = PACK if had_cert else PACK_FIRST
+    gate = {"pack": pack_n, "threshold": threshold, "open": pack_n >= threshold,
+            "toExam": max(0, threshold - pack_n)}
     return {"total": len(items), "due": due_count, "byStatus": by_status, "byLevel": by_level,
             "currentLevel": current, "toNextLevel": to_next, "startLevel": start, "placed": bool(start),
             "streak": activity["streak"], "today": activity["today"], "accuracy": activity["accuracy"],
-            "retention": retention, "masteredWeek": mastered_week}
+            "retention": retention, "masteredWeek": mastered_week, "gate": gate}
 
 
 # ---------------- входной тест (placement) ----------------
@@ -553,9 +743,12 @@ async def estimate_level(user_id):
 
 async def suggest_words(user_id, count=10, level=None):
     """«Докинуть слов»: добавить в словарь пользователя новые слова пула по его уровню,
-    которых у него ещё нет. Возвращает добавленные. Импорт здесь, чтобы избежать циклов."""
+    которых у него ещё нет. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
+    Гейт ворот: пока несданная пачка открыта на экзамен — приток новых слов закрыт."""
     from .pool import get_pool_duel_words, get_pool_id
     from .dictionaries import add_word_to_dict
+    if await new_words_blocked(user_id):
+        return {"added": 0, "words": [], "level": None, "blocked": True}
     lvl = level if level in LEVELS else await estimate_level(user_id)
     db = await _conn()
     try:

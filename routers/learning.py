@@ -6,8 +6,9 @@ from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
+    learning_gate_status, learning_gate_exam, learning_gate_grade,
 )
-from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody
+from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody, GateExamBody
 
 router = APIRouter()
 
@@ -60,6 +61,25 @@ async def learning_level_route(body: LevelBody, user=Depends(get_current_user)):
     await learning_set_level(user["id"], body.level)
     seed = await learning_seed_starter(user["id"], body.level)
     return {"ok": True, "level": body.level, "seeded": seed.get("seeded", 0)}
+
+
+@router.get("/learning/gate")
+async def learning_gate_route(user=Depends(get_current_user)):
+    """Состояние ворот зачётного экзамена: {pack, threshold, open}."""
+    return await learning_gate_status(user["id"])
+
+
+@router.get("/learning/gate/exam")
+async def learning_gate_exam_route(lang: str = "ru", user=Depends(get_current_user)):
+    """Собрать выборку вопросов зачётного экзамена (до SAMPLE из несданной пачки)."""
+    return await learning_gate_exam(user["id"], lang=lang)
+
+
+@router.post("/learning/gate/exam")
+async def learning_gate_grade_route(body: GateExamBody, user=Depends(get_current_user)):
+    """Оценить зачётный экзамен: сдал → сертификация пачки; провал → демоут промахов ×2."""
+    mark_activity()
+    return await learning_gate_grade(user["id"], body.answers, lang=body.lang)
 
 
 @router.post("/learning/{pool_id}/status")
