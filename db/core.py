@@ -304,6 +304,10 @@ async def init_db():
             await db.execute("ALTER TABLE user_words ADD COLUMN certified INTEGER DEFAULT 0")  # слово сдало зачётный экзамен-ворота
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE user_words ADD COLUMN audit_due TEXT")  # когда слову пора на аудит забывания (§2.4-B)
+        except Exception:
+            pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (

@@ -7,8 +7,9 @@ from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
+    learning_audit, learning_audit_grade,
 )
-from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody, GateExamBody
+from models import LearningAnswer, LearningStatusBody, SuggestBody, PlacementBody, LevelBody, GateExamBody, AuditBody
 
 router = APIRouter()
 
@@ -80,6 +81,19 @@ async def learning_gate_grade_route(body: GateExamBody, user=Depends(get_current
     """Оценить зачётный экзамен: сдал → сертификация пачки; провал → демоут промахов ×2."""
     mark_activity()
     return await learning_gate_grade(user["id"], body.answers, lang=body.lang)
+
+
+@router.get("/learning/audit")
+async def learning_audit_route(lang: str = "ru", user=Depends(get_current_user)):
+    """Собрать аудит-выборку забывания (до AUDIT_CAP самых просроченных сертифицированных)."""
+    return await learning_audit(user["id"], lang=lang)
+
+
+@router.post("/learning/audit")
+async def learning_audit_grade_route(body: AuditBody, user=Depends(get_current_user)):
+    """Оценить аудит: верно → срок дальше; забыл → де-сертификация и слово назад в учёбу."""
+    mark_activity()
+    return await learning_audit_grade(user["id"], body.answers, lang=body.lang)
 
 
 @router.post("/learning/{pool_id}/status")

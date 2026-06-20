@@ -144,6 +144,11 @@ class GateExamBody(BaseModel):
     answers: list = []        # [{pool_id, answer}] — выбранный перевод для каждого вопроса
 
 
+class AuditBody(BaseModel):
+    lang: str = "ru"
+    answers: list = []        # [{pool_id, answer}] — выбранный перевод для каждого аудит-вопроса
+
+
 class RediffBody(BaseModel):
     a: str
     b: str

@@ -30,6 +30,12 @@ PACK = 100        # порог последующих пачек
 SAMPLE = 30       # сколько случайных вопросов в выборке экзамена
 PASS = 27         # сколько нужно верных, чтобы сдать
 
+# --- Аудит-экзамен забывания (§2.4-B): ловит забывание сертифицированных слов ---
+FIRST_AUDIT_DAYS = 30   # первый аудит слова — через 30 дней после сертификации
+AUDIT_CAP = 20          # потолок аудит-сессии (берём не более стольких самых просроченных)
+THROTTLE = 0.4          # доля забытых выше которой — мягкий тормоз притока новых
+_AUDIT_GROWTH = 2.0     # во сколько раз растёт срок до следующего аудита при успехе
+
 
 async def _activity_metrics(db, user_id):
     """Стрик, дневная цель, точность по журналу активности."""
@@ -215,7 +221,7 @@ async def _fetch_user_words(db, user_id):
     async with db.execute("""
         SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
-               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen, uw.certified
+               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen, uw.certified, uw.audit_due
         FROM (SELECT DISTINCT pool_id FROM dict_words
               WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)) up
         JOIN word_pool wp ON wp.id = up.pool_id
@@ -248,6 +254,7 @@ def _shape(r):
         "status": status_of(r, modes), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
         "modes": modes, "correct": r.get("correct") or 0, "incorrect": r.get("incorrect") or 0, "due": _is_due(r),
         "last_seen": r.get("last_seen"), "certified": bool(r.get("certified")),
+        "audit_due": r.get("audit_due"),
     }
 
 
@@ -543,9 +550,11 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
         if correct_n >= PASS:
             if pack:
                 marks = ",".join("?" for _ in pack)
+                # сертифицируем пачку и сразу назначаем первый аудит забывания (now + FIRST_AUDIT_DAYS)
                 await db.execute(
-                    f"UPDATE user_words SET certified = 1 WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
-                    [user_id] + [r["pool_id"] for r in pack])
+                    f"UPDATE user_words SET certified = 1, audit_due = ? "
+                    f"WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
+                    [_due_str(FIRST_AUDIT_DAYS), user_id] + [r["pool_id"] for r in pack])
                 await db.commit()
             return {"passed": True}
 
@@ -560,6 +569,94 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
             await _demote(db, user_id, r)
         await db.commit()
         return {"passed": False, "demoted": len(to_demote)}
+    finally:
+        await _release(db)
+
+
+# ---------------- аудит-экзамен забывания (§2.4-B) ----------------
+
+def _audit_rows(rows):
+    """Слова, которым пора на аудит: сертифицированные с audit_due <= now.
+    Сортировка по audit_due возрастанию — дольше всех ждавшие первыми (ротация)."""
+    now = _now()
+    out = [r for r in rows if _is_certified(r) and r.get("audit_due") and r["audit_due"] <= now]
+    out.sort(key=lambda r: r.get("audit_due") or "")
+    return out
+
+
+async def build_audit(user_id, cap=AUDIT_CAP, lang="ru"):
+    """Собрать аудит-выборку: до cap самых просроченных (audit_due возр.) сертифицированных слов.
+    Формат вопросов как в зачётном экзамене (build_gate_exam): {no, pool_id, options:[4]}."""
+    import random
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+    finally:
+        await _release(db)
+    due = _audit_rows(rows)[:cap]
+    # дистракторы — переводы любых слов пользователя на нужный язык
+    distractor_pool = []
+    for r in rows:
+        data = json.loads(r["data"]) if r.get("data") else {}
+        t = (data.get("translate", {}).get(lang) or [None])[0]
+        if t:
+            distractor_pool.append(t)
+    questions = []
+    for r in due:
+        random.shuffle(distractor_pool)
+        q = _gate_question(r, lang, distractor_pool)
+        if q:
+            questions.append(q)
+    return {"questions": questions, "cap": cap}
+
+
+async def grade_audit(user_id, answers, lang="ru"):
+    """Оценить аудит. answers: [{pool_id, answer}].
+    Пословно: верно → следующий аудит дальше (audit_due = now + текущий_срок × рост, мин. удвоение);
+    неверно → де-сертификация (certified=0, status→review, сброс клеток рампы) и слово возвращается
+    в очередь изучения (как _demote). Если доля забытых > THROTTLE → throttle=True (тормозим новые).
+    Возвращает {checked, refreshed, forgot, throttle}."""
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+        by_pid = {r["pool_id"]: r for r in rows if _is_certified(r)}
+        checked = refreshed = forgot = 0
+        now_dt = datetime.utcnow()
+        for a in (answers or []):
+            r = by_pid.get(a.get("pool_id"))
+            if not r:
+                continue
+            checked += 1
+            data = json.loads(r["data"]) if r.get("data") else {}
+            tr = data.get("translate", {}).get(lang) or []
+            ans = (a.get("answer") or "").strip().lower()
+            ok = bool(ans) and any(ans == (t or "").strip().lower() for t in tr)
+            if ok:
+                # срок до следующего аудита растёт: текущий интервал (от сертификации до прежнего due)
+                # × рост; не меньше удвоения от now. Прежний due уже в прошлом — считаем от now.
+                prev_due = r.get("audit_due")
+                base_days = FIRST_AUDIT_DAYS
+                if prev_due:
+                    try:
+                        delta = (now_dt - datetime.fromisoformat(prev_due)).days
+                        base_days = max(FIRST_AUDIT_DAYS, delta)
+                    except Exception:
+                        base_days = FIRST_AUDIT_DAYS
+                next_days = round(base_days * _AUDIT_GROWTH)
+                await db.execute(
+                    "UPDATE user_words SET audit_due = ? WHERE user_id = ? AND pool_id = ?",
+                    (_due_str(next_days), user_id, r["pool_id"]))
+                refreshed += 1
+            else:
+                # забыл → де-сертификация + назад в очередь изучения, снимаем с аудита
+                await _demote(db, user_id, r)
+                await db.execute(
+                    "UPDATE user_words SET audit_due = NULL WHERE user_id = ? AND pool_id = ?",
+                    (user_id, r["pool_id"]))
+                forgot += 1
+        await db.commit()
+        throttle = bool(checked) and (forgot / checked) > THROTTLE
+        return {"checked": checked, "refreshed": refreshed, "forgot": forgot, "throttle": throttle}
     finally:
         await _release(db)
 
@@ -607,10 +704,14 @@ async def learning_stats(user_id):
     threshold = PACK if had_cert else PACK_FIRST
     gate = {"pack": pack_n, "threshold": threshold, "open": pack_n >= threshold,
             "toExam": max(0, threshold - pack_n)}
+    # аудит забывания: сколько сертифицированных слов уже пора проверить (audit_due <= now)
+    now_iso = _now()
+    audit_due_n = sum(1 for w in items if w["certified"] and w["audit_due"] and w["audit_due"] <= now_iso)
+    audit = {"due": audit_due_n, "cap": AUDIT_CAP, "open": audit_due_n > 0}
     return {"total": len(items), "due": due_count, "byStatus": by_status, "byLevel": by_level,
             "currentLevel": current, "toNextLevel": to_next, "startLevel": start, "placed": bool(start),
             "streak": activity["streak"], "today": activity["today"], "accuracy": activity["accuracy"],
-            "retention": retention, "masteredWeek": mastered_week, "gate": gate}
+            "retention": retention, "masteredWeek": mastered_week, "gate": gate, "audit": audit}
 
 
 # ---------------- входной тест (placement) ----------------
