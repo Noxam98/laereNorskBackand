@@ -369,29 +369,48 @@ async def build_session(user_id, size=20):
     Лимит одновременно-в-работе: не вводим новые слова, если число не-mastered
     (new+learning) уже >= WIP_LIMIT. Mastered-слова как «новые» не вводим.
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
-    db = await _conn()
-    try:
-        rows = await _fetch_user_words(db, user_id)
-        throttled = await _audit_throttled(db, user_id)
-    finally:
-        await _release(db)
-    # держим исходные строки рядом с shape (для статуса/lapses/попыток)
-    enriched = []
-    for r in rows:
+    async def _load():
+        """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
+        db = await _conn()
         try:
-            modes = json.loads(r.get("modes") or "{}")
-        except Exception:
-            modes = {}
-        st = status_of(r, modes)
-        enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r)})
+            rows = await _fetch_user_words(db, user_id)
+            throttled = await _audit_throttled(db, user_id)
+        finally:
+            await _release(db)
+        enriched = []
+        for r in rows:
+            try:
+                modes = json.loads(r.get("modes") or "{}")
+            except Exception:
+                modes = {}
+            st = status_of(r, modes)
+            enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r)})
+        # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
+        in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
+        # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим;
+        # мягкий тормоз аудита (>THROTTLE забытого) тоже временно замораживает приток новых
+        pack_n = sum(1 for e in enriched if e["status"] == "mastered" and not _is_certified(e["row"]))
+        had_cert = any(_is_certified(e["row"]) for e in enriched)
+        gate_open = pack_n >= (PACK if had_cert else PACK_FIRST) or throttled
+        return enriched, in_work, gate_open
 
-    # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
-    in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
-    # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим;
-    # мягкий тормоз аудита (>THROTTLE забытого) тоже временно замораживает приток новых
-    pack_n = sum(1 for e in enriched if e["status"] == "mastered" and not _is_certified(e["row"]))
-    had_cert = any(_is_certified(e["row"]) for e in enriched)
-    gate_open = pack_n >= (PACK if had_cert else PACK_FIRST) or throttled
+    enriched, in_work, gate_open = await _load()
+
+    # АВТО-ДОБОР: «Учёба» не должна пустеть сама собой, но и не навязывает «Базу».
+    # Семантика — «закрыть ПУСТОТУ, когда пул НОВЫХ иссяк», а НЕ «добить до WIP_LIMIT».
+    # Доступные новые (status == new) — это «пул новых». Досыпаем ТОЛЬКО когда он пуст
+    # (new == 0): пока у юзера есть хоть одно своё новое слово, добор не срабатывает и
+    # «База» не подмешивается. Дополнительно: ворота не закрыты (не ждём экзамен / нет
+    # тормоза аудита) И есть свободный слот в работе (in_work < WIP_LIMIT — иначе новые
+    # всё равно не вводятся по лимиту). Сколько досыпать — до WIP_LIMIT по in_work.
+    if not gate_open:
+        new_avail = sum(1 for e in enriched if e["status"] == "new")
+        if new_avail == 0 and in_work < WIP_LIMIT:
+            level = await estimate_level(user_id)
+            res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level)
+            if res.get("added"):
+                # перечитываем слова после добора и продолжаем обычную сборку
+                enriched, in_work, gate_open = await _load()
 
     # пулы по приоритету
     def attempts(e):

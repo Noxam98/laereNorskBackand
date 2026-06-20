@@ -138,11 +138,6 @@ class LearningStatusBody(BaseModel):
     action: str = ""          # know | reset | unarchive
 
 
-class SuggestBody(BaseModel):
-    count: int = 10
-    level: str = ""           # A1..C2 или пусто (автоопределение)
-
-
 class GateExamBody(BaseModel):
     lang: str = "ru"
     answers: list = []        # [{pool_id, answer}] — выбранный перевод для каждого вопроса
