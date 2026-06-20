@@ -158,7 +158,7 @@ async def set_word_override(user_id: int, dw_id: int, override: dict):
         await _release(db)
 
 
-async def record_result(user_id: int, dw_id: int, correct: bool, mode: str = None, elapsed: float = None):
+async def record_result(user_id: int, dw_id: int, correct: bool, mode: str = None, elapsed: float = None, direction: str = None):
     db = await _conn()
     try:
         col = "correct" if correct else "incorrect"
@@ -180,7 +180,7 @@ async def record_result(user_id: int, dw_id: int, correct: bool, mode: str = Non
     if pool_id is not None:
         try:
             from .learning import apply_result
-            await apply_result(user_id, pool_id, correct, elapsed=elapsed, mode=mode)
+            await apply_result(user_id, pool_id, correct, elapsed=elapsed, mode=mode, direction=direction)
         except Exception:
             pass
     return {"ok": True}

@@ -39,5 +39,10 @@ from .learning import (
     get_learning as learning_get, learning_stats, get_due as learning_due,
     apply_result as learning_answer, set_status as learning_set_status, suggest_words as learning_suggest,
     build_placement as learning_placement, grade_placement as learning_grade, get_activity as learning_activity,
-    set_start_level as learning_set_level,
+    set_start_level as learning_set_level, seed_starter as learning_seed_starter,
+    build_session as learning_session,
+    gate_status as learning_gate_status, new_words_blocked as learning_new_blocked,
+    build_gate_exam as learning_gate_exam, grade_gate_exam as learning_gate_grade,
+    build_audit as learning_audit, grade_audit as learning_audit_grade,
+    audit_throttled as learning_audit_throttled,
 )
