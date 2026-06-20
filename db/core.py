@@ -318,6 +318,13 @@ async def init_db():
             await db.execute("ALTER TABLE user_words ADD COLUMN audit_interval REAL DEFAULT 0")
         except Exception:
             pass
+        try:
+            # слово КОГДА-ЛИБО было сертифицировано (прошло ворота). Не сбрасывается при де-сертификации
+            # на аудите: служит признаком «забытое на аудите» для замыкания петли забывания (§2.4-B,
+            # «вариант A»): доучил такое до mastered → СРАЗУ ре-сертифицируем, минуя ворота.
+            await db.execute("ALTER TABLE user_words ADD COLUMN was_certified INTEGER DEFAULT 0")
+        except Exception:
+            pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (

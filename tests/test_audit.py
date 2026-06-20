@@ -6,7 +6,8 @@ import pytest
 from datetime import datetime, timedelta
 from db.learning import (
     apply_result, grade_gate_exam, build_audit, grade_audit, build_session, status_of,
-    new_words_blocked, audit_throttled, suggest_words, learning_stats,
+    new_words_blocked, audit_throttled, suggest_words, learning_stats, gate_status, _pack_rows,
+    _fetch_user_words,
     PACK_FIRST, SAMPLE, FIRST_AUDIT_DAYS, AUDIT_CAP, THROTTLE,
 )
 from db.core import _conn, _release, _now
@@ -175,6 +176,74 @@ async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     # и реально снова попадает в программу занятия (на доучивание)
     sess = await build_session(uid, size=PACK_FIRST)
     assert pid in {w["pool_id"] for w in sess["words"]}
+
+
+async def test_forgetting_loop_recertifies_without_gate(fresh_db):
+    """Петля забывания замкнута (§2.4-B, «вариант A»): забыл на аудите → де-серт → в очередь
+    изучения → доучил до mastered → СРАЗУ ре-сертифицирован (без повторных ворот) → назад под аудит.
+    Проверяем: после повторного mastered certified=1, audit_due≈now+30d, слово НЕ в пачке-воротах,
+    и по истечении срока его подбирает build_audit."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    pid, no, ru = pack[0]
+    # забыли на аудите → де-сертификация, ушло в очередь изучения
+    await _set_audit_due(uid, pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+    res = await grade_audit(uid, [{"pool_id": pid, "answer": "__неверно__"}], lang="ru")
+    assert res["forgot"] == 1
+    row = await _row(uid, pid)
+    assert row["certified"] == 0 and row["audit_due"] is None
+    # признак «ранее сертифицировано/выпало из аудита» сохранён — это ключ к ре-сертификации без ворот
+    assert row["was_certified"] == 1
+
+    # пока слово не выучено заново — оно НЕ в зреющей пачке-воротах (де-серт ≠ зачётная пачка)
+    db = await _conn()
+    try:
+        pack_rows = _pack_rows(await _fetch_user_words(db, uid))
+    finally:
+        await _release(db)
+    assert pid not in {r["pool_id"] for r in pack_rows}
+
+    # доучиваем заново до mastered — должно СРАЗУ ре-сертифицировать, минуя ворота
+    await _master(uid, pid)
+    row = await _row(uid, pid)
+    assert row["certified"] == 1, "забытое+доученное слово должно ре-сертифицироваться без ворот"
+    assert row["was_certified"] == 1
+    # audit_due ≈ now + FIRST_AUDIT_DAYS
+    due = datetime.fromisoformat(row["audit_due"])
+    expect = datetime.utcnow() + timedelta(days=FIRST_AUDIT_DAYS)
+    assert abs((due - expect).total_seconds()) < 3600
+    assert round(row["audit_interval"]) == FIRST_AUDIT_DAYS
+
+    # НЕ попадает под повторные ворота: не в зреющей пачке, размер пачки не вырос из-за него
+    db = await _conn()
+    try:
+        pack_rows = _pack_rows(await _fetch_user_words(db, uid))
+    finally:
+        await _release(db)
+    assert pid not in {r["pool_id"] for r in pack_rows}
+
+    # по истечении срока — снова под аудит (ротация подберёт)
+    await _set_audit_due(uid, pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+    ex = await build_audit(uid, cap=AUDIT_CAP, lang="ru")
+    assert pid in {q["pool_id"] for q in ex["questions"]}
+
+
+async def test_fresh_mastered_still_needs_gate(fresh_db):
+    """Регрессия §2.4-A: свежее (никогда не сертифицированное) mastered НЕ ре-сертифицируется
+    само — оно обязано пройти ворота. certified остаётся 0, слово в зреющей пачке."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "ferskt", "свежее")
+    await _master(uid, pid)
+    row = await _row(uid, pid)
+    assert row["certified"] == 0
+    assert (row["was_certified"] or 0) == 0
+    assert row["audit_due"] is None
+    db = await _conn()
+    try:
+        pack_rows = _pack_rows(await _fetch_user_words(db, uid))
+    finally:
+        await _release(db)
+    assert pid in {r["pool_id"] for r in pack_rows}
 
 
 async def test_grade_audit_throttle_when_many_forgot(fresh_db):

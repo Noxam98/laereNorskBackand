@@ -177,6 +177,17 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
                 incorrect=excluded.incorrect, streak=excluded.streak, modes=excluded.modes, last_seen=excluded.last_seen
         """, (user_id, pool_id, strength, st["reps"], st["lapses"], ease, interval, due,
               st["correct"], st["incorrect"], st["streak"], st.get("archived", 0), modes_json, _now(), _now()))
+        # Замыкание петли забывания (§2.4-B, «вариант A»): забытое на аудите слово было
+        # де-сертифицировано (certified=0) и доучивалось в общей очереди. Как только оно снова
+        # достигает mastered — СРАЗУ ре-сертифицируем, минуя зачётные ворота, и возвращаем под
+        # редкий аудит (audit_due = now + FIRST_AUDIT_DAYS). Признак «ранее сертифицировано/выпало
+        # из аудита» — was_certified=1; свежие (никогда не сертифицированные) mastered идут через
+        # ворота как раньше (§2.4-A), поэтому условие именно certified=0 AND was_certified=1.
+        if _mastered_by_modes(modes) and not st.get("certified") and st.get("was_certified"):
+            await db.execute(
+                "UPDATE user_words SET certified = 1, audit_due = ?, audit_interval = ? "
+                "WHERE user_id = ? AND pool_id = ?",
+                (_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id, pool_id))
         # дневная активность (для стрика/цели/точности/хитмапа)
         day = _now()[:10]
         await db.execute("""
@@ -199,7 +210,9 @@ async def set_status(user_id: int, pool_id: int, action: str):
             fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
         elif action == "reset":
-            fields = "archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL"
+            fields = ("archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
+                      "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, "
+                      "certified=0, was_certified=0, audit_due=NULL, audit_interval=0")
             args = ()
         elif action == "unarchive":
             fields = "archived=0, due_at=?"
@@ -223,7 +236,7 @@ async def _fetch_user_words(db, user_id):
         SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
-               uw.certified, uw.audit_due, uw.audit_interval
+               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
         FROM (SELECT DISTINCT pool_id FROM dict_words
               WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)) up
         JOIN word_pool wp ON wp.id = up.pool_id
@@ -581,7 +594,7 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
                 # сертифицируем пачку и сразу назначаем первый аудит забывания (now + FIRST_AUDIT_DAYS).
                 # audit_interval запоминает длину текущего интервала — при успехе аудита он умножается на рост.
                 await db.execute(
-                    f"UPDATE user_words SET certified = 1, audit_due = ?, audit_interval = ? "
+                    f"UPDATE user_words SET certified = 1, was_certified = 1, audit_due = ?, audit_interval = ? "
                     f"WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
                     [_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id]
                     + [r["pool_id"] for r in pack])
