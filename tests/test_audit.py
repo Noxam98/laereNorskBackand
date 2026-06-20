@@ -280,6 +280,39 @@ async def test_grade_audit_throttle_when_many_forgot(fresh_db):
     assert stats["audit"]["throttled"] is True
 
 
+async def test_grade_audit_throttle_boundary_is_strictly_greater(fresh_db):
+    """Граница тормоза — СТРОГО больше THROTTLE (семантика '>', не '>='): ровно THROTTLE
+    забытого (доля == 0.4) тормоз НЕ включает, а один лишний промах (доля > 0.4) — включает.
+    Две независимые БД, чтобы каждый прогон был чист от тормоза предыдущего."""
+    n = 10
+    at_threshold = int(round(THROTTLE * n))   # 4 из 10 == ровно 0.4
+    assert at_threshold / n == THROTTLE       # выборка подобрана так, что граница точная
+
+    async def run(forgot_n):
+        uid, did = await seed_user(username=f"u{forgot_n}")
+        pack = await _seed_certified_pack(uid, did, PACK_FIRST, prefix=f"b{forgot_n}_")
+        answers = []
+        for i in range(n):
+            pid, no, ru = pack[i]
+            await _set_audit_due(uid, pid, (datetime.utcnow() - timedelta(days=1)).isoformat())
+            answers.append({"pool_id": pid, "answer": "__нет__" if i < forgot_n else ru})
+        res = await grade_audit(uid, answers, lang="ru")
+        assert res["checked"] == n and res["forgot"] == forgot_n
+        return res, await audit_throttled(uid)
+
+    # ровно на пороге: forgot/checked == THROTTLE → тормоза нет
+    res, persisted = await run(at_threshold)
+    assert res["forgot"] / res["checked"] == THROTTLE
+    assert res["throttle"] is False, "ровно на пороге (==THROTTLE) тормоз не включается"
+    assert persisted is False
+
+    # один лишний промах: доля > THROTTLE → тормоз срабатывает и персистится
+    res, persisted = await run(at_threshold + 1)
+    assert res["forgot"] / res["checked"] > THROTTLE
+    assert res["throttle"] is True
+    assert persisted is True
+
+
 async def test_grade_audit_no_throttle_keeps_new_flowing(fresh_db):
     """Мало забытого (≤ THROTTLE) → тормоз не включается, приток новых открыт."""
     uid, did = await seed_user()
