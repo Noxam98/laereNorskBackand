@@ -71,6 +71,21 @@ def _mastered_by_modes(modes):
     return all((modes or {}).get(c, "") == "1" for c in REQUIRED_CELLS)
 
 
+def _next_step(row, modes):
+    """Следующая невыполненная ступень рампы для слова → (step, mode, direction).
+    Совсем новое (0 попыток) → пассивная карточка 'card' (study, без направления).
+    Иначе — первая клетка REQUIRED_CELLS со значением != '1', из имени выводим mode/direction.
+    Если все клетки пройдены (mastered) — возвращаем None."""
+    attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
+    if attempts == 0:
+        return ("card", "study", None)
+    for cell in REQUIRED_CELLS:
+        if (modes or {}).get(cell, "") != "1":
+            mode, direction = cell.split("_", 1)
+            return (cell, mode, direction)
+    return None
+
+
 def status_of(row, modes=None):
     """Статус слова из его состояния."""
     if row.get("archived"):
@@ -282,6 +297,87 @@ async def get_due(user_id, limit=20):
         if len(queue) >= limit:
             break
     return {"words": queue}
+
+
+# ---------------- движок сессии (систему ведёт сервер, режим не выбирает игрок) ----------------
+
+WIP_LIMIT = 20   # лимит слов одновременно-в-работе (new+learning); новые не вводим сверх него
+
+
+async def build_session(user_id, size=20):
+    """Программа занятия, которую готовит СИСТЕМА (без выбора режима игроком).
+    Приоритет пулов:
+      (1) возвращённые на доучивание / слабые с лапсами (errored, вернулись в учёбу),
+      (2) просроченные по due,
+      (3) слабые,
+      (4) дозревающие (new/learning).
+    Для каждого слова берём СЛЕДУЮЩУЮ невыполненную ступень рампы (см. _next_step):
+    'card' для совсем нового (0 попыток), иначе первая клетка REQUIRED_CELLS != '1'.
+    Лимит одновременно-в-работе: не вводим новые слова, если число не-mastered
+    (new+learning) уже >= WIP_LIMIT. Mastered-слова как «новые» не вводим.
+    Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+    finally:
+        await _release(db)
+    # держим исходные строки рядом с shape (для статуса/lapses/попыток)
+    enriched = []
+    for r in rows:
+        try:
+            modes = json.loads(r.get("modes") or "{}")
+        except Exception:
+            modes = {}
+        st = status_of(r, modes)
+        enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r)})
+
+    # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
+    in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
+
+    # пулы по приоритету
+    def attempts(e):
+        rr = e["row"]
+        return (rr.get("correct") or 0) + (rr.get("incorrect") or 0)
+
+    returned = sorted(
+        [e for e in enriched if e["status"] in ("weak", "learning", "review")
+         and (e["row"].get("lapses") or 0) > 0],
+        key=lambda e: (e["row"].get("strength") or 0, e["row"].get("due_at") or ""))
+    overdue = sorted([e for e in enriched if e["due"]], key=lambda e: e["row"].get("due_at") or "")
+    weak = sorted([e for e in enriched if e["status"] == "weak"], key=lambda e: e["row"].get("strength") or 0)
+    # дозревающие: всё, что ещё не выучено и не в архиве (new/learning + review, не достигшие mastered)
+    maturing = sorted(
+        [e for e in enriched if e["status"] in ("new", "learning", "review")],
+        key=lambda e: (attempts(e) == 0, e["row"].get("strength") or 0))  # сначала тронутые, новые в хвост
+
+    session, seen = [], set()
+    for pool in (returned, overdue, weak, maturing):
+        for e in pool:
+            pid = e["row"]["pool_id"]
+            if pid in seen:
+                continue
+            # mastered как «новые» не вводим (они и так не попадают в пулы выше)
+            if e["status"] in ("mastered", "archived"):
+                continue
+            # лимит одновременно-в-работе: новое слово (0 попыток) не вводим, если уже >= WIP_LIMIT
+            if attempts(e) == 0 and in_work >= WIP_LIMIT:
+                continue
+            step = _next_step(e["row"], e["modes"])
+            if not step:
+                continue
+            cell, mode, direction = step
+            data = json.loads(e["row"]["data"]) if e["row"].get("data") else {}
+            session.append({
+                "pool_id": pid, "no": e["row"]["norwegian"],
+                "translate": data.get("translate", {}),
+                "mode": mode, "direction": direction, "step": cell,
+            })
+            seen.add(pid)
+            if attempts(e) == 0:
+                in_work += 1   # ввели новое — слот занят
+            if len(session) >= size:
+                return {"words": session}
+    return {"words": session}
 
 
 async def learning_stats(user_id):
