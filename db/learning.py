@@ -237,12 +237,22 @@ async def _fetch_user_words(db, user_id):
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
                uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
-        FROM (SELECT DISTINCT pool_id FROM dict_words
+        FROM (
+              -- новые слова — только из словарей «в обучении» (studying=1)
+              SELECT pool_id FROM dict_words
               WHERE dict_id IN (SELECT id FROM dictionaries
-                                WHERE user_id = ? AND COALESCE(studying, 1) = 1)) up
+                                WHERE user_id = ? AND COALESCE(studying, 1) = 1)
+              UNION
+              -- уже начатые (есть прогресс) — остаются в «Учёбе», даже если словарь сняли с обучения
+              SELECT dw.pool_id FROM dict_words dw
+              JOIN dictionaries d ON d.id = dw.dict_id
+              WHERE d.user_id = ?
+                AND EXISTS (SELECT 1 FROM user_words uw
+                            WHERE uw.user_id = ? AND uw.pool_id = dw.pool_id)
+             ) up
         JOIN word_pool wp ON wp.id = up.pool_id
         LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
-    """, (user_id, user_id)) as cur:
+    """, (user_id, user_id, user_id, user_id)) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     # темы пачкой
     if rows:

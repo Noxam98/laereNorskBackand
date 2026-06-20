@@ -38,7 +38,8 @@ async def create_dictionary(user_id: int, name: str):
         return {"error": "Empty name"}
     db = await _conn()
     try:
-        cur = await db.execute("INSERT INTO dictionaries (user_id, name, created_at) VALUES (?, ?, ?)", (user_id, name, _now()))
+        # studying=0: новый личный словарь по умолчанию НЕ в «Учёбе» (включается в «Действиях»).
+        cur = await db.execute("INSERT INTO dictionaries (user_id, name, created_at, studying) VALUES (?, ?, ?, 0)", (user_id, name, _now()))
         await db.commit()
         return {"id": cur.lastrowid, "name": name}
     except aiosqlite.IntegrityError:

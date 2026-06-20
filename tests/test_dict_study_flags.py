@@ -16,7 +16,7 @@ from db.dictionaries import (
     add_word_to_dict, get_user_data, get_or_create_hidden_dict,
     set_dictionary_studying, HIDDEN_DICT_NAME,
 )
-from db.learning import _fetch_user_words, suggest_words, seed_starter
+from db.learning import _fetch_user_words, suggest_words, seed_starter, apply_result
 from tests.conftest import seed_user, seed_word
 
 
@@ -201,3 +201,16 @@ async def test_set_studying_toggles_and_drops_from_learning(fresh_db):
     assert res_on["studying"] is True
     assert (await _dict_flags(did))[1] == 1
     assert pid in await _learning_pools(uid)        # вернулось
+
+
+@pytest.mark.asyncio
+async def test_in_progress_words_survive_studying_off(fresh_db):
+    """grandfather: флаг управляет только притоком НОВЫХ; начатое слово остаётся."""
+    uid, did = await seed_user()
+    started, _ = await seed_word(did, "viktig", "важный")
+    fresh, _ = await seed_word(did, "ny", "новый")
+    await apply_result(uid, started, True, mode="choice", direction="no2int")  # дать прогресс
+    await set_dictionary_studying(uid, did, False)
+    pools = await _learning_pools(uid)
+    assert started in pools       # начатое слово остаётся, несмотря на studying=0
+    assert fresh not in pools     # новое (без прогресса) — выпадает
