@@ -2,10 +2,24 @@
 Слова берутся из словарей (dict_words → word_pool), состояние — в user_words.
 Статусы вычисляются на чтении из силы/попыток; archived — ручной флаг («я это знаю»)."""
 import json
+import unicodedata
 from datetime import datetime, timedelta
 from .core import _conn, _release, _now
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
+# Верхние уровни входного теста идут на ВВОД (продукция норвежского), а не «выбор из 4»
+# (узнавание). Выбор угадывается, ввод — нет, поэтому продукция честнее на высоких уровнях.
+PLACEMENT_INPUT_LEVELS = {"B2", "C1", "C2"}
+
+
+def _fold_loose(s: str) -> str:
+    """Снисходительная нормализация для сверки ВВОДА с норвежской леммой (как foldLoose на фронте):
+    lower/trim, å→a ø→o æ→ae и срез прочих диакритик. Пустую/None → ''."""
+    s = (s or "").strip().lower()
+    s = s.replace("å", "a").replace("ø", "o").replace("æ", "ae")
+    # срезаем остальные диакритики (é→e, ü→u, …): раскладываем и убираем combining-метки
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if not unicodedata.combining(c))
+    return s
 # Сколько слов уровня надо «выучить» (mastered/архив), чтобы закрыть уровень и идти выше.
 # Жёсткая шкала, близкая к реальным объёмам словаря CEFR — каждый уровень заметно тяжелее.
 LEVEL_TARGETS = {"A1": 250, "A2": 500, "B1": 1000, "B2": 2000, "C1": 3500, "C2": 5000}
@@ -810,15 +824,18 @@ async def set_start_level(user_id, level):
 
 async def build_placement(lang="ru", per=8):
     """Набор вопросов входного теста: по `per` слов на каждый уровень A1..C2.
-    Вопрос: норвежское слово + 4 варианта перевода на язык lang (без отметки верного).
-    Дистракторы — ПРАВДОПОДОБНЫЕ: 3 неверных перевода берём из слов ТОГО ЖЕ уровня
-    и (по возможности) той же части речи, что и целевое слово (fallback: тот же уровень →
-    любая часть речи). Не случайные из всего пула — чтобы исключение «по очевидности»
-    не работало и тест не завышал результат."""
+    ДВА типа вопроса (единый контракт с фронтом):
+      • choice (A1,A2,B1 — узнавание): {no:<норв. слово, показывается>, level, type:"choice",
+        options:[4 перевода на lang]}. Дистракторы — ПРАВДОПОДОБНЫЕ: 3 неверных перевода из слов
+        ТОГО ЖЕ уровня и (по возможности) той же части речи (fallback: тот же уровень → любая
+        часть речи). Не случайные — чтобы исключение «по очевидности» не завышало балл.
+      • input (B2,C1,C2 — продукция): {no:<норв. лемма — КЛЮЧ для грейда>, prompt:<перевод на lang,
+        показывается>, level, type:"input"} (без options). Угадать ввод нельзя → честнее на верхах."""
     import random
     from .pool import get_pool_duel_words
     questions = []
     for lv in LEVELS:
+        is_input = lv in PLACEMENT_INPUT_LEVELS
         # широкая выборка слов уровня — и для вопросов, и для дистракторов того же уровня
         words = await get_pool_duel_words(max(per * 6, 40), lv, None)
         random.shuffle(words)
@@ -837,6 +854,11 @@ async def build_placement(lang="ru", per=8):
             corr = (w["translate"].get(lang) or [None])[0]
             if not corr:
                 continue
+            if is_input:
+                # продукция: показываем перевод (prompt), ключ грейда — норвежская лемма (no)
+                questions.append({"no": w["norwegian"], "prompt": corr, "level": lv, "type": "input"})
+                picked += 1
+                continue
             pos = (w.get("part_of_speech") or "").lower()
             # сначала кандидаты той же части речи (того же уровня), затем добор любым словом уровня
             cand = list(by_pos.get(pos, [])) + level_all
@@ -853,7 +875,7 @@ async def build_placement(lang="ru", per=8):
                 continue
             opts = distract + [corr]
             random.shuffle(opts)
-            questions.append({"no": w["norwegian"], "level": lv, "options": opts})
+            questions.append({"no": w["norwegian"], "level": lv, "type": "choice", "options": opts})
             picked += 1
     random.shuffle(questions)
     return {"questions": questions}
@@ -865,10 +887,16 @@ PLACEMENT_MIN = 4        # минимум отвеченных вопросов 
 
 
 async def grade_placement(user_id, lang, answers):
-    """answers: [{no, level, answer}]. Оцениваем долю верных по уровням и КОНСЕРВАТИВНО
+    """answers: [{no, level, answer, type}]. Оцениваем долю верных по уровням и КОНСЕРВАТИВНО
     оцениваем стартовый уровень: идём снизу вверх и засчитываем уровень только если на нём
     отвечено достаточно (>= PLACEMENT_MIN) и доля верных >= PLACEMENT_PASS; останавливаемся
-    на ПЕРВОМ уровне со сдачей ниже порога (округление вниз). Проверка ответов — по пулу."""
+    на ПЕРВОМ уровне со сдачей ниже порога (округление вниз). Проверка ответов — по пулу.
+    Сверка по типу вопроса:
+      • type=="choice": верно если answer ∈ переводам слова no на язык lang (узнавание);
+      • type=="input": верно если введённое совпало с НОРВЕЖСКОЙ леммой no (или любым из
+        translate.no) СНИСХОДИТЕЛЬНО — через _fold_loose (lower/trim, å→a ø→o æ→ae, срез диакритик).
+    Тип берём из ответа; если его нет — выводим из уровня (верхние → input), чтобы не падать на
+    старых клиентах."""
     from .pool import get_pool_id, get_pool_by_id
     per_lvl = {lv: {"ok": 0, "total": 0} for lv in LEVELS}
     for a in (answers or []):
@@ -876,14 +904,25 @@ async def grade_placement(user_id, lang, answers):
         if lv not in per_lvl:
             continue
         per_lvl[lv]["total"] += 1
-        pid = await get_pool_id(a.get("no") or "")
+        no = a.get("no") or ""
+        pid = await get_pool_id(no)
         if not pid:
             continue
         p = await get_pool_by_id(pid)
-        tr = ((p or {}).get("data") or {}).get("translate", {}).get(lang) or []
-        ans = (a.get("answer") or "").strip().lower()
-        if ans and any(ans == (t or "").strip().lower() for t in tr):
-            per_lvl[lv]["ok"] += 1
+        translate = ((p or {}).get("data") or {}).get("translate", {})
+        qtype = a.get("type") or ("input" if lv in PLACEMENT_INPUT_LEVELS else "choice")
+        if qtype == "input":
+            # продукция: введённое сравниваем с норвежской леммой no и всеми вариантами translate.no
+            ans = _fold_loose(a.get("answer") or "")
+            keys = {_fold_loose(no)} | {_fold_loose(t) for t in (translate.get("no") or [])}
+            keys.discard("")
+            if ans and ans in keys:
+                per_lvl[lv]["ok"] += 1
+        else:
+            tr = translate.get(lang) or []
+            ans = (a.get("answer") or "").strip().lower()
+            if ans and any(ans == (t or "").strip().lower() for t in tr):
+                per_lvl[lv]["ok"] += 1
     # уровень = высший пройденный подряд снизу; стоп на первом несданном (консервативно, вниз)
     level = "A1"
     for lv in LEVELS:
