@@ -6,6 +6,7 @@ from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status, learning_suggest,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
+    learning_session,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
 )
@@ -30,6 +31,13 @@ async def learning_stats_route(user=Depends(get_current_user)):
 @router.get("/learning/due")
 async def learning_due_route(limit: int = 20, user=Depends(get_current_user)):
     return await learning_due(user["id"], limit=limit)
+
+
+@router.get("/learning/session")
+async def learning_session_route(size: int = 20, user=Depends(get_current_user)):
+    """Программа занятия от системы: каждое слово со СЛЕДУЮЩЕЙ ступенью рампы
+    (mode/direction/step). Режим не выбирает игрок — приоритеты ведёт сервер."""
+    return await learning_session(user["id"], size=max(1, min(50, size)))
 
 
 @router.get("/learning/activity")
