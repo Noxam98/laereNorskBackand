@@ -284,7 +284,7 @@ async def get_pool_sample(limit: int = 120):
 
 async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = None):
     """Случайные слова пула с переводами (для онлайн-игр). Фильтры: уровень CEFR, тема.
-    [{norwegian, translate{lang:[...]}}]."""
+    [{norwegian, translate{lang:[...]}, part_of_speech}]."""
     conds, params = ["data IS NOT NULL"], []
     if level:
         conds.append("level = ?"); params.append(level)
@@ -298,11 +298,14 @@ async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = N
             out = []
             for r in await cur.fetchall():
                 try:
-                    tr = (json.loads(r["data"]) or {}).get("translate", {}) or {}
+                    d = json.loads(r["data"]) or {}
                 except Exception:
-                    tr = {}
+                    d = {}
+                tr = d.get("translate", {}) or {}
                 if tr:
-                    out.append({"norwegian": r["norwegian"], "translate": tr, "embedding": r["embedding"]})
+                    out.append({"norwegian": r["norwegian"], "translate": tr,
+                                "part_of_speech": d.get("part_of_speech", ""),
+                                "embedding": r["embedding"]})
             return out
     finally:
         await _release(db)

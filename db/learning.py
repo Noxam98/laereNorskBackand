@@ -797,16 +797,28 @@ async def set_start_level(user_id, level):
         await _release(db)
 
 
-async def build_placement(lang="ru", per=4):
+async def build_placement(lang="ru", per=8):
     """Набор вопросов входного теста: по `per` слов на каждый уровень A1..C2.
-    Вопрос: норвежское слово + 4 варианта перевода на язык lang (без отметки верного)."""
+    Вопрос: норвежское слово + 4 варианта перевода на язык lang (без отметки верного).
+    Дистракторы — ПРАВДОПОДОБНЫЕ: 3 неверных перевода берём из слов ТОГО ЖЕ уровня
+    и (по возможности) той же части речи, что и целевое слово (fallback: тот же уровень →
+    любая часть речи). Не случайные из всего пула — чтобы исключение «по очевидности»
+    не работало и тест не завышал результат."""
     import random
     from .pool import get_pool_duel_words
     questions = []
-    # запас переводов для дистракторов
-    pool_all = await get_pool_duel_words(400, None, None)
     for lv in LEVELS:
-        words = await get_pool_duel_words(per * 3, lv, None)
+        # широкая выборка слов уровня — и для вопросов, и для дистракторов того же уровня
+        words = await get_pool_duel_words(max(per * 6, 40), lv, None)
+        random.shuffle(words)
+        # переводы уровня по части речи (+ общий список уровня) — пул правдоподобных дистракторов
+        by_pos, level_all = {}, []
+        for o in words:
+            t = (o["translate"].get(lang) or [None])[0]
+            if not t:
+                continue
+            level_all.append((o["norwegian"], t))
+            by_pos.setdefault((o.get("part_of_speech") or "").lower(), []).append((o["norwegian"], t))
         picked = 0
         for w in words:
             if picked >= per:
@@ -814,11 +826,14 @@ async def build_placement(lang="ru", per=4):
             corr = (w["translate"].get(lang) or [None])[0]
             if not corr:
                 continue
+            pos = (w.get("part_of_speech") or "").lower()
+            # сначала кандидаты той же части речи (того же уровня), затем добор любым словом уровня
+            cand = list(by_pos.get(pos, [])) + level_all
+            random.shuffle(cand)
             distract = []
-            for o in pool_all:
-                if o["norwegian"] == w["norwegian"]:
+            for o_no, t in cand:
+                if o_no == w["norwegian"]:
                     continue
-                t = (o["translate"].get(lang) or [None])[0]
                 if t and t != corr and t not in distract:
                     distract.append(t)
                 if len(distract) == 3:
@@ -833,9 +848,16 @@ async def build_placement(lang="ru", per=4):
     return {"questions": questions}
 
 
+# Калибровка входного теста — консервативная (тест НЕ должен завышать уровень):
+PLACEMENT_PASS = 0.8     # порог сдачи уровня: >= 80% верных
+PLACEMENT_MIN = 4        # минимум отвеченных вопросов на уровне, иначе уровень не «сдан»
+
+
 async def grade_placement(user_id, lang, answers):
-    """answers: [{no, level, answer}]. Оцениваем долю верных по уровням, оцениваем уровень
-    (поднимаемся, пока уровень сдан ≥60%), сохраняем как стартовый. Проверка ответов — по пулу."""
+    """answers: [{no, level, answer}]. Оцениваем долю верных по уровням и КОНСЕРВАТИВНО
+    оцениваем стартовый уровень: идём снизу вверх и засчитываем уровень только если на нём
+    отвечено достаточно (>= PLACEMENT_MIN) и доля верных >= PLACEMENT_PASS; останавливаемся
+    на ПЕРВОМ уровне со сдачей ниже порога (округление вниз). Проверка ответов — по пулу."""
     from .pool import get_pool_id, get_pool_by_id
     per_lvl = {lv: {"ok": 0, "total": 0} for lv in LEVELS}
     for a in (answers or []):
@@ -851,11 +873,12 @@ async def grade_placement(user_id, lang, answers):
         ans = (a.get("answer") or "").strip().lower()
         if ans and any(ans == (t or "").strip().lower() for t in tr):
             per_lvl[lv]["ok"] += 1
-    # уровень = высший пройденный подряд (≥60%), иначе A1
+    # уровень = высший пройденный подряд снизу; стоп на первом несданном (консервативно, вниз)
     level = "A1"
     for lv in LEVELS:
         d = per_lvl[lv]
-        if d["total"] and d["ok"] / d["total"] >= 0.6:
+        passed = d["total"] >= PLACEMENT_MIN and (d["ok"] / d["total"]) >= PLACEMENT_PASS
+        if passed:
             level = lv
         else:
             break

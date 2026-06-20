@@ -52,8 +52,8 @@ async def learning_answer_route(body: LearningAnswer, user=Depends(get_current_u
 
 
 @router.get("/learning/placement")
-async def learning_placement_route(lang: str = "ru", per: int = 4, user=Depends(get_current_user)):
-    return await learning_placement(lang=lang, per=max(2, min(8, per)))
+async def learning_placement_route(lang: str = "ru", per: int = 8, user=Depends(get_current_user)):
+    return await learning_placement(lang=lang, per=max(2, min(10, per)))
 
 
 @router.post("/learning/placement")
