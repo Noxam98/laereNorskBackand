@@ -103,6 +103,222 @@ async def get_pool_embeddings_raw():
         await _release(db)
 
 
+async def get_pool_embeddings_page(limit: int = 1000, offset: int = 0):
+    """[[id, hex(embedding)]] постранично — админ-выгрузка векторов наружу (мало RAM)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, hex(embedding) AS h FROM word_pool WHERE embedding IS NOT NULL ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset),
+        ) as cur:
+            return [[r["id"], r["h"]] for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+def freq_band(z):
+    """Zipf-частотность → ключ-градация для UI (подписи во фронте по языкам)."""
+    if z is None:
+        return None
+    if z >= 6:
+        return "very_common"
+    if z >= 5:
+        return "common"
+    if z >= 4:
+        return "frequent"
+    if z >= 3:
+        return "occasional"
+    if z >= 2:
+        return "rare"
+    return "very_rare"
+
+
+async def pool_by_freq(limit: int = 80, level: str = None):
+    """Слова пула по убыванию частотности (самые употребимые сначала; freq IS NULL — в хвост).
+    [{pool_id, norwegian, translate, part_of_speech, freq}]. Фильтр по уровню CEFR."""
+    conds, params = ["data IS NOT NULL"], []
+    if level:
+        conds.append("level = ?"); params.append(level)
+    sql = (f"SELECT id, norwegian, data, freq FROM word_pool WHERE {' AND '.join(conds)} "
+           "ORDER BY freq IS NULL, freq DESC LIMIT ?")
+    params.append(limit)
+    db = await _conn()
+    try:
+        async with db.execute(sql, params) as cur:
+            out = []
+            for r in await cur.fetchall():
+                try:
+                    d = json.loads(r["data"]) or {}
+                except Exception:
+                    d = {}
+                tr = d.get("translate", {}) or {}
+                if tr:
+                    out.append({"pool_id": r["id"], "norwegian": r["norwegian"], "translate": tr,
+                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"]})
+            return out
+    finally:
+        await _release(db)
+
+
+async def freq_pending(limit: int = 200):
+    """Слова без частотности (freq IS NULL) — для фонового добора по корпусу. [(id, norwegian)]."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, norwegian FROM word_pool WHERE freq IS NULL LIMIT ?", (limit,)) as cur:
+            return [(r["id"], r["norwegian"]) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def set_pool_freq(pool_id: int, freq: float):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET freq = ? WHERE id = ?", (float(freq), pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def set_pool_freq_bulk(pairs):
+    """pairs: [(id, freq)] — пакетная простановка частотности."""
+    if not pairs:
+        return 0
+    db = await _conn()
+    try:
+        await db.executemany("UPDATE word_pool SET freq = ? WHERE id = ?",
+                             [(float(f), pid) for pid, f in pairs])
+        await db.commit()
+        return len(pairs)
+    finally:
+        await _release(db)
+
+
+async def dedup_pending(limit: int = 1):
+    """Слова в очереди фонового дедупа (dedup_done=0, есть эмбеддинг). Новые — первыми (id DESC).
+    Возвращает [(id, norwegian, data, embedding_raw)]."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, norwegian, data, embedding FROM word_pool "
+            "WHERE COALESCE(dedup_done, 0) = 0 AND embedding IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return [(r["id"], r["norwegian"], r["data"], r["embedding"]) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def mark_dedup(pool_id: int):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET dedup_done = 1 WHERE id = ?", (pool_id,))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def pool_usage_count(pool_id: int):
+    """Сколько раз слово используется в словарях (популярность)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT COUNT(*) c FROM dict_words WHERE pool_id = ?", (pool_id,)) as cur:
+            return (await cur.fetchone())["c"]
+    finally:
+        await _release(db)
+
+
+async def nearest_other(pool_id: int, embedding_raw, k: int = 4):
+    """Ближайшие соседи по vec-индексу, кроме самого слова: [(id, norwegian, data, distance)].
+    distance — косинус-дистанция (cos = 1 - distance). [] если индекс недоступен/пуст."""
+    import numpy as np
+    from .core import _f16_to_f32_bytes
+    q = _f16_to_f32_bytes(embedding_raw, np)
+    if q is None:
+        return []
+    db = await _conn()
+    try:
+        try:
+            async with db.execute(
+                "SELECT rowid, distance FROM vec_words WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+                (q, k + 1),
+            ) as cur:
+                knn = await cur.fetchall()
+        except Exception:
+            return []
+        out = []
+        for r in knn:
+            if r["rowid"] == pool_id:
+                continue
+            async with db.execute("SELECT norwegian, data FROM word_pool WHERE id = ?", (r["rowid"],)) as c2:
+                w = await c2.fetchone()
+            if w:
+                out.append((r["rowid"], w["norwegian"], w["data"], r["distance"]))
+        return out
+    finally:
+        await _release(db)
+
+
+async def merge_pool_words(winner_id: int, loser_id: int):
+    """Слить loser в winner: перепривязать dict_words/user_words на победителя (OR IGNORE при
+    UNIQUE-конфликте), удалить остатки и сам loser из word_pool/word_topics/vec_words. True при успехе."""
+    if winner_id == loser_id:
+        return False
+    db = await _conn()
+    try:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("UPDATE OR IGNORE dict_words SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
+        await db.execute("UPDATE OR IGNORE user_words SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
+        await db.execute("DELETE FROM dict_words  WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM user_words  WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM word_topics WHERE pool_id = ?", (loser_id,))
+        try:
+            await db.execute("DELETE FROM vec_words WHERE rowid = ?", (loser_id,))
+        except Exception:
+            pass
+        await db.execute("DELETE FROM word_pool WHERE id = ?", (loser_id,))
+        await db.commit()
+        return True
+    finally:
+        await _release(db)
+
+
+async def dedup_progress():
+    """(проверено, всего) для отслеживания фонового дедупа."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COUNT(*) tot, SUM(CASE WHEN COALESCE(dedup_done,0)=1 THEN 1 ELSE 0 END) done "
+            "FROM word_pool WHERE embedding IS NOT NULL"
+        ) as cur:
+            r = await cur.fetchone()
+            return (r["done"] or 0, r["tot"] or 0)
+    finally:
+        await _release(db)
+
+
+async def get_pool_meta_all():
+    """[[id, norwegian, {lng:tr}, pop]] — лёгкие метаданные пула для дедупа (без векторов)."""
+    db = await _conn()
+    try:
+        pop = {}
+        async with db.execute("SELECT pool_id, COUNT(*) c FROM dict_words GROUP BY pool_id") as cur:
+            for r in await cur.fetchall():
+                pop[r["pool_id"]] = r["c"]
+        out = []
+        async with db.execute("SELECT id, norwegian, data FROM word_pool WHERE embedding IS NOT NULL") as cur:
+            for r in await cur.fetchall():
+                try:
+                    t = (json.loads(r["data"]) if r["data"] else {}).get("translate", {}) or {}
+                except Exception:
+                    t = {}
+                tr = {lng: t[lng][0] for lng in ("ru", "en", "ukr") if t.get(lng)}
+                out.append([r["id"], r["norwegian"], tr, pop.get(r["id"], 0)])
+        return out
+    finally:
+        await _release(db)
+
+
 async def pool_missing_embedding(limit: int = 1):
     db = await _conn()
     try:
@@ -448,7 +664,7 @@ async def get_pool_meta(word: str):
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT id, level, data, forms, (tts IS NOT NULL) AS has_tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute("SELECT id, level, data, forms, freq, (tts IS NOT NULL) AS has_tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
             row = await cur.fetchone()
             if not row:
                 return None
@@ -461,6 +677,7 @@ async def get_pool_meta(word: str):
             "translate": d.get("translate", {}),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
             "hasTts": bool(row["has_tts"]),
+            "freq": row["freq"], "freqBand": freq_band(row["freq"]),
         }
     finally:
         await _release(db)
@@ -841,10 +1058,29 @@ async def search_pool(prefix: str, limit: int = 10):
             (key + "%", "%" + key + "%", key + "%", limit),
         ) as cur:
             rows = await cur.fetchall()
-            out = []
+            out, have = [], set()
             for r in rows:
                 d = json.loads(r["data"]) if r["data"] else {}
-                out.append({"word": r["norwegian"], "translate": d.get("translate", {}), "part_of_speech": d.get("part_of_speech", "")})
+                have.add(r["norwegian"].lower())
+                out.append({"word": r["norwegian"], "translate": d.get("translate", {}),
+                            "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
+            # добор из полного лексикона (слова, которых ещё нет в пуле) — по префиксу, частотные сначала
+            if len(out) < limit:
+                try:
+                    async with db.execute(
+                        "SELECT word, zipf FROM nb_lexicon WHERE word >= ? AND word < ? "
+                        "ORDER BY zipf DESC LIMIT ?",
+                        (key, key + "￿", limit * 3),
+                    ) as cur2:
+                        for r in await cur2.fetchall():
+                            if r["word"].lower() in have:
+                                continue
+                            out.append({"word": r["word"], "translate": {}, "part_of_speech": "",
+                                        "inPool": False, "freq": r["zipf"], "freqBand": freq_band(r["zipf"])})
+                            if len(out) >= limit:
+                                break
+                except Exception:
+                    pass
             return out
     finally:
         await _release(db)

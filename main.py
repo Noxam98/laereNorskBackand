@@ -12,8 +12,8 @@ from routers.pool import router as pool_router
 from online import router as online_router
 from routers.learning import router as learning_router
 from autofill import (
-    autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop,
-    AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC,
+    autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
+    AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
 )
 
 app = FastAPI()
@@ -83,6 +83,11 @@ async def startup():
         logger.info("pos queue enabled: переразметка части речи у «прочее»")
         asyncio.create_task(forms_loop())
         logger.info("forms queue enabled: грамматические формы по части речи")
+        if DEDUP_ENABLED:
+            asyncio.create_task(dedup_loop())
+            logger.info("dedup queue enabled: фоновое слияние слов-дублей пула")
+        asyncio.create_task(freq_loop())
+        logger.info("freq queue enabled: простановка частотности слов (Zipf)")
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")

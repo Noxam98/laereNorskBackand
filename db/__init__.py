@@ -19,6 +19,9 @@ from .users import (
 from .pool import (
     get_or_create_pool, get_pool_id, get_pool_by_id,
     get_pool_tts, set_pool_tts, set_pool_embedding, get_pool_embeddings_raw,
+    get_pool_embeddings_page, get_pool_meta_all,
+    dedup_pending, mark_dedup, pool_usage_count, nearest_other, merge_pool_words, dedup_progress,
+    freq_pending, set_pool_freq, set_pool_freq_bulk, pool_by_freq, freq_band,
     pool_missing_embedding, pool_missing_tts, tr_tts_pending, mark_tr_tts_done,
     translate_pending, mark_translate_done, update_pool_translate, update_pool_word, replace_pool_word,
     sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter, get_pool_duel_words, get_pool_words_by_names,

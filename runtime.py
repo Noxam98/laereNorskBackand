@@ -9,6 +9,7 @@ PAUSED = {
     "describe": False,   # генерация описаний (describe_loop)
     "forms": False,      # грамматические формы по части речи (forms_loop)
     "pos": False,        # переразметка части речи у «прочее» (pos_loop)
+    "dedup": False,      # фоновый дедуп пула: слияние слов-дублей (dedup_loop)
 }
 
 _SETTING_KEY = "paused"

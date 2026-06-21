@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import asyncio
 from datetime import datetime
@@ -15,6 +16,8 @@ from db import (
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
     pos_uncategorized, set_pool_pos, get_pool_words_by_names,
+    dedup_pending, mark_dedup, pool_usage_count, nearest_other, merge_pool_words,
+    freq_pending, set_pool_freq_bulk,
 )
 import llm  # текст/эмбеддинги через key-free API: ask_json/embed_texts/text_budget_left/...
 from llm import (
@@ -22,6 +25,7 @@ from llm import (
     WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
     NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA, POS_REFINE_SCHEMA, POS_KEYS,
     TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, LANG_NAMES, normalize_word_item, apply_item_meta,
+    DEDUP_SCHEMA,
 )
 from tts import synth_tts, _tts_lock
 from task import task
@@ -412,6 +416,126 @@ async def reembed_loop():
                 await asyncio.sleep(60)  # 429/ошибка батча — переждём (RPM/квота), повторим
         except Exception as e:
             errors.report(e, "reembed_loop")
+            await asyncio.sleep(30)
+
+
+# --- Фоновый дедуп пула: слияние слов-дублей (вариантов написания одного слова) ---
+DEDUP_ENABLED = os.getenv("DEDUP_ENABLED", "true").lower() == "true"
+DEDUP_COS = float(os.getenv("DEDUP_COS", "0.93"))         # порог близости (cos), выше — кандидат на дубль
+DEDUP_CHECK_SEC = int(os.getenv("DEDUP_CHECK_SEC", "20"))  # пауза между проверками (под RPM LLM)
+_DEDUP_SYS = (
+    "Ты — авторитетный лексикограф норвежского (bokmål). Тебе дают два норвежских слова с переводами. "
+    "Реши, это ОДНО И ТО ЖЕ слово, записанное по-разному (вариант орфографии, диакритики, диалектная "
+    "форма ОДНОГО слова, опечатка) с идентичным значением и частью речи — или РАЗНЫЕ слова/синонимы/"
+    "грамматические формы. Дубль ставь только при полной уверенности. Отвечай строго по схеме."
+)
+
+
+def _tr_brief(data):
+    """Краткая строка переводов из data для промпта."""
+    try:
+        t = (data if isinstance(data, dict) else json.loads(data or "{}")).get("translate", {}) or {}
+    except Exception:
+        t = {}
+    out = [f"{lng}:{t[lng][0]}" for lng in ("ru", "en", "ukr") if t.get(lng)]
+    return ", ".join(out) or "—"
+
+
+async def dedup_loop():
+    """По одному слову из очереди (новые первыми): ищем ближайшего соседа по смыслу; если очень
+    близко и LLM подтверждает, что это один и тот же слово в другом написании — сливаем (оставляем
+    более используемый/каноничный вариант, второй удаляем). Флаг word_pool.dedup_done."""
+    await asyncio.sleep(45)
+    while True:
+        if runtime.PAUSED.get("dedup"):
+            await asyncio.sleep(30); continue
+        try:
+            pend = await dedup_pending(1)
+            if not pend:
+                await asyncio.sleep(300)  # очередь пуста — ждём дольше
+                continue
+            if not llm.text_available("autofill"):
+                await asyncio.sleep(300)  # квота/ключи кончились
+                continue
+            pid, no, data, emb = pend[0]
+            neighbors = await nearest_other(pid, emb, 4)
+            cand = [n for n in neighbors if (1.0 - n[3]) >= DEDUP_COS]  # distance → cos
+            if not cand:
+                await mark_dedup(pid)
+                await asyncio.sleep(2)
+                continue
+            nid, nno, ndata, _dist = cand[0]
+            user = (f"Слово A: «{no}» ({_tr_brief(data)})\n"
+                    f"Слово B: «{nno}» ({_tr_brief(ndata)})")
+            res = await ask_json(_DEDUP_SYS, user, DEDUP_SCHEMA, purpose="autofill",
+                                 label=f"дедуп «{no}»≈«{nno}»")
+            if res and res.get("duplicate"):
+                canon = (res.get("canonical") or "").strip()
+                ua, ub = await pool_usage_count(pid), await pool_usage_count(nid)
+                if ua != ub:
+                    winner, loser = (pid, nid) if ua > ub else (nid, pid)
+                elif canon == no:
+                    winner, loser = pid, nid
+                elif canon == nno:
+                    winner, loser = nid, pid
+                else:
+                    winner, loser = (nid, pid) if nid < pid else (pid, nid)  # оставить старшее (меньший id)
+                await merge_pool_words(winner, loser)
+                await mark_dedup(winner)
+                logger.info(f"dedup: «{no}»≈«{nno}» → оставлен id{winner}, удалён id{loser}")
+            else:
+                await mark_dedup(pid)
+            await asyncio.sleep(DEDUP_CHECK_SEC)
+        except Exception as e:
+            errors.report(e, "dedup_loop")
+            await asyncio.sleep(30)
+
+
+# --- Частотность слов по корпусу (Zipf из статического словаря) ---
+_NB_ZIPF = None
+
+
+def _load_zipf():
+    global _NB_ZIPF
+    if _NB_ZIPF is None:
+        path = os.path.join(os.path.dirname(__file__), "data", "nb_zipf.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                _NB_ZIPF = json.load(f)
+        except Exception as e:
+            logger.warning(f"nb_zipf.json не загружен: {e}")
+            _NB_ZIPF = {}
+    return _NB_ZIPF
+
+
+def _free_zipf():
+    """Освободить словарь частот (≈45МБ) — держим в RAM только во время добора."""
+    global _NB_ZIPF
+    _NB_ZIPF = None
+
+
+async def freq_loop():
+    """Проставляет частотность (Zipf 0..8) словам без неё из статического корпус-словаря.
+    Без LLM/сети. Словарь грузится только когда есть работа и освобождается в простое —
+    в покое RAM ≈ 0. Слово вне корпуса → 0.0 (очень редкое). Покрывает бэкафилл и новые слова."""
+    await asyncio.sleep(35)
+    while True:
+        try:
+            pend = await freq_pending(500)
+            if not pend:
+                _free_zipf()                 # работы нет — отдаём память
+                await asyncio.sleep(900)
+                continue
+            z = _load_zipf()
+            if not z:
+                return
+            pairs = [(pid, float(z.get((no or "").strip().lower(), 0.0))) for pid, no in pend]
+            n = await set_pool_freq_bulk(pairs)
+            if n:
+                logger.info(f"freq: проставлено {n}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            errors.report(e, "freq_loop")
             await asyncio.sleep(30)
 
 

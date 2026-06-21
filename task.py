@@ -57,7 +57,7 @@ JSON-массив, где каждый элемент соответствует
             "pl" ["tłumaczenie 1", "tłumaczenie 2"],
             "en" ["translate 1", "translate 2"],
         },
-        "part_of_speech": "noun/verb/adjective/adverb/phrase",
+        "part_of_speech": "РОВНО ОДНА часть речи (один ключ): noun|verb|adjective|adverb|preposition|conjunction|pronoun|determiner|numeral|interjection|phrase",
         "level": "уровень CEFR: A1/A2/B1/B2/C1/C2",
         "topics": ["1-3 темы из списка: family, food, home, work, school, travel, health, body, clothing, nature, animals, weather, city, transport, shopping, time, sport, hobby, technology, communication, emotions, holidays, society, other"]
     }
@@ -65,6 +65,12 @@ JSON-массив, где каждый элемент соответствует
 Правила:
 
     Поля "level" и "topics" указывай для каждого слова: level — один уровень CEFR по частотности/сложности; topics — 1-3 ключа СТРОГО из приведённого списка.
+
+    ОДНО ЗНАЧЕНИЕ НА СЛОВО (важно для карточек обучения): если у норвежского слова несколько
+    несвязанных значений/частей речи (омограф, напр. "helt" = герой/совсем, "tre" = дерево/три,
+    "fly" = лететь/самолёт), выбери ОДНО — самое частотное в современном повседневном норвежском.
+    "part_of_speech" — ровно одна часть речи этого значения (НЕ "noun/adverb"). Переводы давай ТОЛЬКО
+    для выбранного значения (моносемичные, 1-3 синонима одного смысла), не смешивай разные смыслы.
 
     Если перевод слова невозможен, вместо объекта со словом верни объект с описанием ошибки:
 
@@ -87,7 +93,9 @@ JSON-массив, где каждый элемент соответствует
 
     Для запросов на генерацию слов возвращай массив с указанным количеством элементов 1 (и больше).
 
-    Части речи указывай на норвежском (substantiv, verb, adjektiv, adverb, konjukjson и т.д.).
+    Часть речи указывай ОДНИМ ключом из набора (англ., нижний регистр): noun, verb, adjective,
+    adverb, preposition, conjunction, pronoun, determiner, numeral, interjection, phrase.
+    НЕ перечисляй несколько через "/" или запятую — только одна часть речи.
     '''
 
 

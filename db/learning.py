@@ -987,7 +987,7 @@ async def suggest_words(user_id, count=10, level=None):
     в СКРЫТЫЙ авто-словарь (hidden=1, studying=1) — чтобы не засорять личные словари, но они
     были видны в Учёбе. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
     Гейт ворот: пока несданная пачка открыта на экзамен — приток новых слов закрыт."""
-    from .pool import get_pool_duel_words, get_pool_id
+    from .pool import pool_by_freq
     from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
     if await new_words_blocked(user_id):
         return {"added": 0, "words": [], "level": None, "blocked": True}
@@ -1001,13 +1001,13 @@ async def suggest_words(user_id, count=10, level=None):
             have = {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
-    # кандидаты по уровню, с запасом, исключаем уже имеющиеся
-    cand = await get_pool_duel_words(max(count * 4, 40), lvl, None)
+    # кандидаты по уровню, отсортированы по ЧАСТОТНОСТИ (самые употребимые сначала), с запасом
+    cand = await pool_by_freq(max(count * 12, 120), lvl)
     added = []
     for w in cand:
         if len(added) >= count:
             break
-        pid = await get_pool_id(w["norwegian"])
+        pid = w["pool_id"]
         if not pid or pid in have:
             continue
         res = await add_word_to_dict(user_id, target_id, pid)

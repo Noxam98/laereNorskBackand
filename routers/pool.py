@@ -124,6 +124,30 @@ async def admin_delete_word(word: str, user=Depends(get_admin_user)):
     return {"ok": True}
 
 
+@router.get("/admin/embeddings")
+async def admin_embeddings(limit: int = 1000, offset: int = 0, user=Depends(get_admin_user)):
+    """Постраничная выгрузка векторов пула: {"items": [[id, hex(embedding)], ...]}. Только админ."""
+    from db import get_pool_embeddings_page
+    return {"items": await get_pool_embeddings_page(limit, offset)}
+
+
+@router.get("/admin/dedup_status")
+async def admin_dedup_status(user=Depends(get_admin_user)):
+    """Прогресс фонового дедупа: сколько слов проверено из всех с эмбеддингом + на паузе ли."""
+    from db import dedup_progress
+    import runtime
+    done, total = await dedup_progress()
+    return {"checked": done, "total": total, "remaining": total - done,
+            "paused": runtime.PAUSED.get("dedup", False)}
+
+
+@router.get("/admin/pool_meta")
+async def admin_pool_meta(user=Depends(get_admin_user)):
+    """Лёгкие метаданные пула для дедупа: [[id, norwegian, {lng:tr}, pop], ...]. Только админ."""
+    from db import get_pool_meta_all
+    return {"items": await get_pool_meta_all()}
+
+
 @router.post("/admin/describe_all")
 async def admin_describe_all(user=Depends(get_admin_user)):
     """Запустить фоновую пакетную догенерацию описаний для всех слов без описания."""

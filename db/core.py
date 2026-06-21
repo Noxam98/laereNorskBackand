@@ -1,6 +1,7 @@
 import aiosqlite
 import os
 import asyncio
+import json
 import logging
 from datetime import datetime
 
@@ -213,6 +214,16 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN forms TEXT")
         except Exception:
             pass
+        # флаг: слово проверено фоновым дедупом на дубль-вариант написания. 0/NULL = в очереди.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN dedup_done INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        # частотность слова по корпусу (Zipf 0..8, выше = употребимее). NULL = ещё не проставлена.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN freq REAL")
+        except Exception:
+            pass
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""
@@ -225,6 +236,23 @@ async def init_db():
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_word_pool_level ON word_pool(level)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_word_pool_level_freq ON word_pool(level, freq)")
+
+        # Лексикон bokmål (полный частотный словарь) — для автодополнения словами, которых
+        # ещё нет в нашем пуле. Сидинг один раз из data/nb_zipf.json. word PRIMARY KEY → префикс.
+        await db.execute("CREATE TABLE IF NOT EXISTS nb_lexicon (word TEXT PRIMARY KEY, zipf REAL)")
+        try:
+            seeded = (await (await db.execute("SELECT COUNT(*) FROM nb_lexicon")).fetchone())[0]
+            if not seeded and os.getenv("NB_LEXICON_SEED", "1") == "1":
+                import os as _os
+                path = _os.path.join(_os.path.dirname(__file__), "..", "data", "nb_zipf.json")
+                with open(path, encoding="utf-8") as f:
+                    z = json.load(f)
+                await db.executemany("INSERT OR IGNORE INTO nb_lexicon(word, zipf) VALUES (?,?)", list(z.items()))
+                await db.commit()
+                logger.info(f"nb_lexicon seeded: {len(z)} words")
+        except Exception as e:
+            logger.warning(f"nb_lexicon seed: {e}")
 
         # Кэш запросов генерации.
         await db.execute("""

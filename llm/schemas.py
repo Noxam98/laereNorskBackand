@@ -35,6 +35,11 @@ CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 # Названия языков перевода (ключ интерфейса → язык на русском для промпта).
 LANG_NAMES = {"ru": "русский", "ukr": "украинский", "en": "английский", "pl": "польский", "lt": "литовский"}
 
+# Канонические части речи (bokmål). Ключи — стабильные, англ.; UI-подписи во фронте.
+# Одно слово — ОДНА часть речи (омографы сводим к самому частотному значению).
+POS_KEYS = ["noun", "verb", "adjective", "adverb", "preposition",
+            "conjunction", "pronoun", "determiner", "numeral", "interjection", "phrase"]
+
 # Схемы для гарантированного формата ответа (structured output / JSON-schema).
 _STR_ARR = {"type": "array", "items": {"type": "string"}}
 
@@ -53,7 +58,7 @@ WORDS_SCHEMA = {
                             "type": "object",
                             "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
                         },
-                        "part_of_speech": {"type": "string"},
+                        "part_of_speech": {"type": "string", "enum": POS_KEYS},
                         "level": {"type": "string", "enum": CEFR_LEVELS},
                         "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}},
                     },
@@ -75,6 +80,23 @@ DESC_SCHEMA = {
 }
 
 # Разница между двумя норвежскими словами (на языке пользователя).
+DEDUP_SCHEMA = {
+    "name": "dedup_judgement",
+    "schema": {
+        "type": "object",
+        "properties": {
+            # true ТОЛЬКО если A и B — одно и то же норв. слово в разных написаниях
+            # (вариант орфографии/диакритики/диалекта/опечатка) с идентичным значением И частью речи.
+            # Синонимы, родственные но разные слова, разные грам.формы → false.
+            "duplicate": {"type": "boolean"},
+            # каноничное современное стандартное bokmål написание из пары — ровно A или B
+            # (или корректное bokmål, если оба с ошибкой); пусто если duplicate=false.
+            "canonical": {"type": "string"},
+        },
+        "required": ["duplicate", "canonical"],
+    },
+}
+
 DIFF_SCHEMA = {
     "name": "word_diff_response",
     "schema": {
@@ -186,10 +208,6 @@ TRANSLATE_BATCH_SCHEMA = {
         "required": ["results"],
     },
 }
-
-# Канонические части речи (bokmål). Ключи — стабильные, англ.; UI-подписи во фронте.
-POS_KEYS = ["noun", "verb", "adjective", "adverb", "preposition",
-            "conjunction", "pronoun", "determiner", "numeral", "interjection", "phrase"]
 
 # Переразметка части речи: для слов с пустой/нераспознанной part_of_speech.
 POS_REFINE_SCHEMA = {

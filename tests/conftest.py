@@ -10,6 +10,7 @@ import asyncio
 import json
 
 os.environ["DB_POOL_SIZE"] = "0"
+os.environ["NB_LEXICON_SEED"] = "0"   # не сидим 318k-лексикон в тестах
 os.environ.setdefault("DATABASE_PATH", tempfile.mktemp(suffix=".db"))
 
 import pytest  # noqa: E402
