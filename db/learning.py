@@ -357,7 +357,53 @@ async def get_due(user_id, limit=20):
 WIP_LIMIT = 20   # лимит слов одновременно-в-работе (new+learning); новые не вводим сверх него
 
 
-async def build_session(user_id, size=20):
+async def _attach_choice_options(session, lang, n=3):
+    """Для choice-элементов сессии дотягиваем варианты ответа (как /pool/{id}/distractors),
+    чтобы фронт получил ВСЁ нужное одним запросом и не догружал ничего во время сессии.
+    Мутирует элементы: добавляет options=[{w,alt}] и distractors=[w]. Семантически близкие
+    по эмбеддингам (ANN). lang — язык переводов-вариантов, direction — у каждого элемента."""
+    choice = [e for e in session if e.get("mode") == "choice"]
+    if not choice:
+        return
+    from llm import ranked_pool  # ленивый импорт — избегаем цикла импортов на старте
+    # эмбеддинги нужных слов — одним запросом
+    pids = [e["pool_id"] for e in choice]
+    emb = {}
+    db = await _conn()
+    try:
+        marks = ",".join("?" for _ in pids)
+        async with db.execute(f"SELECT id, embedding FROM word_pool WHERE id IN ({marks})", pids) as cur:
+            for r in await cur.fetchall():
+                emb[r["id"]] = r["embedding"]
+    finally:
+        await _release(db)
+
+    def answer_of(d, no, direction):
+        # до ДВУХ вариантов ответа: (основной, второй|None)
+        if direction == "int2no":
+            return (no, None)
+        tr = ((d or {}).get("translate", {}) or {}).get(lang) or []
+        return (tr[0] if tr else None, tr[1] if len(tr) > 1 else None)
+
+    for e in choice:
+        direction = e.get("direction") or "int2no"
+        no = e.get("no") or ""
+        data = {"translate": e.get("translate", {})}
+        correct = no if direction == "int2no" else answer_of(data, no, direction)[0]
+        correct_l = (correct or "").strip().lower()
+        ordered = await ranked_pool(emb.get(e["pool_id"]), no, 40) if emb.get(e["pool_id"]) else []
+        out, seen = [], {correct_l}
+        for c in ordered:
+            a, alt = answer_of(c.get("data"), c.get("norwegian"), direction)
+            if a and a.strip().lower() not in seen:
+                out.append({"w": a, "alt": alt}); seen.add(a.strip().lower())
+            if len(out) >= n:
+                break
+        e["options"] = out
+        e["distractors"] = [o["w"] for o in out]
+
+
+async def build_session(user_id, size=20, lang="ru"):
     """Программа занятия, которую готовит СИСТЕМА (без выбора режима игроком).
     Приоритет пулов:
       (1) возвращённые на доучивание / слабые с лапсами (errored, вернулись в учёбу),
@@ -449,13 +495,16 @@ async def build_session(user_id, size=20):
             session.append({
                 "pool_id": pid, "no": e["row"]["norwegian"],
                 "translate": data.get("translate", {}),
+                "part_of_speech": data.get("part_of_speech", ""),
                 "mode": mode, "direction": direction, "step": cell,
             })
             seen.add(pid)
             if attempts(e) == 0:
                 in_work += 1   # ввели новое — слот занят
             if len(session) >= size:
+                await _attach_choice_options(session, lang)
                 return {"words": session}
+    await _attach_choice_options(session, lang)
     return {"words": session}
 
 

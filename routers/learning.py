@@ -36,10 +36,12 @@ async def learning_due_route(limit: int = 20, user=Depends(get_current_user)):
 
 
 @router.get("/learning/session")
-async def learning_session_route(size: int = 20, user=Depends(get_current_user)):
+async def learning_session_route(size: int = 20, lang: str = "ru", user=Depends(get_current_user)):
     """Программа занятия от системы: каждое слово со СЛЕДУЮЩЕЙ ступенью рампы
-    (mode/direction/step). Режим не выбирает игрок — приоритеты ведёт сервер."""
-    return await learning_session(user["id"], size=max(1, min(50, size)))
+    (mode/direction/step). Режим не выбирает игрок — приоритеты ведёт сервер.
+    Для choice-элементов варианты ответа (options) кладём прямо в ответ (lang) —
+    чтобы фронт не делал отдельных запросов за дистракторами во время сессии."""
+    return await learning_session(user["id"], size=max(1, min(50, size)), lang=lang)
 
 
 @router.get("/learning/activity")

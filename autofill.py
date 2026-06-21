@@ -524,7 +524,7 @@ async def freq_loop():
             pend = await freq_pending(500)
             if not pend:
                 _free_zipf()                 # работы нет — отдаём память
-                await asyncio.sleep(900)
+                await asyncio.sleep(120)     # подстраховка (freq ставится при вставке слова)
                 continue
             z = _load_zipf()
             if not z:

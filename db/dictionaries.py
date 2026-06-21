@@ -1,6 +1,7 @@
 import json
 import aiosqlite
 from .core import _conn, _release, _now
+from .pool import freq_band
 
 
 async def get_user_quiz_words(user_id: int, dict_id=None, limit: int = 80):
@@ -270,6 +271,7 @@ def _build_word(row):
     forms_raw = row["forms"] if "forms" in row.keys() else None
     return {
         "id": row["dw_id"],
+        "pool_id": (row["pool_id"] if "pool_id" in row.keys() else None),
         "word": base.get("word"),
         "translate": base.get("translate", {}),
         "part_of_speech": base.get("part_of_speech", ""),
@@ -277,6 +279,8 @@ def _build_word(row):
         "description": {"description": desc} if desc else None,
         "descriptionState": "loaded" if desc else "empty",
         "hasTts": bool(row["has_tts"]),
+        "freq": (row["freq"] if "freq" in row.keys() else None),
+        "freqBand": freq_band(row["freq"] if "freq" in row.keys() else None),
         "gameData": {"correctFirstTry": row["correct"], "incorrectFirstTry": row["incorrect"], "isChoosedToGame": False},
         "techData": {"isSelected": False},
     }
@@ -292,8 +296,8 @@ async def get_user_data(user_id: int):
         result = []
         for d in dicts:
             async with db.execute("""
-                SELECT dw.id AS dw_id, dw.override, dw.correct, dw.incorrect,
-                       wp.data, wp.description, wp.forms, (wp.tts IS NOT NULL) AS has_tts
+                SELECT dw.id AS dw_id, dw.pool_id, dw.override, dw.correct, dw.incorrect,
+                       wp.data, wp.description, wp.forms, wp.freq, (wp.tts IS NOT NULL) AS has_tts
                 FROM dict_words dw
                 JOIN word_pool wp ON wp.id = dw.pool_id
                 WHERE dw.dict_id = ?

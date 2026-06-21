@@ -16,9 +16,11 @@ async def get_or_create_pool(norwegian: str, data: dict):
             row = await cur.fetchone()
             if row:
                 return row["id"]
+        # частотность проставляем СРАЗУ при создании — из корпус-лексикона (нет в нём → 0.0)
         cur = await db.execute(
-            "INSERT INTO word_pool (norwegian, data, created_at) VALUES (?, ?, ?)",
-            (key, json.dumps(data, ensure_ascii=False), _now()),
+            "INSERT INTO word_pool (norwegian, data, created_at, freq) "
+            "VALUES (?, ?, ?, COALESCE((SELECT zipf FROM nb_lexicon WHERE word = ?), 0.0))",
+            (key, json.dumps(data, ensure_ascii=False), _now(), key),
         )
         await db.commit()
         return cur.lastrowid
@@ -885,6 +887,8 @@ _POOL_SORTS = {
     # уровень: A1<…<C2, непроставленные в конец; добор по алфавиту
     "level": "CASE level WHEN 'A1' THEN 1 WHEN 'A2' THEN 2 WHEN 'B1' THEN 3 "
              "WHEN 'B2' THEN 4 WHEN 'C1' THEN 5 WHEN 'C2' THEN 6 ELSE 99 END, norwegian",
+    # частотность: добор по алфавиту; направление (часто/редко сначала) — кнопкой порядка
+    "freq": "COALESCE(freq, -1), norwegian",
 }
 
 

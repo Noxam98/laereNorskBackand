@@ -327,6 +327,46 @@ async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", user=Depends(ge
     return {"synonyms": out}
 
 
+@router.get("/pool/{pool_id}/distractors")
+async def pool_distractors(pool_id: int, n: int = 3, mode: str = "no2int", lang: str = "ru", user=Depends(get_current_user)):
+    """Неправильные варианты для «выбора» по слову ПУЛА (для системной сессии «Учёбы»):
+    семантически близкие по эмбеддингам, иначе той же части речи. mode no2int|int2no."""
+    import random
+    from db import get_pool_candidates
+    p = await get_pool_by_id(pool_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Not found")
+    data = p["data"] or {}   # get_pool_by_id уже отдаёт data распарсенным
+    target_pos = data.get("part_of_speech", "")
+    norwegian = data.get("word") or ((data.get("translate", {}) or {}).get("no") or [""])[0]
+
+    def answer_of(d, no):
+        # вернуть до ДВУХ вариантов ответа: (основной, второй|None)
+        if mode == "int2no":
+            return (no, None)
+        tr = (d.get("translate", {}) or {}).get(lang) or []
+        return (tr[0] if tr else None, tr[1] if len(tr) > 1 else None)
+
+    correct = norwegian if mode == "int2no" else answer_of(data, norwegian)[0]
+    correct_l = (correct or "").strip().lower()
+    ordered = await ranked_pool(p["embedding"], norwegian, 40) if p.get("embedding") else []
+    if not ordered:
+        cands = [c for c in await get_pool_candidates() if c["norwegian"] != norwegian]
+        same = [c for c in cands if c["data"].get("part_of_speech") == target_pos]
+        other = [c for c in cands if c["data"].get("part_of_speech") != target_pos]
+        random.shuffle(same); random.shuffle(other)
+        ordered = same + other
+    out, seen = [], {correct_l}
+    for c in ordered:
+        a, alt = answer_of(c["data"], c["norwegian"])
+        if a and a.strip().lower() not in seen:
+            out.append({"w": a, "alt": alt}); seen.add(a.strip().lower())
+        if len(out) >= n:
+            break
+    # обратная совместимость + богатый формат
+    return {"distractors": [o["w"] for o in out], "options": out}
+
+
 _DIFF_LANG_NAMES = {"ru": "русском", "ukr": "украинском", "en": "English", "pl": "polskim", "lt": "lietuvių"}
 _DIFF_LANGS = {"ru", "ukr", "en", "pl", "lt"}
 
