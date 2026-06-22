@@ -374,6 +374,19 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """)
+        # Кэш cloze-заданий для служебных слов (персонально, из выученных слов юзера).
+        # data = JSON [{blank, answer, options:[...]}], 3 предложения. Чистится при reset/удалении.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS cloze_cache (
+            user_id INTEGER NOT NULL,
+            pool_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, pool_id),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
+        )
+        """)
         await db.execute("PRAGMA journal_mode = WAL")  # параллельные чтения + один писатель
         await db.commit()
 

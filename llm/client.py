@@ -112,12 +112,15 @@ async def ask_model(system_prompt, user_prompt, model=None, api_key=None):
 
 
 async def ask_json(system_prompt, user_prompt, schema, purpose="user", label="LLM-запрос", model=None,
-                   temperature=None):
+                   temperature=None, max_tokens=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста.
     purpose — профиль ("user" | "autofill"); model — override; temperature — для детерминизма
-    (0 = стабильный вывод, напр. грамм. формы). Ключ/429 — внутри."""
+    (0 = стабильный вывод, напр. грамм. формы). max_tokens — ВАЖНО для cloze: ограничивает вывод
+    (без него reasoning-модели зависают/обрезают JSON). Ключ/429 — внутри."""
     msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     extra = {} if temperature is None else {"temperature": temperature}
+    if max_tokens is not None:
+        extra["max_tokens"] = max_tokens
 
     async def attempt(m, key):
         client = get_client().with_options(api_key=key or "not-needed")

@@ -576,6 +576,98 @@ async def build_session(user_id, size=20, lang="ru"):
     return {"words": session}
 
 
+# ---------------- cloze для служебных слов (A1, Ф4) ----------------
+CLOZE_N = 3
+_CLOZE_SCHEMA = {"name": "cloze", "schema": {"type": "object", "properties": {"items": {"type": "array", "items": {
+    "type": "object", "properties": {
+        "blank": {"type": "string"}, "answer": {"type": "string"},
+        "used": {"type": "array", "items": {"type": "string"}}},
+    "required": ["blank", "answer", "used"]}}}, "required": ["items"]}}
+_CLOZE_SYS = ("Du er norsklærer for nivå A1. Lag 3 FORSKJELLIGE, enkle, naturlige setninger på bokmål (≤7 ord) "
+              "som hver bruker målordet. Bruk ELLERS BARE ord fra lista over kjente ord (bøyning er lov). "
+              "For hver: blank (setningen med ___ i stedet for målordet), answer (=målordet), "
+              "used (grunnformene du brukte, utenom målordet). Korrekt grammatikk. Kun JSON etter skjema.")
+
+
+async def get_cloze_map(db, user_id, pool_ids):
+    """Кэш cloze для набора слов → {pool_id: [items]}; items=[{blank, answer, options}]."""
+    if not pool_ids:
+        return {}
+    marks = ",".join("?" for _ in pool_ids)
+    out = {}
+    async with db.execute(f"SELECT pool_id, data FROM cloze_cache WHERE user_id=? AND pool_id IN ({marks})",
+                          [user_id, *pool_ids]) as cur:
+        for r in await cur.fetchall():
+            try: out[r["pool_id"]] = json.loads(r["data"])
+            except Exception: pass
+    return out
+
+
+async def _mastered_words(db, user_id):
+    """Норвежские формы ВЫУЧЕННЫХ (mastered) слов юзера — допустимый словарь для cloze-предложений."""
+    rows = await _fetch_user_words(db, user_id)
+    out = []
+    for r in rows:
+        try: modes = json.loads(r.get("modes") or "{}")
+        except Exception: modes = {}
+        if status_of(r, modes) == "mastered":
+            out.append(r["norwegian"])
+    return out
+
+
+async def generate_cloze(user_id, pool_id):
+    """Сгенерировать и закэшировать CLOZE_N cloze-предложений для служебного слова из ВЫУЧЕННЫХ слов
+    юзера. Лениво/в фоне. Модель flash-lite (быстро, полный JSON), max_tokens ограничивает вывод."""
+    import random
+    from llm import ask_json
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id=?", (pool_id,)) as cur:
+            w = await cur.fetchone()
+        if not w:
+            return None
+        target = w["norwegian"]
+        try: wdata = json.loads(w["data"]) if w["data"] else {}
+        except Exception: wdata = {}
+        pos = (wdata.get("part_of_speech") or "").strip().lower()
+        allowed = await _mastered_words(db, user_id)
+        if len(allowed) < 4:
+            return None
+        distractors = []
+        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id != ?", (pool_id,)) as cur:
+            for rr in await cur.fetchall():
+                try: dd = json.loads(rr["data"]) if rr["data"] else {}
+                except Exception: dd = {}
+                if (dd.get("part_of_speech") or "").strip().lower() == pos and is_function_word(rr["norwegian"], dd):
+                    distractors.append(rr["norwegian"])
+    finally:
+        await _release(db)
+    random.shuffle(distractors)
+    allowed_s = ", ".join(sorted(set(allowed))[:60])
+    res = await ask_json(_CLOZE_SYS, f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}",
+                         _CLOZE_SCHEMA, purpose="user", label=f"cloze «{target}»",
+                         model="gemini-3.1-flash-lite", max_tokens=900)
+    raw = (res or {}).get("items") or []
+    items = []
+    for it in raw[:CLOZE_N]:
+        blank = (it.get("blank") or "").strip()
+        if "___" not in blank:
+            continue
+        opts = [target] + distractors[:3]
+        random.shuffle(opts)
+        items.append({"blank": blank, "answer": target, "options": opts})
+    if not items:
+        return None
+    db = await _conn()
+    try:
+        await db.execute("INSERT OR REPLACE INTO cloze_cache (user_id, pool_id, data, created_at) VALUES (?,?,?,?)",
+                         (user_id, pool_id, json.dumps(items, ensure_ascii=False), _now()))
+        await db.commit()
+    finally:
+        await _release(db)
+    return items
+
+
 # ---------------- зачётный экзамен-ворота (§2.4-A) ----------------
 
 def _is_certified(r):
