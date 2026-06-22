@@ -336,7 +336,7 @@ async def set_status(user_id: int, pool_id: int, action: str):
 async def _fetch_user_words(db, user_id):
     """Все слова пользователя (уникальные по пулу) + состояние SRS + темы."""
     async with db.execute("""
-        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, (wp.tts IS NOT NULL) AS has_tts,
+        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
                uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
@@ -698,15 +698,19 @@ async def get_cloze_map(db, user_id, pool_ids):
 
 
 async def _mastered_words(db, user_id):
-    """Норвежские формы ВЫУЧЕННЫХ (mastered) слов юзера — допустимый словарь для cloze-предложений."""
+    """Норвежские формы ВЫУЧЕННЫХ (mastered) слов юзера, ПО УБЫВАНИЮ ЧАСТОТНОСТИ (самые
+    употребимые/простые — первыми) — допустимый словарь для cloze-предложений. Частотный
+    порядок важен: алфавитный (как было) давал биас на редкие слова на «a…» (ansatte, arbeider)
+    и из них модель строила неестественные предложения."""
     rows = await _fetch_user_words(db, user_id)
     out = []
     for r in rows:
         try: modes = json.loads(r.get("modes") or "{}")
         except Exception: modes = {}
         if status_of(r, modes) == "mastered":
-            out.append(r["norwegian"])
-    return out
+            out.append((r["norwegian"], r.get("freq")))
+    out.sort(key=lambda x: (x[1] is None, -(x[1] or 0)))   # freq DESC; None — в хвост
+    return [no for (no, _f) in out]
 
 
 async def generate_cloze(user_id, pool_id):
@@ -740,7 +744,7 @@ async def generate_cloze(user_id, pool_id):
     finally:
         await _release(db)
     random.shuffle(distractors)
-    allowed_s = ", ".join(sorted(set(allowed))[:60])
+    allowed_s = ", ".join(list(dict.fromkeys(allowed))[:60])   # топ-60 частотных (порядок уже по freq)
     # Прямой вызов клиента (без _run-обёртки с SDK-ретраями/failover — она зависает на этом боксе).
     # max_retries=0 + timeout → быстрый отказ. Модель 3.5-flash (reasoning) даёт ОСМЫСЛЕННЫЕ
     # предложения (lite лепил словесный салат), но «размышления» жрут max_tokens и обрезают JSON —
