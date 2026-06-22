@@ -678,7 +678,9 @@ _CLOZE_SYS = ("Du er norsklærer på nivå A1. Lag 3 FORSKJELLIGE, korte (≤7 o
               "setninger på naturlig bokmål, der hver bruker målordet riktig. Bruk ellers bare ord fra "
               "lista over kjente ord (bøyning er lov), men VELG ordene slik at setningen faktisk GIR MENING "
               "— ikke sett sammen tilfeldige ord (f.eks. «Jeg arbeider istedenfor en brann» er FORBUDT, "
-              "meningsløst). Hver setning skal være noe en nordmann faktisk kan si. For hver: blank "
+              "meningsløst). Hver setning skal være noe en nordmann faktisk kan si og MÅ være KOMPLETT — "
+              "ikke avslutt med målordet hvis det trenger en fortsettelse (f.eks. «istedenfor X» — ta med X; "
+              "følg samme struktur som mønster-eksempelet). For hver: blank "
               "(setningen med ___ i stedet for målordet), answer (=målordet), used (grunnformene du brukte, "
               "utenom målordet). Korrekt grammatikk og ordstilling. Kun JSON etter skjema.")
 
@@ -771,8 +773,9 @@ async def generate_cloze(user_id, pool_id):
     from llm.client import get_client
     from llm.settings import LLM_API_KEYS
     client = get_client()
+    pattern = f" Riktig mønster (følg samme struktur): «{ex_no}»." if ex_no else ""
     msgs = [{"role": "system", "content": _CLOZE_SYS},
-            {"role": "user", "content": f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}"}]
+            {"role": "user", "content": f"Målord: «{target}» ({pos}).{pattern}\nKjente ord: {allowed_s}"}]
     raw = []
     for key in (LLM_API_KEYS or [""]):
         try:
