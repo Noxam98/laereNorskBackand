@@ -166,7 +166,13 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         if mode and mode != "study" and direction and direction in _DIR_ALLOWED.get(mode, ()):
             cell = f"{mode}_{direction}"
             if cell in REQUIRED_CELLS:
-                modes[cell] = "1" if correct else ""   # верно → пройдена; ошибка → сброс именно этой клетки
+                if correct:
+                    modes[cell] = "1"              # верно → ступень пройдена
+                else:
+                    modes[cell] = ""               # ошибка → текущая ступень сброшена
+                    i = REQUIRED_CELLS.index(cell)
+                    if i > 0:                      # ОТКАТ на одну ступень назад (не ниже первой клетки —
+                        modes[REQUIRED_CELLS[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
         strength = _strength_from(modes["hist"])
         if correct:
             fast = elapsed is not None and elapsed <= _FAST_SEC
