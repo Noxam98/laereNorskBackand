@@ -343,6 +343,19 @@ async def init_db():
             FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
         )
         """)
+        # Веб-пуш-подписки (напоминания «13ч бездействия»). Изолировано; логика в webpush.py.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            endpoint TEXT NOT NULL UNIQUE,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            last_reminded_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
         try:
             await db.execute("ALTER TABLE user_words ADD COLUMN certified INTEGER DEFAULT 0")  # слово сдало зачётный экзамен-ворота
         except Exception:

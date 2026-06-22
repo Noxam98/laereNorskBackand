@@ -12,3 +12,5 @@ edge-tts
 numpy
 sqlite-vec
 boto3
+pywebpush
+tzdata

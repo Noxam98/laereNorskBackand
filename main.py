@@ -27,6 +27,12 @@ app.include_router(words_router)
 app.include_router(pool_router)
 app.include_router(online_router)
 app.include_router(learning_router)
+# Веб-пуши — подключаем защищённо: если модуль/зависимость отвалятся, бэкенд всё равно поднимется.
+try:
+    from webpush import router as push_router
+    app.include_router(push_router)
+except Exception as _e:
+    logger.warning(f"web push router not loaded: {_e}")
 
 
 @app.on_event("startup")
@@ -91,6 +97,13 @@ async def startup():
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")
+    # Веб-пуши: напоминание «13ч бездействия». No-op, если VAPID-ключи не заданы. Защищённо.
+    try:
+        from webpush import reminder_loop as push_reminder_loop, configured as push_configured
+        asyncio.create_task(push_reminder_loop())
+        logger.info(f"web push reminders: {'ON' if push_configured() else 'OFF (no VAPID)'}")
+    except Exception as e:
+        logger.warning(f"web push reminders not started: {e}")
     # Очередь озвучки переводов в Tigris (если хранилище настроено).
     import storage
     from tts import tts_translation_loop
