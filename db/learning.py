@@ -889,25 +889,82 @@ async def new_words_blocked(user_id):
         await _release(db)
 
 
-def _gate_question(r, lang, distractor_pool):
-    """Вопрос-выбор: норвежское слово + 4 варианта перевода (как build_placement).
-    distractor_pool — список строк-переводов других слов для дистракторов."""
+def _exam_pools(rows, lang):
+    """Пулы дистракторов: переводы (no2int), норвежские слова (int2no), норвежские служебные (cloze)."""
+    tr_pool, no_pool, func_pool = [], [], []
+    for r in rows:
+        data = json.loads(r["data"]) if r.get("data") else {}
+        t = (data.get("translate", {}).get(lang) or [None])[0]
+        if t:
+            tr_pool.append(t)
+        no = r["norwegian"]
+        if no:
+            no_pool.append(no)
+            if is_function_word(no, data):
+                func_pool.append(no)
+    return tr_pool, no_pool, func_pool
+
+
+def _pick_distract(pool, exclude, n=3):
+    """n уникальных дистракторов из пула (в случайном порядке), исключая exclude (регистр игнор)."""
+    import random
+    seen = {x.strip().lower() for x in exclude}
+    out = []
+    for w in (random.sample(pool, len(pool)) if pool else []):
+        lw = (w or "").strip().lower()
+        if not lw or lw in seen:
+            continue
+        seen.add(lw); out.append(w)
+        if len(out) >= n:
+            break
+    return out
+
+
+def _exam_question(r, lang, tr_pool, no_pool, func_pool):
+    """Типизированный вопрос: cloze (служебные с примером) | int2no | no2int — все «выбор из 4».
+    Ответ сверяется типонезависимо (_exam_answer_ok: перевод ИЛИ норвежское слово)."""
     import random
     data = json.loads(r["data"]) if r.get("data") else {}
-    corr = (data.get("translate", {}).get(lang) or [None])[0]
-    if not corr:
+    no = r["norwegian"]
+    tr = data.get("translate", {}).get(lang) or []
+    corr_tr = tr[0] if tr else None
+    ex = data.get("example") or {}
+    ex_no = (ex.get("no") or "").strip() if isinstance(ex, dict) else ""
+
+    # cloze — для служебных слов с примером (пропуск + варианты-служебные)
+    if is_function_word(no, data) and ex_no:
+        blank = _blank_example(ex_no, no)
+        distract = _pick_distract(func_pool, {no}, 3)
+        if blank and len(distract) == 3:
+            opts = distract + [no]; random.shuffle(opts)
+            return {"type": "cloze", "blank": blank, "no": no, "pool_id": r["pool_id"], "options": opts}
+
+    if not corr_tr:
         return None
-    distract = []
-    for t in distractor_pool:
-        if t and t != corr and t not in distract:
-            distract.append(t)
+
+    # контентные: чередуем int2no / no2int
+    if random.random() < 0.5:
+        distract = _pick_distract(no_pool, {no}, 3)
         if len(distract) == 3:
-            break
+            opts = distract + [no]; random.shuffle(opts)
+            return {"type": "int2no", "prompt": corr_tr, "no": no, "pool_id": r["pool_id"], "options": opts}
+
+    distract = _pick_distract(tr_pool, {corr_tr}, 3)
     if len(distract) < 3:
         return None
-    opts = distract + [corr]
-    random.shuffle(opts)
-    return {"no": r["norwegian"], "pool_id": r["pool_id"], "options": opts}
+    opts = distract + [corr_tr]; random.shuffle(opts)
+    return {"type": "no2int", "no": no, "pool_id": r["pool_id"], "options": opts}
+
+
+def _exam_answer_ok(r, lang, ans):
+    """Типонезависимая сверка: ответ = любая «своя» форма слова (перевод(ы) на lang ИЛИ норвежское)."""
+    data = json.loads(r["data"]) if r.get("data") else {}
+    a = (ans or "").strip().lower()
+    if not a:
+        return False
+    forms = [(t or "").strip().lower() for t in (data.get("translate", {}).get(lang) or [])]
+    forms.append((r["norwegian"] or "").strip().lower())
+    return a in forms
 
 
 async def build_gate_exam(user_id, lang="ru"):
@@ -920,20 +977,13 @@ async def build_gate_exam(user_id, lang="ru"):
     finally:
         await _release(db)
     pack = _pack_rows(rows)
-    # дистракторы — переводы любых слов пользователя на нужный язык
-    distractor_pool = []
-    for r in rows:
-        data = json.loads(r["data"]) if r.get("data") else {}
-        t = (data.get("translate", {}).get(lang) or [None])[0]
-        if t:
-            distractor_pool.append(t)
+    tr_pool, no_pool, func_pool = _exam_pools(rows, lang)
     random.shuffle(pack)
     questions = []
     for r in pack:
         if len(questions) >= SAMPLE:
             break
-        random.shuffle(distractor_pool)
-        q = _gate_question(r, lang, distractor_pool)
+        q = _exam_question(r, lang, tr_pool, no_pool, func_pool)
         if q:
             questions.append(q)
     return {"questions": questions, "sample": SAMPLE, "pass": PASS}
@@ -984,10 +1034,7 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
             r = by_pid.get(pid)
             if not r:
                 continue
-            data = json.loads(r["data"]) if r.get("data") else {}
-            tr = data.get("translate", {}).get(lang) or []
-            ans = (a.get("answer") or "").strip().lower()
-            if ans and any(ans == (t or "").strip().lower() for t in tr):
+            if _exam_answer_ok(r, lang, a.get("answer")):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
@@ -1041,17 +1088,10 @@ async def build_audit(user_id, cap=AUDIT_CAP, lang="ru"):
     finally:
         await _release(db)
     due = _audit_rows(rows)[:cap]
-    # дистракторы — переводы любых слов пользователя на нужный язык
-    distractor_pool = []
-    for r in rows:
-        data = json.loads(r["data"]) if r.get("data") else {}
-        t = (data.get("translate", {}).get(lang) or [None])[0]
-        if t:
-            distractor_pool.append(t)
+    tr_pool, no_pool, func_pool = _exam_pools(rows, lang)
     questions = []
     for r in due:
-        random.shuffle(distractor_pool)
-        q = _gate_question(r, lang, distractor_pool)
+        q = _exam_question(r, lang, tr_pool, no_pool, func_pool)
         if q:
             questions.append(q)
     return {"questions": questions, "cap": cap}
@@ -1076,10 +1116,7 @@ async def grade_audit(user_id, answers, lang="ru"):
             if not r:
                 continue
             checked += 1
-            data = json.loads(r["data"]) if r.get("data") else {}
-            tr = data.get("translate", {}).get(lang) or []
-            ans = (a.get("answer") or "").strip().lower()
-            ok = bool(ans) and any(ans == (t or "").strip().lower() for t in tr)
+            ok = _exam_answer_ok(r, lang, a.get("answer"))
             if ok:
                 # срок растёт между успешными аудитами: новый интервал = прежний × рост.
                 # Прежний интервал помним в audit_interval (на сертификации = FIRST_AUDIT_DAYS),
