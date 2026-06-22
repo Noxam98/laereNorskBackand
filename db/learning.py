@@ -65,6 +65,32 @@ def is_function_word(norwegian, data):
     return False
 
 
+# Пословный «словарный порог» для служебных слов: служебное слово вводим в обучение (cloze) только
+# когда выученных КОНТЕНТНЫХ слов ≥ N — иначе не из чего строить осмысленное предложение. Для «og»
+# хватает 2 любых слов, для «istedenfor» нужна пара контрастных понятий → выше. Заполняется
+# калибровкой (см. cloze-vocab-thresholds). Для слова не из карты — дефолт FUNC_GATE.
+CLOZE_MIN = {
+    # базовый «клей» — работает почти с любыми 1–2 словами
+    "å": 4, "jeg": 4, "og": 4, "i": 5, "ikke": 5, "der": 5, "hjem": 5, "hjemme": 6,
+    "ute": 7, "oppe": 8, "inne": 8, "kanskje": 8, "noe": 9, "noen": 9,
+    # направления/местоимения/частотные — нужен 1 предмет/место/предикат
+    "opp": 10, "ned": 10, "inn": 10, "frem": 10, "dem": 10,
+    "alltid": 11, "min": 11, "bort": 11, "denne": 11, "til": 11, "også": 11,
+    "gjennom": 12, "hver": 12, "aldri": 12, "deres": 12, "over": 13, "under": 13,
+    # нужны 2 ориентира / тема / последовательность
+    "om": 14, "foran": 14, "etter": 14, "hos": 14, "langs": 15, "utenfor": 15,
+    "begge": 16, "uten": 16, "selv": 16, "av": 16, "mellom": 17, "hvilken": 18,
+    # двухситуативные / контраст / абстракция — нужно несколько разных понятий
+    "hvis": 20, "imot": 20, "men": 20, "både": 22, "fordi": 22, "mens": 22,
+    "ettersom": 24, "ifølge": 24, "hverken": 26, "istedenfor": 28,
+}  # {norwegian_lower: N}; калибровка cloze-vocab-thresholds (2 агента, ревью)
+
+
+def _cloze_min(norwegian):
+    """Сколько выученных контентных слов нужно, прежде чем вводить это служебное слово."""
+    return CLOZE_MIN.get((norwegian or "").strip().lower(), FUNC_GATE)
+
+
 def required_cells(row):
     """Клетки рампы для слова: служебные → 3 cloze; остальные → choice×2/build/input.
     row — строка с norwegian + data (json-строка или dict)."""
@@ -527,7 +553,13 @@ async def build_session(user_id, size=20, lang="ru"):
         return sum(1 for e in items
                    if e["status"] in ("learning", "review", "mastered")
                    and not is_function_word(e["row"]["norwegian"], e["data"]))
-    func_gate_ok = _content_known(enriched) >= FUNC_GATE
+    content_known = _content_known(enriched)
+    func_gate_ok = content_known >= FUNC_GATE   # грубый общий гейт (для авто-добора служебных)
+
+    def _func_locked(e):
+        """Новое служебное слово ещё рано вводить: выученных контентных < его пословного порога."""
+        return (is_function_word(e["row"]["norwegian"], e["data"])
+                and content_known < _cloze_min(e["row"]["norwegian"]))
 
     # АВТО-ДОБОР: «Учёба» не должна пустеть сама собой, но и не навязывает «Базу».
     # Семантика — «закрыть ПУСТОТУ, когда пул НОВЫХ иссяк», а НЕ «добить до WIP_LIMIT».
@@ -537,14 +569,17 @@ async def build_session(user_id, size=20, lang="ru"):
     # тормоза аудита) И есть свободный слот в работе (in_work < WIP_LIMIT — иначе новые
     # всё равно не вводятся по лимиту). Сколько досыпать — до WIP_LIMIT по in_work.
     if not gate_open:
-        new_avail = sum(1 for e in enriched if e["status"] == "new")
+        # залоченные пословным порогом новые служебные не считаем «доступными новыми» — иначе они
+        # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются
+        new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e))
         if new_avail == 0 and in_work < WIP_LIMIT:
             level = await estimate_level(user_id)
             res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level, allow_func=func_gate_ok)
             if res.get("added"):
                 # перечитываем слова после добора и продолжаем обычную сборку
                 enriched, in_work, gate_open = await _load()
-                func_gate_ok = _content_known(enriched) >= FUNC_GATE
+                content_known = _content_known(enriched)
+                func_gate_ok = content_known >= FUNC_GATE
 
     # пулы по приоритету
     def attempts(e):
@@ -578,8 +613,8 @@ async def build_session(user_id, size=20, lang="ru"):
             pid = e["row"]["pool_id"]
             if pid in seen or e["status"] in ("mastered", "archived"):
                 continue
-            # новое служебное слово придерживаем, пока база контентных не набрана
-            if not func_gate_ok and attempts(e) == 0 and is_function_word(e["row"]["norwegian"], e["data"]):
+            # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
+            if attempts(e) == 0 and _func_locked(e):
                 continue
             step = _next_step(e["row"], e["modes"])
             if not step:
@@ -639,10 +674,13 @@ _CLOZE_SCHEMA = {"name": "cloze", "schema": {"type": "object", "properties": {"i
         "blank": {"type": "string"}, "answer": {"type": "string"},
         "used": {"type": "array", "items": {"type": "string"}}},
     "required": ["blank", "answer", "used"]}}}, "required": ["items"]}}
-_CLOZE_SYS = ("Du er norsklærer for nivå A1. Lag 3 FORSKJELLIGE, enkle, naturlige setninger på bokmål (≤7 ord) "
-              "som hver bruker målordet. Bruk ELLERS BARE ord fra lista over kjente ord (bøyning er lov). "
-              "For hver: blank (setningen med ___ i stedet for målordet), answer (=målordet), "
-              "used (grunnformene du brukte, utenom målordet). Korrekt grammatikk. Kun JSON etter skjema.")
+_CLOZE_SYS = ("Du er norsklærer på nivå A1. Lag 3 FORSKJELLIGE, korte (≤7 ord), enkle og MENINGSFULLE "
+              "setninger på naturlig bokmål, der hver bruker målordet riktig. Bruk ellers bare ord fra "
+              "lista over kjente ord (bøyning er lov), men VELG ordene slik at setningen faktisk GIR MENING "
+              "— ikke sett sammen tilfeldige ord (f.eks. «Jeg arbeider istedenfor en brann» er FORBUDT, "
+              "meningsløst). Hver setning skal være noe en nordmann faktisk kan si. For hver: blank "
+              "(setningen med ___ i stedet for målordet), answer (=målordet), used (grunnformene du brukte, "
+              "utenom målordet). Korrekt grammatikk og ordstilling. Kun JSON etter skjema.")
 
 
 async def get_cloze_map(db, user_id, pool_ids):
@@ -704,18 +742,20 @@ async def generate_cloze(user_id, pool_id):
     random.shuffle(distractors)
     allowed_s = ", ".join(sorted(set(allowed))[:60])
     # Прямой вызов клиента (без _run-обёртки с SDK-ретраями/failover — она зависает на этом боксе).
-    # max_retries=0 + timeout → быстрый отказ; flash-lite отвечает ~1.5с.
+    # max_retries=0 + timeout → быстрый отказ. Модель 3.5-flash (reasoning) даёт ОСМЫСЛЕННЫЕ
+    # предложения (lite лепил словесный салат), но «размышления» жрут max_tokens и обрезают JSON —
+    # поэтому reasoning_effort="low" + запас max_tokens. Ответ ~5с, finish=stop.
     from llm.client import get_client
     from llm.settings import LLM_API_KEY
-    client = get_client().with_options(api_key=LLM_API_KEY, max_retries=0, timeout=30)
+    client = get_client().with_options(api_key=LLM_API_KEY, max_retries=0, timeout=60)
     raw = []
     try:
         resp = await client.chat.completions.create(
-            model="gemini-3.1-flash-lite",
+            model="gemini-3.5-flash",
             messages=[{"role": "system", "content": _CLOZE_SYS},
                       {"role": "user", "content": f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}"}],
             response_format={"type": "json_schema", "json_schema": _CLOZE_SCHEMA},
-            max_tokens=900)
+            reasoning_effort="low", max_tokens=3000)
         content = resp.choices[0].message.content if (resp and resp.choices) else None
         raw = (json.loads(content).get("items") if content else []) or []
     except Exception:
