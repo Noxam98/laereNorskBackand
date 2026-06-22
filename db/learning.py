@@ -648,6 +648,7 @@ async def build_session(user_id, size=20, lang="ru"):
             "translate": data.get("translate", {}),
             "part_of_speech": data.get("part_of_speech", ""),
             "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
+            "forms": data.get("forms"),   # для артикля (en/ei/et) сущ. и «å» глаг. в играх/карточках
             "mode": mode, "direction": direction, "step": cell,
         }
         if mode == "cloze":
