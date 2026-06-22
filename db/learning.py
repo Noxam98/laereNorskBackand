@@ -37,6 +37,27 @@ _DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": (
 CAPACITY = 8
 DAILY_GOAL = 20   # дневная цель по умолчанию (слов/ответов)
 COOLDOWN_MIN = 12  # «умная очередь»: только что показанное слово не ставим в начало следующей сессии (мин)
+FUNC_GATE = 20     # служебные слова не вводим новыми, пока контентных (learning+review+mastered) < этого
+
+# --- Класс «служебное слово» (A1): союз/предлог/местоимение/детерминатив + частица å + функц. наречия ---
+_FUNC_CORE_POS = {"konjunksjon", "subjunksjon", "preposisjon", "pronomen", "determinativ"}
+_FUNC_ADV_WL = {"ikke", "inn", "ut", "opp", "ned", "her", "der", "nå", "da", "også", "hjem",
+                "hit", "dit", "fram", "frem", "bort", "hjemme", "ute", "inne", "oppe", "nede",
+                "borte", "alltid", "aldri", "kanskje"}
+
+
+def is_function_word(norwegian, data):
+    """Служебное слово: ядро по POS (союз/предлог/местоимение/детерминатив), частица «å»,
+    или функциональное наречие из белого списка. data — распарсенный dict из word_pool."""
+    no = (norwegian or "").strip().lower()
+    if no == "å":
+        return True
+    pos = ((data or {}).get("part_of_speech") or "").strip().lower()
+    if pos in _FUNC_CORE_POS:
+        return True
+    if pos == "adverb" and no in _FUNC_ADV_WL:
+        return True
+    return False
 _LEVEL_ORDER = {lv: i for i, lv in enumerate(LEVELS)}
 
 # --- Зачётный экзамен-ворота (§2.4-A): пейсит приток новых слов ---
@@ -449,7 +470,11 @@ async def build_session(user_id, size=20, lang="ru"):
             except Exception:
                 modes = {}
             st = status_of(r, modes)
-            enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r)})
+            try:
+                pdata = json.loads(r["data"]) if r.get("data") else {}
+            except Exception:
+                pdata = {}
+            enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r), "data": pdata})
         # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
         in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
         # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим;
@@ -460,6 +485,14 @@ async def build_session(user_id, size=20, lang="ru"):
         return enriched, in_work, gate_open
 
     enriched, in_work, gate_open = await _load()
+
+    # ГЕЙТ A1 (#1,#2): база контентных слов (learning/review/mastered, НЕ служебные). Пока её нет —
+    # служебные слова не вводим и не досыпаем (есть из чего строить cloze только после базы).
+    def _content_known(items):
+        return sum(1 for e in items
+                   if e["status"] in ("learning", "review", "mastered")
+                   and not is_function_word(e["row"]["norwegian"], e["data"]))
+    func_gate_ok = _content_known(enriched) >= FUNC_GATE
 
     # АВТО-ДОБОР: «Учёба» не должна пустеть сама собой, но и не навязывает «Базу».
     # Семантика — «закрыть ПУСТОТУ, когда пул НОВЫХ иссяк», а НЕ «добить до WIP_LIMIT».
@@ -472,10 +505,11 @@ async def build_session(user_id, size=20, lang="ru"):
         new_avail = sum(1 for e in enriched if e["status"] == "new")
         if new_avail == 0 and in_work < WIP_LIMIT:
             level = await estimate_level(user_id)
-            res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level)
+            res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level, allow_func=func_gate_ok)
             if res.get("added"):
                 # перечитываем слова после добора и продолжаем обычную сборку
                 enriched, in_work, gate_open = await _load()
+                func_gate_ok = _content_known(enriched) >= FUNC_GATE
 
     # пулы по приоритету
     def attempts(e):
@@ -501,12 +535,16 @@ async def build_session(user_id, size=20, lang="ru"):
         ls = e["row"].get("last_seen")
         return bool(ls) and ls >= cooldown_cut   # last_seen — UTC ISO, сравнение строк = по времени
 
+    # func_gate_ok уже посчитан выше (после загрузки/добора)
     # кандидаты в порядке приоритета (дедуп; без mastered/archived и без следующего шага рампы)
     cand, seen = [], set()
     for pool in (returned, overdue, weak, maturing):
         for e in pool:
             pid = e["row"]["pool_id"]
             if pid in seen or e["status"] in ("mastered", "archived"):
+                continue
+            # новое служебное слово придерживаем, пока база контентных не набрана
+            if not func_gate_ok and attempts(e) == 0 and is_function_word(e["row"]["norwegian"], e["data"]):
                 continue
             step = _next_step(e["row"], e["modes"])
             if not step:
@@ -1061,7 +1099,7 @@ async def estimate_level(user_id):
     return (await learning_stats(user_id))["currentLevel"]
 
 
-async def suggest_words(user_id, count=10, level=None):
+async def suggest_words(user_id, count=10, level=None, allow_func=True):
     """«Докинуть слов»: добавить НОВЫЕ слова пула по уровню пользователя, которых у него ещё нет,
     в СКРЫТЫЙ авто-словарь (hidden=1, studying=1) — чтобы не засорять личные словари, но они
     были видны в Учёбе. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
@@ -1088,6 +1126,9 @@ async def suggest_words(user_id, count=10, level=None):
             break
         pid = w["pool_id"]
         if not pid or pid in have:
+            continue
+        # гейт A1: пока нет базы контентных — служебные не досыпаем (иначе «новый пул» забьётся ими)
+        if not allow_func and is_function_word(w["norwegian"], {"part_of_speech": w.get("part_of_speech")}):
             continue
         res = await add_word_to_dict(user_id, target_id, pid)
         if res.get("id") and not res.get("duplicate"):
