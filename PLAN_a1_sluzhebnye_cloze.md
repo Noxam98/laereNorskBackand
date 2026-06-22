@@ -127,10 +127,14 @@
 - ✔️ Ф0 — done: 53 служебных получили `data.gloss` + `data.example`; `å` translate.ru починен;
   10 junk удалены (бэкап `REVIEW_a1_backup.json`). Пул 6047→6037.
 - ⬜ Ф2 — карточка показывает `data.example` (фронт, маленькое; можно с Ф4).
-- 🔄 Ф4 — cloze-движок. **Генерация ДОКАЗАНА** (flash-lite ~1.5с, полный JSON, качество A1 ок).
-  Осталось закодить: таблица `cloze_cache`, `generate_cloze()` (lite + max_tokens + проверка лемм +
-  опции по POS), интеграция в build_session (attach + skip-if-not-ready + фоновая генерация),
-  фронт `ClozeGame` + wiring. БОЛЬШОЙ кусок (бэк деплой + фронт; UI кликает юзер).
+- 🔄 Ф4 — cloze-движок. **ДВИЖОК ГОТОВ И ПРОВЕРЕН на реальных данных** (cloze_cache заполнен для Maksym,
+  качество отличное, дистракторы по POS). Сделано: таблица `cloze_cache`, `generate_cloze()` (прямой
+  вызов клиента, max_retries=0+timeout, max_tokens; дистракторы SQL-фильтром), `ask_json` max_tokens,
+  `get_cloze_map`, `_mastered_words`. Деплой ок.
+  ⚠️ ssh-тест синхронно виснет (тяжёлый стек на слабой VM) — НО код отрабатывает (кэш заполняется);
+  проверять через данные/логи, не синхронным ssh.
+  ОСТАЛОСЬ ПОДКЛЮЧИТЬ: build_session (attach cloze из кэша + skip-if-not-ready + фоновая generate),
+  Ф3-рампа (служебные → card→cloze×3 с grandfathering), фронт ClozeGame + Ф2 пример на карточке.
 - ⬜ Ф3 — переключение рампы служебных на `card→cloze×3` (после Ф4).
 
 ## Журнал решений

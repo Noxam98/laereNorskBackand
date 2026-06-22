@@ -30,8 +30,12 @@ _FAST_SEC = 3.0   # быстрый верный ответ → слово «лё
 # study (карточки) — пассивный шаг 0, в зачёт не идёт.
 # Каждая клетка хранит признак прохождения: '1' — пройдена, '' — не пройдена/сброшена ошибкой.
 REQUIRED_CELLS = ["choice_no2int", "choice_int2no", "build_int2no", "input_int2no"]
-# build (собери из букв) осмыслен только в направлении родной→норв
-_DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": ("no2int", "int2no")}
+# Рампа служебных слов (A1): карточка → 3 разных cloze (направление = индекс предложения 1..3).
+FUNC_CELLS = ["cloze_1", "cloze_2", "cloze_3"]
+ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
+# build (собери из букв) осмыслен только в направлении родной→норв; cloze — индекс предложения
+_DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": ("no2int", "int2no"),
+                "cloze": ("1", "2", "3")}
 # Прогресс — скользящее окно: новые попытки вытесняют старые (ёмкость). Сила слова считается
 # по последним CAPACITY попыткам, а не за всю историю — старые успехи «выпадают» со временем.
 CAPACITY = 8
@@ -56,6 +60,29 @@ def is_function_word(norwegian, data):
     if pos in _FUNC_CORE_POS:
         return True
     if pos == "adverb" and no in _FUNC_ADV_WL:
+        return True
+    return False
+
+
+def required_cells(row):
+    """Клетки рампы для слова: служебные → 3 cloze; остальные → choice×2/build/input.
+    row — строка с norwegian + data (json-строка или dict)."""
+    try:
+        d = row.get("data")
+        d = json.loads(d) if isinstance(d, str) else (d or {})
+    except Exception:
+        d = {}
+    return FUNC_CELLS if is_function_word(row.get("norwegian"), d) else REQUIRED_CELLS
+
+
+def _is_mastered(row, modes):
+    """Выучено: все клетки рампы слова == '1'. Grandfathering: служебное, выученное СТАРОЙ рампой
+    (choice/build/input до перехода на cloze), считаем выученным — прогресс не сбрасываем."""
+    m = modes or {}
+    cells = required_cells(row)
+    if all(m.get(c, "") == "1" for c in cells):
+        return True
+    if cells is FUNC_CELLS and all(m.get(c, "") == "1" for c in REQUIRED_CELLS):
         return True
     return False
 _LEVEL_ORDER = {lv: i for i, lv in enumerate(LEVELS)}
@@ -128,7 +155,9 @@ def _next_step(row, modes):
     attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
     if attempts == 0:
         return ("card", "study", None)
-    for cell in REQUIRED_CELLS:
+    if _is_mastered(row, modes):   # в т.ч. grandfathered служебные (не гоняем по cloze повторно)
+        return None
+    for cell in required_cells(row):
         if (modes or {}).get(cell, "") != "1":
             mode, direction = cell.split("_", 1)
             return (cell, mode, direction)
@@ -143,7 +172,7 @@ def status_of(row, modes=None):
     strength = row.get("strength") or 0
     if attempts == 0:
         return "new"
-    if _mastered_by_modes(modes):
+    if _is_mastered(row, modes):
         return "mastered"
     if strength < 40 and (row.get("incorrect") or 0) >= 2:
         return "weak"
@@ -173,6 +202,11 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
             r = await cur.fetchone()
         st = dict(r) if r else {"strength": 0, "reps": 0, "lapses": 0, "ease": 2.5, "interval_days": 0,
                                 "correct": 0, "incorrect": 0, "streak": 0, "archived": 0, "modes": None}
+        # класс слова (служебное → cloze-клетки) для корректной рампы/мастери
+        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            wp = await cur.fetchone()
+        wrow = {"norwegian": (wp["norwegian"] if wp else None), "data": (wp["data"] if wp else None)}
+        cells = required_cells(wrow)
         modes = {}
         try:
             modes = json.loads(st.get("modes") or "{}")
@@ -186,14 +220,14 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         # клетка рампы — только для тестовых типов с заданным направлением (study/без direction — пассив)
         if mode and mode != "study" and direction and direction in _DIR_ALLOWED.get(mode, ()):
             cell = f"{mode}_{direction}"
-            if cell in REQUIRED_CELLS:
+            if cell in cells:
                 if correct:
                     modes[cell] = "1"              # верно → ступень пройдена
                 else:
                     modes[cell] = ""               # ошибка → текущая ступень сброшена
-                    i = REQUIRED_CELLS.index(cell)
+                    i = cells.index(cell)
                     if i > 0:                      # ОТКАТ на одну ступень назад (не ниже первой клетки —
-                        modes[REQUIRED_CELLS[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
+                        modes[cells[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
         strength = _strength_from(modes["hist"])
         if correct:
             fast = elapsed is not None and elapsed <= _FAST_SEC
@@ -225,7 +259,7 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         # редкий аудит (audit_due = now + FIRST_AUDIT_DAYS). Признак «ранее сертифицировано/выпало
         # из аудита» — was_certified=1; свежие (никогда не сертифицированные) mastered идут через
         # ворота как раньше (§2.4-A), поэтому условие именно certified=0 AND was_certified=1.
-        if _mastered_by_modes(modes) and not st.get("certified") and st.get("was_certified"):
+        if _is_mastered(wrow, modes) and not st.get("certified") and st.get("was_certified"):
             await db.execute(
                 "UPDATE user_words SET certified = 1, audit_due = ?, audit_interval = ? "
                 "WHERE user_id = ? AND pool_id = ?",
@@ -237,7 +271,7 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
             ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
         """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
         await db.commit()
-        return {"ok": True, "strength": strength, "due_at": due, "modes": modes, "mastered": _mastered_by_modes(modes)}
+        return {"ok": True, "strength": strength, "due_at": due, "modes": modes, "mastered": _is_mastered(wrow, modes)}
     finally:
         await _release(db)
 
@@ -247,7 +281,7 @@ async def set_status(user_id: int, pool_id: int, action: str):
     db = await _conn()
     try:
         if action == "know":
-            m = {c: "1" for c in REQUIRED_CELLS}   # все клетки рампы пройдены
+            m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
             m["hist"] = "1" * CAPACITY
             fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
@@ -555,19 +589,40 @@ async def build_session(user_id, size=20, lang="ru"):
     # недавно показанные — в хвост (не лидируют следующую сессию); остальные сохраняют приоритет
     ordered = [c for c in cand if not is_fresh(c[0])] + [c for c in cand if is_fresh(c[0])]
 
+    # cloze-кэш для служебных слов на стадии cloze (предложения готовим заранее, фоном)
+    cloze_pids = [e["row"]["pool_id"] for (e, step) in ordered if step[1] == "cloze"]
+    cloze_map = {}
+    if cloze_pids:
+        dbc = await _conn()
+        try:
+            cloze_map = await get_cloze_map(dbc, user_id, cloze_pids)
+        finally:
+            await _release(dbc)
+
     session = []
     for e, step in ordered:
         # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах
         if attempts(e) == 0 and (in_work >= WIP_LIMIT or gate_open):
             continue
         cell, mode, direction = step
+        pid = e["row"]["pool_id"]
         data = json.loads(e["row"]["data"]) if e["row"].get("data") else {}
-        session.append({
-            "pool_id": e["row"]["pool_id"], "no": e["row"]["norwegian"],
+        el = {
+            "pool_id": pid, "no": e["row"]["norwegian"],
             "translate": data.get("translate", {}),
             "part_of_speech": data.get("part_of_speech", ""),
+            "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
             "mode": mode, "direction": direction, "step": cell,
-        })
+        }
+        if mode == "cloze":
+            items = cloze_map.get(pid)
+            idx = (int(direction) - 1) if str(direction).isdigit() else 0
+            if not items or idx >= len(items):
+                # cloze ещё не сгенерён — запускаем фоном, это слово сейчас пропускаем (придёт позже)
+                asyncio.create_task(generate_cloze(user_id, pid))
+                continue
+            el["cloze"] = items[idx]
+        session.append(el)
         if attempts(e) == 0:
             in_work += 1   # ввели новое — слот занят
         if len(session) >= size:
@@ -807,9 +862,9 @@ async def build_gate_exam(user_id, lang="ru"):
 def _demote_fields(modes):
     """Демоут слова: сбросить клетки рампы, силу/историю/ease вниз, certified=0.
     Возвращает (modes_json, strength, ease)."""
-    m = {k: v for k, v in (modes or {}).items() if k not in REQUIRED_CELLS and k != "hist"}
+    m = {k: v for k, v in (modes or {}).items() if k not in ALL_CELLS and k != "hist"}
     m["hist"] = ""
-    for c in REQUIRED_CELLS:
+    for c in ALL_CELLS:
         m[c] = ""
     return json.dumps(m, ensure_ascii=False), 0, 1.3
 
