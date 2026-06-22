@@ -336,7 +336,7 @@ async def set_status(user_id: int, pool_id: int, action: str):
 async def _fetch_user_words(db, user_id):
     """Все слова пользователя (уникальные по пулу) + состояние SRS + темы."""
     async with db.execute("""
-        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, (wp.tts IS NOT NULL) AS has_tts,
+        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
                uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
@@ -648,7 +648,7 @@ async def build_session(user_id, size=20, lang="ru"):
             "translate": data.get("translate", {}),
             "part_of_speech": data.get("part_of_speech", ""),
             "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
-            "forms": data.get("forms"),   # для артикля (en/ei/et) сущ. и «å» глаг. в играх/карточках
+            "forms": (json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
             "mode": mode, "direction": direction, "step": cell,
         }
         if mode == "cloze":
