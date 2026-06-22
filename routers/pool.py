@@ -347,8 +347,11 @@ async def pool_distractors(pool_id: int, n: int = 3, mode: str = "no2int", lang:
         tr = (d.get("translate", {}) or {}).get(lang) or []
         return (tr[0] if tr else None, tr[1] if len(tr) > 1 else None)
 
-    correct = norwegian if mode == "int2no" else answer_of(data, norwegian)[0]
-    correct_l = (correct or "").strip().lower()
+    # СМЫСЛ цели = все её переводы на язык юзера; дистрактор-синоним (пересечение переводов) исключаем.
+    target_mean = {x.strip().lower() for x in ((data.get("translate", {}) or {}).get(lang) or []) if x}
+    own = ({(norwegian or "").strip().lower()} | {x.strip().lower() for x in ((data.get("translate", {}) or {}).get("no") or []) if x}) \
+        if mode == "int2no" else set(target_mean)
+    own.discard("")
     ordered = await ranked_pool(p["embedding"], norwegian, 40) if p.get("embedding") else []
     if not ordered:
         cands = [c for c in await get_pool_candidates() if c["norwegian"] != norwegian]
@@ -356,8 +359,11 @@ async def pool_distractors(pool_id: int, n: int = 3, mode: str = "no2int", lang:
         other = [c for c in cands if c["data"].get("part_of_speech") != target_pos]
         random.shuffle(same); random.shuffle(other)
         ordered = same + other
-    out, seen = [], {correct_l}
+    out, seen = [], set(own)
     for c in ordered:
+        cmean = {x.strip().lower() for x in ((c["data"].get("translate", {}) or {}).get(lang) or []) if x}
+        if target_mean and (cmean & target_mean):   # синоним по смыслу — пропускаем
+            continue
         a, alt = answer_of(c["data"], c["norwegian"])
         if a and a.strip().lower() not in seen:
             out.append({"w": a, "alt": alt}); seen.add(a.strip().lower())

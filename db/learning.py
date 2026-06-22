@@ -389,15 +389,27 @@ async def _attach_choice_options(session, lang, n=3):
     for e in choice:
         direction = e.get("direction") or "int2no"
         no = e.get("no") or ""
-        data = {"translate": e.get("translate", {})}
-        correct = no if direction == "int2no" else answer_of(data, no, direction)[0]
-        correct_l = (correct or "").strip().lower()
+        tr_all = e.get("translate", {}) or {}
+        data = {"translate": tr_all}
+        # СМЫСЛ цели = все её переводы на язык юзера. Дистрактор-СИНОНИМ (его переводы пересекаются
+        # со смыслом цели) исключаем — иначе вариант оказался бы тоже верным и вопрос нечестным
+        # (avstand=[расстояние,дистанция] vs distanse=[дистанция,расстояние]).
+        target_mean = {x.strip().lower() for x in (tr_all.get(lang) or []) if x}
+        # плюс не повторяем сами допустимые ответы (все переводы / норв. формы цели)
+        own = ({(no or "").strip().lower()} | {x.strip().lower() for x in (tr_all.get("no") or []) if x}) \
+            if direction == "int2no" else set(target_mean)
+        own.discard("")
         ordered = await ranked_pool(emb.get(e["pool_id"]), no, 40) if emb.get(e["pool_id"]) else []
-        out, seen = [], {correct_l}
+        out, seen = [], set(own)
         for c in ordered:
-            a, alt = answer_of(c.get("data"), c.get("norwegian"), direction)
-            if a and a.strip().lower() not in seen:
-                out.append({"w": a, "alt": alt}); seen.add(a.strip().lower())
+            cd = c.get("data") or {}
+            cmean = {x.strip().lower() for x in ((cd.get("translate", {}) or {}).get(lang) or []) if x}
+            if target_mean and (cmean & target_mean):   # синоним по смыслу — не годится в дистракторы
+                continue
+            a, alt = answer_of(cd, c.get("norwegian"), direction)
+            la = (a or "").strip().lower()
+            if a and la not in seen:
+                out.append({"w": a, "alt": alt}); seen.add(la)
             if len(out) >= n:
                 break
         e["options"] = out
