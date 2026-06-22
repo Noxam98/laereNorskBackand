@@ -1360,8 +1360,10 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
             have = {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
-    # кандидаты по уровню, отсортированы по ЧАСТОТНОСТИ (самые употребимые сначала), с запасом
-    cand = await pool_by_freq(max(count * 12, 120), lvl)
+    # кандидаты по уровню, по ЧАСТОТНОСТИ. ВАЖНО: окно расширяем за все уже имеющиеся слова —
+    # иначе у юзера с большим словарём топ-N по частоте уже целиком его, новых не находится и пул
+    # кажется «исчерпанным» (сессии тают до 1–3 слов, перестают смешиваться).
+    cand = await pool_by_freq(len(have) + max(count * 6, 60), lvl)
     added = []
     for w in cand:
         if len(added) >= count:
