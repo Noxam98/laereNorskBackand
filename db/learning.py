@@ -619,7 +619,6 @@ async def generate_cloze(user_id, pool_id):
     """Сгенерировать и закэшировать CLOZE_N cloze-предложений для служебного слова из ВЫУЧЕННЫХ слов
     юзера. Лениво/в фоне. Модель flash-lite (быстро, полный JSON), max_tokens ограничивает вывод."""
     import random
-    from llm import ask_json
     db = await _conn()
     try:
         async with db.execute("SELECT norwegian, data FROM word_pool WHERE id=?", (pool_id,)) as cur:
@@ -644,10 +643,23 @@ async def generate_cloze(user_id, pool_id):
         await _release(db)
     random.shuffle(distractors)
     allowed_s = ", ".join(sorted(set(allowed))[:60])
-    res = await ask_json(_CLOZE_SYS, f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}",
-                         _CLOZE_SCHEMA, purpose="user", label=f"cloze «{target}»",
-                         model="gemini-3.1-flash-lite", max_tokens=900)
-    raw = (res or {}).get("items") or []
+    # Прямой вызов клиента (без _run-обёртки с SDK-ретраями/failover — она зависает на этом боксе).
+    # max_retries=0 + timeout → быстрый отказ; flash-lite отвечает ~1.5с.
+    from llm.client import get_client
+    from llm.settings import LLM_API_KEY
+    client = get_client().with_options(api_key=LLM_API_KEY, max_retries=0, timeout=30)
+    raw = []
+    try:
+        resp = await client.chat.completions.create(
+            model="gemini-3.1-flash-lite",
+            messages=[{"role": "system", "content": _CLOZE_SYS},
+                      {"role": "user", "content": f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}"}],
+            response_format={"type": "json_schema", "json_schema": _CLOZE_SCHEMA},
+            max_tokens=900)
+        content = resp.choices[0].message.content if (resp and resp.choices) else None
+        raw = (json.loads(content).get("items") if content else []) or []
+    except Exception:
+        return None
     items = []
     for it in raw[:CLOZE_N]:
         blank = (it.get("blank") or "").strip()
