@@ -5,6 +5,7 @@ import asyncio
 import json
 import unicodedata
 from datetime import datetime, timedelta
+import fuzzy
 from .core import _conn, _release, _now
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -931,24 +932,29 @@ def _exam_question(r, lang, tr_pool, no_pool, func_pool):
     ex = data.get("example") or {}
     ex_no = (ex.get("no") or "").strip() if isinstance(ex, dict) else ""
 
-    # cloze — для служебных слов с примером (пропуск + варианты-служебные)
+    # cloze — для служебных слов с примером (пропуск + варианты-служебные). Ответ (no) НЕ шлём
+    # клиенту — иначе видно правильный вариант; грейд по pool_id на сервере.
     if is_function_word(no, data) and ex_no:
         blank = _blank_example(ex_no, no)
         distract = _pick_distract(func_pool, {no}, 3)
         if blank and len(distract) == 3:
             opts = distract + [no]; random.shuffle(opts)
-            return {"type": "cloze", "blank": blank, "no": no, "pool_id": r["pool_id"], "options": opts}
+            return {"type": "cloze", "blank": blank, "pool_id": r["pool_id"], "options": opts}
 
     if not corr_tr:
         return None
 
-    # контентные: чередуем int2no / no2int
-    if random.random() < 0.5:
+    roll = random.random()
+    # ввод текста (~25%): печатаешь норвежское по переводу, без вариантов; грейд нечёткий (fuzzy)
+    if roll < 0.25:
+        return {"type": "input", "prompt": corr_tr, "pool_id": r["pool_id"]}
+    # int2no (~35%): перевод → выбрать норвежское (ответ no — среди options, отдельно не шлём)
+    if roll < 0.6:
         distract = _pick_distract(no_pool, {no}, 3)
         if len(distract) == 3:
             opts = distract + [no]; random.shuffle(opts)
-            return {"type": "int2no", "prompt": corr_tr, "no": no, "pool_id": r["pool_id"], "options": opts}
-
+            return {"type": "int2no", "prompt": corr_tr, "pool_id": r["pool_id"], "options": opts}
+    # no2int: норв. слово (видимый вопрос) → выбрать перевод
     distract = _pick_distract(tr_pool, {corr_tr}, 3)
     if len(distract) < 3:
         return None
@@ -956,15 +962,31 @@ def _exam_question(r, lang, tr_pool, no_pool, func_pool):
     return {"type": "no2int", "no": no, "pool_id": r["pool_id"], "options": opts}
 
 
-def _exam_answer_ok(r, lang, ans):
-    """Типонезависимая сверка: ответ = любая «своя» форма слова (перевод(ы) на lang ИЛИ норвежское)."""
+_KNOWN_VOCAB = None
+
+
+async def _known_vocab(db):
+    """Множество нормализованных норв. слов пула — словарь-страж для нечёткой сверки (ввод, совпавший
+    с ДРУГИМ известным словом, не считаем опечаткой). Кэш на процесс (новые слова редки)."""
+    global _KNOWN_VOCAB
+    if _KNOWN_VOCAB is None:
+        async with db.execute("SELECT norwegian FROM word_pool") as cur:
+            _KNOWN_VOCAB = {fuzzy.normalize(r["norwegian"]) for r in await cur.fetchall() if r["norwegian"]}
+    return _KNOWN_VOCAB
+
+
+def _exam_answer_ok(r, lang, ans, known=None):
+    """Нечёткая типонезависимая сверка (fuzzy.py): ответ достаточно близок к любой «своей» форме —
+    перевод(ы) на lang, норвежское слово ИЛИ его словоформы. Со словарём-стражем (known) ввод,
+    равный ДРУГОМУ известному слову, отклоняется (это не опечатка)."""
     data = json.loads(r["data"]) if r.get("data") else {}
-    a = (ans or "").strip().lower()
-    if not a:
-        return False
-    forms = [(t or "").strip().lower() for t in (data.get("translate", {}).get(lang) or [])]
-    forms.append((r["norwegian"] or "").strip().lower())
-    return a in forms
+    try:
+        fcol = json.loads(r["forms"]) if r.get("forms") else None
+    except Exception:
+        fcol = None
+    acc = list(data.get("translate", {}).get(lang) or [])
+    acc += fuzzy.word_forms(r["norwegian"], fcol)
+    return fuzzy.fuzzy_match(ans, acc, known=known)
 
 
 async def build_gate_exam(user_id, lang="ru"):
@@ -1026,7 +1048,8 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
         rows = await _fetch_user_words(db, user_id)
         pack = _pack_rows(rows)
         by_pid = {r["pool_id"]: r for r in pack}
-        # сверка ответов — по правильному переводу слова на язык lang
+        known = await _known_vocab(db)
+        # сверка ответов — нечётко, по любой «своей» форме слова (перевод/норв./словоформы)
         correct_n = 0
         missed_pids = []
         for a in (answers or []):
@@ -1034,7 +1057,7 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
             r = by_pid.get(pid)
             if not r:
                 continue
-            if _exam_answer_ok(r, lang, a.get("answer")):
+            if _exam_answer_ok(r, lang, a.get("answer"), known):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
@@ -1110,13 +1133,14 @@ async def grade_audit(user_id, answers, lang="ru"):
     try:
         rows = await _fetch_user_words(db, user_id)
         by_pid = {r["pool_id"]: r for r in rows if _is_certified(r)}
+        known = await _known_vocab(db)
         checked = refreshed = forgot = 0
         for a in (answers or []):
             r = by_pid.get(a.get("pool_id"))
             if not r:
                 continue
             checked += 1
-            ok = _exam_answer_ok(r, lang, a.get("answer"))
+            ok = _exam_answer_ok(r, lang, a.get("answer"), known)
             if ok:
                 # срок растёт между успешными аудитами: новый интервал = прежний × рост.
                 # Прежний интервал помним в audit_interval (на сертификации = FIRST_AUDIT_DAYS),
