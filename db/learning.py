@@ -632,13 +632,17 @@ async def generate_cloze(user_id, pool_id):
         allowed = await _mastered_words(db, user_id)
         if len(allowed) < 4:
             return None
+        # дистракторы той же POS — SQL-фильтр по data (без парса всех 6000 строк на слабом CPU)
         distractors = []
-        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id != ?", (pool_id,)) as cur:
-            for rr in await cur.fetchall():
-                try: dd = json.loads(rr["data"]) if rr["data"] else {}
-                except Exception: dd = {}
-                if (dd.get("part_of_speech") or "").strip().lower() == pos and is_function_word(rr["norwegian"], dd):
-                    distractors.append(rr["norwegian"])
+        if pos:
+            async with db.execute(
+                "SELECT norwegian, data FROM word_pool WHERE id != ? AND data LIKE ?",
+                (pool_id, f'%"{pos}"%')) as cur:
+                for rr in await cur.fetchall():
+                    try: dd = json.loads(rr["data"]) if rr["data"] else {}
+                    except Exception: dd = {}
+                    if (dd.get("part_of_speech") or "").strip().lower() == pos and is_function_word(rr["norwegian"], dd):
+                        distractors.append(rr["norwegian"])
     finally:
         await _release(db)
     random.shuffle(distractors)
