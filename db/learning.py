@@ -36,6 +36,7 @@ _DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": (
 # по последним CAPACITY попыткам, а не за всю историю — старые успехи «выпадают» со временем.
 CAPACITY = 8
 DAILY_GOAL = 20   # дневная цель по умолчанию (слов/ответов)
+COOLDOWN_MIN = 12  # «умная очередь»: только что показанное слово не ставим в начало следующей сессии (мин)
 _LEVEL_ORDER = {lv: i for i, lv in enumerate(LEVELS)}
 
 # --- Зачётный экзамен-ворота (§2.4-A): пейсит приток новых слов ---
@@ -474,36 +475,47 @@ async def build_session(user_id, size=20, lang="ru"):
         [e for e in enriched if e["status"] in ("new", "learning", "review")],
         key=lambda e: (attempts(e) == 0, e["row"].get("strength") or 0))  # сначала тронутые, новые в хвост
 
-    session, seen = [], set()
+    # «Умная очередь»: слово, показанное ТОЛЬКО ЧТО (last_seen свежее кулдауна), не ставим в начало
+    # следующей сессии — откладываем в ХВОСТ очереди (а при достатке слов — фактически в следующую
+    # сессию). Так только что подсказанное слово не всплывает сразу же; через кулдаун вернётся штатно.
+    cooldown_cut = (datetime.utcnow() - timedelta(minutes=COOLDOWN_MIN)).isoformat()
+    def is_fresh(e):
+        ls = e["row"].get("last_seen")
+        return bool(ls) and ls >= cooldown_cut   # last_seen — UTC ISO, сравнение строк = по времени
+
+    # кандидаты в порядке приоритета (дедуп; без mastered/archived и без следующего шага рампы)
+    cand, seen = [], set()
     for pool in (returned, overdue, weak, maturing):
         for e in pool:
             pid = e["row"]["pool_id"]
-            if pid in seen:
-                continue
-            # mastered как «новые» не вводим (они и так не попадают в пулы выше)
-            if e["status"] in ("mastered", "archived"):
-                continue
-            # лимит одновременно-в-работе: новое слово (0 попыток) не вводим, если уже >= WIP_LIMIT;
-            # а также пока открыты ворота зачётного экзамена / активен мягкий тормоз аудита (приток новых заморожен)
-            if attempts(e) == 0 and (in_work >= WIP_LIMIT or gate_open):
+            if pid in seen or e["status"] in ("mastered", "archived"):
                 continue
             step = _next_step(e["row"], e["modes"])
             if not step:
                 continue
-            cell, mode, direction = step
-            data = json.loads(e["row"]["data"]) if e["row"].get("data") else {}
-            session.append({
-                "pool_id": pid, "no": e["row"]["norwegian"],
-                "translate": data.get("translate", {}),
-                "part_of_speech": data.get("part_of_speech", ""),
-                "mode": mode, "direction": direction, "step": cell,
-            })
             seen.add(pid)
-            if attempts(e) == 0:
-                in_work += 1   # ввели новое — слот занят
-            if len(session) >= size:
-                await _attach_choice_options(session, lang)
-                return {"words": session}
+            cand.append((e, step))
+
+    # недавно показанные — в хвост (не лидируют следующую сессию); остальные сохраняют приоритет
+    ordered = [c for c in cand if not is_fresh(c[0])] + [c for c in cand if is_fresh(c[0])]
+
+    session = []
+    for e, step in ordered:
+        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах
+        if attempts(e) == 0 and (in_work >= WIP_LIMIT or gate_open):
+            continue
+        cell, mode, direction = step
+        data = json.loads(e["row"]["data"]) if e["row"].get("data") else {}
+        session.append({
+            "pool_id": e["row"]["pool_id"], "no": e["row"]["norwegian"],
+            "translate": data.get("translate", {}),
+            "part_of_speech": data.get("part_of_speech", ""),
+            "mode": mode, "direction": direction, "step": cell,
+        })
+        if attempts(e) == 0:
+            in_work += 1   # ввели новое — слот занят
+        if len(session) >= size:
+            break
     await _attach_choice_options(session, lang)
     return {"words": session}
 
