@@ -1,6 +1,7 @@
 """«Учёба» — слой интервальных повторений (SRS) над всеми словами пользователя.
 Слова берутся из словарей (dict_words → word_pool), состояние — в user_words.
 Статусы вычисляются на чтении из силы/попыток; archived — ручной флаг («я это знаю»)."""
+import asyncio
 import json
 import unicodedata
 from datetime import datetime, timedelta
