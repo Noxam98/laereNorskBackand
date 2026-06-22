@@ -713,9 +713,21 @@ async def _mastered_words(db, user_id):
     return [no for (no, _f) in out]
 
 
+def _blank_example(sentence, target):
+    """Превратить выверенный пример в cloze: заменить целевое слово на ___ (по границе слова,
+    регистронезависимо). Возвращает строку с ___ или None, если целевого слова в примере нет."""
+    import re
+    s = (sentence or "").strip()
+    if not s or not target:
+        return None
+    pat = re.compile(r"\b" + re.escape(target) + r"\b", re.IGNORECASE)
+    return pat.sub("___", s, count=1) if pat.search(s) else None
+
+
 async def generate_cloze(user_id, pool_id):
-    """Сгенерировать и закэшировать CLOZE_N cloze-предложений для служебного слова из ВЫУЧЕННЫХ слов
-    юзера. Лениво/в фоне. Модель flash-lite (быстро, полный JSON), max_tokens ограничивает вывод."""
+    """Сгенерировать и закэшировать CLOZE_N cloze-предложений для служебного слова. 1-е — ЯКОРЬ из
+    выверенного example.no (гарантированно осмысленное), остальные — динамика 3.5-flash из ВЫУЧЕННЫХ
+    слов юзера (по убыванию частотности). Лениво/в фоне. Перебор всех ключей-аккаунтов на 429."""
     import random
     db = await _conn()
     try:
@@ -727,6 +739,8 @@ async def generate_cloze(user_id, pool_id):
         try: wdata = json.loads(w["data"]) if w["data"] else {}
         except Exception: wdata = {}
         pos = (wdata.get("part_of_speech") or "").strip().lower()
+        _ex = wdata.get("example") or {}
+        ex_no = (_ex.get("no") or "").strip() if isinstance(_ex, dict) else ""
         allowed = await _mastered_words(db, user_id)
         if len(allowed) < 4:
             return None
@@ -745,33 +759,50 @@ async def generate_cloze(user_id, pool_id):
         await _release(db)
     random.shuffle(distractors)
     allowed_s = ", ".join(list(dict.fromkeys(allowed))[:60])   # топ-60 частотных (порядок уже по freq)
-    # Прямой вызов клиента (без _run-обёртки с SDK-ретраями/failover — она зависает на этом боксе).
-    # max_retries=0 + timeout → быстрый отказ. Модель 3.5-flash (reasoning) даёт ОСМЫСЛЕННЫЕ
-    # предложения (lite лепил словесный салат), но «размышления» жрут max_tokens и обрезают JSON —
-    # поэтому reasoning_effort="low" + запас max_tokens. Ответ ~5с, finish=stop.
+
+    def _opts():
+        o = [target] + distractors[:3]
+        random.shuffle(o)
+        return o
+
+    # Динамика: 3.5-flash (reasoning) даёт ОСМЫСЛЕННЫЕ предложения (lite лепил словесный салат);
+    # reasoning_effort="low" + запас max_tokens — иначе «размышления» обрезают JSON. ПЕРЕБИРАЕМ ВСЕ
+    # ключи-аккаунты: на 429 одного ключа (суточный лимит ~20 на 3.5-flash) — пробуем следующий.
     from llm.client import get_client
-    from llm.settings import LLM_API_KEY
-    client = get_client().with_options(api_key=LLM_API_KEY, max_retries=0, timeout=60)
+    from llm.settings import LLM_API_KEYS
+    client = get_client()
+    msgs = [{"role": "system", "content": _CLOZE_SYS},
+            {"role": "user", "content": f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}"}]
     raw = []
-    try:
-        resp = await client.chat.completions.create(
-            model="gemini-3.5-flash",
-            messages=[{"role": "system", "content": _CLOZE_SYS},
-                      {"role": "user", "content": f"Målord: «{target}» ({pos}).\nKjente ord: {allowed_s}"}],
-            response_format={"type": "json_schema", "json_schema": _CLOZE_SCHEMA},
-            reasoning_effort="low", max_tokens=3000)
-        content = resp.choices[0].message.content if (resp and resp.choices) else None
-        raw = (json.loads(content).get("items") if content else []) or []
-    except Exception:
-        return None
+    for key in (LLM_API_KEYS or [""]):
+        try:
+            c = client.with_options(api_key=key or "not-needed", max_retries=0, timeout=60)
+            resp = await c.chat.completions.create(
+                model="gemini-3.5-flash", messages=msgs,
+                response_format={"type": "json_schema", "json_schema": _CLOZE_SCHEMA},
+                reasoning_effort="low", max_tokens=3000)
+            content = resp.choices[0].message.content if (resp and resp.choices) else None
+            cand = (json.loads(content).get("items") if content else []) or []
+            if cand:
+                raw = cand
+                break
+        except Exception:
+            continue   # 429/таймаут/обрыв JSON — следующий ключ
+
     items = []
-    for it in raw[:CLOZE_N]:
+    # ЯКОРЬ: 1-е cloze из выверенного примера карточки (если в нём есть целевое слово) —
+    # гарантированно осмысленно, лечит «болтающиеся» трудные слова (istedenfor и т.п.).
+    anchor = _blank_example(ex_no, target)
+    if anchor:
+        items.append({"blank": anchor, "answer": target, "options": _opts()})
+    # динамика добивает до CLOZE_N (без повтора якоря)
+    for it in raw:
+        if len(items) >= CLOZE_N:
+            break
         blank = (it.get("blank") or "").strip()
-        if "___" not in blank:
+        if "___" not in blank or any(blank == x["blank"] for x in items):
             continue
-        opts = [target] + distractors[:3]
-        random.shuffle(opts)
-        items.append({"blank": blank, "answer": target, "options": opts})
+        items.append({"blank": blank, "answer": target, "options": _opts()})
     if not items:
         return None
     db = await _conn()
