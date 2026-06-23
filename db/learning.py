@@ -1416,7 +1416,8 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
     в СКРЫТЫЙ авто-словарь (hidden=1, studying=1) — чтобы не засорять личные словари, но они
     были видны в Учёбе. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
     Гейт ворот: пока несданная пачка открыта на экзамен — приток новых слов закрыт."""
-    from .pool import pool_by_freq
+    from .pool import pool_by_freq, pool_by_freq_topics
+    from .users import get_user_focus_topics
     from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
     if await new_words_blocked(user_id):
         return {"added": 0, "words": [], "level": None, "blocked": True}
@@ -1433,7 +1434,22 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
     # кандидаты по уровню, по ЧАСТОТНОСТИ. ВАЖНО: окно расширяем за все уже имеющиеся слова —
     # иначе у юзера с большим словарём топ-N по частоте уже целиком его, новых не находится и пул
     # кажется «исчерпанным» (сессии тают до 1–3 слов, перестают смешиваться).
-    cand = await pool_by_freq(len(have) + max(count * 6, 60), lvl)
+    window = len(have) + max(count * 6, 60)
+    cand = await pool_by_freq(window, lvl)
+    # Фокус на темах: ~1 из 3 кандидатов — из выбранных тем (по частоте), пока тема-слова не кончатся.
+    # Пусто → cand без изменений (поведение ровно как раньше). Дедуп — общим циклом ниже (have).
+    focus = await get_user_focus_topics(user_id)
+    if focus:
+        topic_cand = await pool_by_freq_topics(window, lvl, focus)
+        if topic_cand:
+            merged, ti, ni = [], 0, 0
+            while ti < len(topic_cand) or ni < len(cand):
+                if ti < len(topic_cand):
+                    merged.append(topic_cand[ti]); ti += 1
+                for _ in range(2):
+                    if ni < len(cand):
+                        merged.append(cand[ni]); ni += 1
+            cand = merged
     added = []
     for w in cand:
         if len(added) >= count:

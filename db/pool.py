@@ -162,6 +162,37 @@ async def pool_by_freq(limit: int = 80, level: str = None):
         await _release(db)
 
 
+async def pool_by_freq_topics(limit: int, level, topics):
+    """Как pool_by_freq, но только слова с любой из тем `topics` (для фокуса Учёбы). По частоте."""
+    if not topics:
+        return []
+    conds, params = ["wp.data IS NOT NULL"], []
+    if level:
+        conds.append("wp.level = ?"); params.append(level)
+    marks = ",".join("?" for _ in topics)
+    sql = (f"SELECT DISTINCT wp.id, wp.norwegian, wp.data, wp.freq FROM word_pool wp "
+           f"JOIN word_topics wt ON wt.pool_id = wp.id "
+           f"WHERE {' AND '.join(conds)} AND wt.topic IN ({marks}) "
+           f"ORDER BY wp.freq IS NULL, wp.freq DESC LIMIT ?")
+    params += list(topics); params.append(limit)
+    db = await _conn()
+    try:
+        async with db.execute(sql, params) as cur:
+            out = []
+            for r in await cur.fetchall():
+                try:
+                    d = json.loads(r["data"]) or {}
+                except Exception:
+                    d = {}
+                tr = d.get("translate", {}) or {}
+                if tr:
+                    out.append({"pool_id": r["id"], "norwegian": r["norwegian"], "translate": tr,
+                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"]})
+            return out
+    finally:
+        await _release(db)
+
+
 async def freq_pending(limit: int = 200):
     """Слова без частотности (freq IS NULL) — для фонового добора по корпусу. [(id, norwegian)]."""
     db = await _conn()

@@ -148,6 +148,10 @@ async def init_db():
         except Exception:
             pass
         try:
+            await db.execute("ALTER TABLE users ADD COLUMN focus_topics TEXT")  # JSON-массив тем «в фокусе» (смещение подбора новых слов)
+        except Exception:
+            pass
+        try:
             # до какого момента притормозить приток новых слов (мягкий тормоз аудита при >THROTTLE забытого), §2.4-B
             await db.execute("ALTER TABLE users ADD COLUMN audit_throttle_until TEXT")
         except Exception:

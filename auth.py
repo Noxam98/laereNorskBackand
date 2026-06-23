@@ -11,6 +11,7 @@ from db import (
     get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
     set_user_password, set_user_name, set_online_prefs, set_user_game_mode,
+    set_user_focus_topics,
 )
 from models import (
     UserAuth, Token, RefreshRequest, ThemeBody, GamePrefsBody, CurrentDictBody, GoogleAuth, PasswordBody, NameBody,
@@ -173,6 +174,14 @@ def _parse_game_prefs(raw):
         return None
 
 
+def _parse_focus_topics(raw):
+    try:
+        v = json.loads(raw) if raw else []
+        return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
     return {
@@ -184,6 +193,7 @@ async def me(user=Depends(get_current_user)):
         "hasPassword": bool((user.get("password") or "").strip()),
         "onlinePrefs": _parse_game_prefs(user.get("online_prefs")),
         "gameMode": user.get("game_mode"),
+        "focusTopics": _parse_focus_topics(user.get("focus_topics")),
     }
 
 
@@ -251,6 +261,20 @@ async def set_theme(body: ThemeBody, user=Depends(get_current_user)):
     theme = body.theme if body.theme in ("light", "dark") else "light"
     await set_user_theme(user["id"], theme)
     return {"theme": theme}
+
+
+@router.post("/me/focus_topics")
+async def set_focus_topics(body: dict, user=Depends(get_current_user)):
+    """Темы «в фокусе» Учёбы: смещают подбор новых слов (~35%). Валидируем по известным ключам тем."""
+    try:
+        from llm import TOPIC_KEYS
+        valid = set(TOPIC_KEYS)
+    except Exception:
+        valid = None
+    raw = body.get("topics") if isinstance(body, dict) else None
+    topics = [t for t in (raw or []) if isinstance(t, str) and (valid is None or t in valid)][:12]
+    await set_user_focus_topics(user["id"], topics)
+    return {"focusTopics": topics}
 
 
 @router.post("/me/game_prefs")

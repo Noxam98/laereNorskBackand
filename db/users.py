@@ -1,3 +1,4 @@
+import json
 import aiosqlite
 from .core import _conn, _release, _now
 
@@ -19,6 +20,33 @@ async def set_user_theme(user_id: int, theme: str):
         await db.commit()
     finally:
         await _release(db)
+
+
+async def set_user_focus_topics(user_id: int, topics):
+    """topics — список ключей тем (валидируется снаружи). Хранится JSON-массивом; [] = без фокуса."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE users SET focus_topics = ? WHERE id = ?",
+                         (json.dumps(topics or [], ensure_ascii=False), user_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def get_user_focus_topics(user_id: int):
+    db = await _conn()
+    try:
+        async with db.execute("SELECT focus_topics FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await _release(db)
+    if not row or not row["focus_topics"]:
+        return []
+    try:
+        v = json.loads(row["focus_topics"])
+        return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+    except Exception:
+        return []
 
 
 async def set_user_game_prefs(user_id: int, prefs_json: str):
