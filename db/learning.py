@@ -245,6 +245,10 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         bit = "1" if correct else "0"
         ease = st["ease"]; interval = st["interval_days"]
         modes["hist"] = _push(modes.get("hist", ""), bit, CAPACITY)   # общее окно для силы
+        # «слово реально упражняли в игре» — пассивная карточка-интро (study) НЕ считается.
+        # Это честный признак «повтора» для бейджа: карточка бампит reps, но повтором её считать нельзя.
+        if mode and mode != "study":
+            modes["ex"] = "1"
         # клетка рампы — только для тестовых типов с заданным направлением (study/без direction — пассив)
         if mode and mode != "study" and direction and direction in _DIR_ALLOWED.get(mode, ()):
             cell = f"{mode}_{direction}"
@@ -702,7 +706,9 @@ async def build_session(user_id, size=20, lang="ru"):
             "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
             "forms": (json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
             "mode": mode, "direction": direction, "step": cell,
-            "repeat": e["status"] in ("review", "weak"),  # повтор (уже учил), а не новое слово — для пометки в игре
+            # повтор = слово РЕАЛЬНО упражняли (флаг ex) или есть пройденная ramp-клетка (страховка для
+            # слов до введения флага). Пассивная карточка-интро повтором НЕ считается (см. apply_result).
+            "repeat": (e["modes"].get("ex") == "1") or any(e["modes"].get(c) == "1" for c in ALL_CELLS),
         }
         if mode == "cloze":
             items = cloze_map.get(pid)
