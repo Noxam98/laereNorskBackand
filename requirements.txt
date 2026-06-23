@@ -10,6 +10,7 @@ python-multipart
 openai
 edge-tts
 numpy
+rapidfuzz
 sqlite-vec
 boto3
 pywebpush

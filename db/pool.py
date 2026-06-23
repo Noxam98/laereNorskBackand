@@ -3,20 +3,30 @@ import os
 import time
 import asyncio
 import fuzzy
+import numpy as np
+from rapidfuzz.process import cdist as rf_cdist
+from rapidfuzz.distance import OSA
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
-# ---- Нечёткий (fuzzy) поиск по пулу: индекс нормализованных токенов в памяти ----
+# ---- Нечёткий (fuzzy) поиск по пулу: индекс токенов в памяти + rapidfuzz (C++) ----
 # Полный скан с json.loads+normalize по 6к слов дорог (~2-5с на слабом CPU). Строим индекс
-# ОДИН раз и переиспользуем; на каждый промах — только дешёвый word_close/osa в потоке.
-# Инвалидация: по числу слов (новое сгенерили → пересоберём) + TTL (ловит правки переводов).
-_FUZZY_IDX = {"count": -1, "built": 0.0, "rows": []}  # rows: [(pool_id, (token, ...))]
+# ОДИН раз (плоский список токенов + numpy-массивы pool_id/допуск) и переиспользуем; матчинг
+# запроса считает rapidfuzz.process.cdist (весь проход в C++ одним вызовом, ~десятки мс).
+# Инвалидация: по числу слов (новое сгенерили → пересоберём в фоне) + TTL (ловит правки).
+_FUZZY_IDX = {"count": -1, "built": 0.0, "flat": None}  # flat: (tokens[list], pids[np], tols[np])
 _FUZZY_TTL = 600  # сек
 
 
-def _build_fuzzy_rows(fetched):
-    """CPU-часть постройки индекса (json.loads + normalize) — гоняется в потоке."""
-    out = []
+def _tok_tol(n):
+    """Допуск правок для токена длины n (как fuzzy.tol_for): ≤3 — 0, 4–7 — 1, 8+ — 2."""
+    return 0 if n <= 3 else 1 if n <= 7 else 2
+
+
+def _build_fuzzy_flat(fetched):
+    """CPU-часть постройки индекса (json.loads + normalize) — гоняется в потоке.
+    Возвращает (tokens[list[str]], pids[np.int64], tols[np.uint8])."""
+    tokens, pids, tols = [], [], []
     for r in fetched:
         try:
             d = json.loads(r["data"]) if r["data"] else {}
@@ -26,13 +36,15 @@ def _build_fuzzy_rows(fetched):
         for arr in (d.get("translate") or {}).values():
             if isinstance(arr, list):
                 terms.extend(arr)
-        toks = set()
+        seen = set()
         for t in terms:
             for w in fuzzy.normalize(t).split():
-                if len(w) >= 2:
-                    toks.add(w)
-        out.append((r["id"], tuple(toks)))
-    return out
+                if len(w) >= 2 and w not in seen:
+                    seen.add(w)
+                    tokens.append(w)
+                    pids.append(r["id"])
+                    tols.append(_tok_tol(len(w)))
+    return tokens, np.asarray(pids, dtype=np.int64), np.asarray(tols, dtype=np.uint8)
 
 
 _FUZZY_REBUILDING = {"on": False}
@@ -48,16 +60,16 @@ async def _rebuild_fuzzy_index(cnt, db=None):
     finally:
         if own:
             await _release(db)
-    rows = await asyncio.to_thread(_build_fuzzy_rows, fetched)
-    _FUZZY_IDX.update(count=cnt, built=time.time(), rows=rows)
+    flat = await asyncio.to_thread(_build_fuzzy_flat, fetched)
+    _FUZZY_IDX.update(count=cnt, built=time.time(), flat=flat)
 
 
 async def _ensure_fuzzy_index(db):
     async with db.execute("SELECT COUNT(*) c FROM word_pool") as cur:
         cnt = (await cur.fetchone())["c"]
-    if _FUZZY_IDX["rows"] and _FUZZY_IDX["count"] == cnt and (time.time() - _FUZZY_IDX["built"]) < _FUZZY_TTL:
+    if _FUZZY_IDX["flat"] is not None and _FUZZY_IDX["count"] == cnt and (time.time() - _FUZZY_IDX["built"]) < _FUZZY_TTL:
         return
-    if _FUZZY_IDX["rows"]:
+    if _FUZZY_IDX["flat"] is not None:
         # есть устаревший индекс — отдаём его сразу, пересборка в фоне (не блокирует этот запрос)
         if not _FUZZY_REBUILDING["on"]:
             _FUZZY_REBUILDING["on"] = True
@@ -72,39 +84,32 @@ async def _ensure_fuzzy_index(db):
     await _rebuild_fuzzy_index(cnt, db)
 
 
-def _fuzzy_scan(qn, rows, limit):
-    """Чистый CPU-проход по кэш-индексу (в потоке): [pool_id] по возрастанию расстояния.
-    Инлайн word_close/tol_for + быстрый отсев по длине — без накладных вызовов на далёких токенах."""
-    lq = len(qn)
-    osa = fuzzy.osa
-    scored = []
-    for pid, toks in rows:
-        best = 99
-        for w in toks:
-            lw = len(w)
-            if abs(lw - lq) > 3:          # заведомо далеко — пропускаем без osa
-                continue
-            if w == qn:
-                best = 0
-                break
-            dd = osa(qn, w)
-            tol = 0 if lw <= 3 else 1 if lw <= 7 else 2
-            if dd <= tol and dd < best:
-                best = dd
-        if best < 99:
-            scored.append((best, pid))
-    scored.sort(key=lambda x: x[0])
-    return [pid for _s, pid in scored[:limit]]
+def _fuzzy_scan(qn, flat, limit):
+    """Матчинг запроса по кэш-индексу через rapidfuzz (C++ батч): [pool_id] по росту расстояния."""
+    tokens, pids, tols = flat
+    if not tokens:
+        return []
+    # OSA-расстояние запрос × все токены одним вызовом C++; >2 отсекаются (score_cutoff)
+    row = rf_cdist([qn], tokens, scorer=OSA.distance, score_cutoff=2, dtype=np.uint8)[0]
+    idx = np.nonzero(row <= tols)[0]            # принятые: расстояние ≤ допуска токена
+    if idx.size == 0:
+        return []
+    best = {}
+    for i in idx.tolist():
+        pid = int(pids[i]); dd = int(row[i])
+        if best.get(pid, 99) > dd:
+            best[pid] = dd
+    return [pid for pid, _ in sorted(best.items(), key=lambda kv: kv[1])[:limit]]
 
 
 async def fuzzy_pool_ids(db, query, limit=10):
     """Ранжированные pool_id по неточному совпадению (норвежский + переводы любых языков),
-    через кэш-индекс. Тяжёлый CPU-проход — в отдельном потоке (не блокирует event loop)."""
+    через кэш-индекс + rapidfuzz. CPU-проход — в отдельном потоке (не блокирует event loop)."""
     qn = fuzzy.normalize(query or "")
     if len(qn) < 3:
         return []
     await _ensure_fuzzy_index(db)
-    return await asyncio.to_thread(_fuzzy_scan, qn, _FUZZY_IDX["rows"], limit)
+    return await asyncio.to_thread(_fuzzy_scan, qn, _FUZZY_IDX["flat"], limit)
 
 
 async def get_or_create_pool(norwegian: str, data: dict):
