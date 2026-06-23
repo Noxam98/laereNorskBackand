@@ -18,7 +18,8 @@ def _fold_no(s):
 _SQL_FOLD_NO = "replace(replace(replace(norwegian,'å','a'),'ø','o'),'æ','ae')"
 
 _POOL_LANGS = {"ru", "ukr", "en", "pl", "lt"}  # языки интерфейса = ключи translate в data
-_SEM_MAX_DIST = float(os.getenv("POOL_SEM_MAX_DIST", "0.62"))  # порог косинус-дистанции для семантики
+_SEM_MAX_DIST = float(os.getenv("POOL_SEM_MAX_DIST", "0.52"))   # порог косинус-дистанции для семантики
+_SEM_MAX_RESULTS = int(os.getenv("POOL_SEM_MAX_RESULTS", "12"))  # семантика — подсказка, не полный список
 
 
 def _key_cond(key, lang):
@@ -1277,8 +1278,8 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 qvec = None
             if qvec:
                 raw = np.asarray(qvec, dtype=np.float16).tobytes()
-                near = await vec_nearest_rows(raw, limit * 4) or []
-                sids = [r["id"] for r in near if r.get("distance") is not None and r["distance"] <= _SEM_MAX_DIST]
+                near = await vec_nearest_rows(raw, 30) or []
+                sids = [r["id"] for r in near if r.get("distance") is not None and r["distance"] <= _SEM_MAX_DIST][:_SEM_MAX_RESULTS]
                 if sids:
                     marks = ",".join("?" for _ in sids)
                     vis, vparams = "", []
