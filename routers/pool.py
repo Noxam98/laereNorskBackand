@@ -187,8 +187,8 @@ async def admin_stats(user=Depends(get_admin_user)):
 
 
 @router.get("/pool/search")
-async def pool_search(q: str, limit: int = 10, user=Depends(get_current_user)):
-    return {"results": await search_pool(q, limit)}
+async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(get_current_user)):
+    return {"results": await search_pool(q, limit, lang)}
 
 
 @router.post("/pool/generate")

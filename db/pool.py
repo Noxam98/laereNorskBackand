@@ -1078,9 +1078,10 @@ async def get_pool_ids(q: str = None, topics=None, level: str = None):
         await _release(db)
 
 
-async def search_pool(prefix: str, limit: int = 10):
+async def search_pool(prefix: str, limit: int = 10, lang: str = None):
     """Автокомплит по общему пулу: по норвежскому слову И по переводам (любой язык).
-    Норвежские совпадения по префиксу — выше."""
+    Норвежские совпадения по префиксу — выше. Неточный (fuzzy) добор — по норвежскому
+    и по переводу на `lang` (язык интерфейса), если точных совпадений мало."""
     key = normalize_word(prefix)
     if not key:
         return []
@@ -1099,29 +1100,35 @@ async def search_pool(prefix: str, limit: int = 10):
                 have.add(r["norwegian"].lower())
                 out.append({"word": r["norwegian"], "translate": d.get("translate", {}),
                             "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
-            # неточный (fuzzy) добор по опечаткам — по норвежскому слову; если точных мало.
-            # Языко-независим (osa по нормализованным строкам). Грузим лёгкую колонку id+norwegian.
+            # неточный (fuzzy) добор по опечаткам — по норвежскому И переводу на язык `lang`
+            # (Вариант 1). Языко-независимый osa; пул грузим один раз и только при нехватке точных.
             if len(out) < limit and len(key) >= 3:
                 qn = fuzzy.normalize(prefix)
-                async with db.execute("SELECT id, norwegian FROM word_pool") as curf:
-                    cand = [(r["id"], r["norwegian"]) for r in await curf.fetchall()]
-                scored = sorted(
-                    ((fuzzy.osa(qn, fuzzy.normalize(nw)), pid, nw) for pid, nw in cand
-                     if nw.lower() not in have and fuzzy.word_close(qn, fuzzy.normalize(nw))),
-                    key=lambda x: x[0])[:max(0, limit - len(out))]
-                if scored:
-                    ids = [s[1] for s in scored]
-                    marks = ",".join("?" for _ in ids)
-                    async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", ids) as curd:
-                        dmap = {r["id"]: r for r in await curd.fetchall()}
-                    for _, pid, nw in scored:
-                        r = dmap.get(pid)
-                        if not r:
-                            continue
-                        d = json.loads(r["data"]) if r["data"] else {}
-                        out.append({"word": nw, "translate": d.get("translate", {}),
-                                    "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
-                        have.add(nw.lower())
+                async with db.execute("SELECT norwegian, data FROM word_pool") as curf:
+                    rowsf = await curf.fetchall()
+                scored = []
+                for r in rowsf:
+                    nw = r["norwegian"]
+                    if nw.lower() in have:
+                        continue
+                    d = json.loads(r["data"]) if r["data"] else {}
+                    terms = [nw] + (((d.get("translate") or {}).get(lang) or []) if lang else [])
+                    best = None
+                    for term in terms:
+                        for w in fuzzy.normalize(term).split():
+                            if w and fuzzy.word_close(qn, w):
+                                dd = fuzzy.osa(qn, w)
+                                if best is None or dd < best:
+                                    best = dd
+                    if best is not None:
+                        scored.append((best, nw, d))
+                scored.sort(key=lambda x: x[0])
+                for _, nw, d in scored[:max(0, limit - len(out))]:
+                    if len(out) >= limit:
+                        break
+                    out.append({"word": nw, "translate": d.get("translate", {}),
+                                "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
+                    have.add(nw.lower())
             # добор из полного лексикона (слова, которых ещё нет в пуле) — по префиксу, частотные сначала
             if len(out) < limit:
                 try:
