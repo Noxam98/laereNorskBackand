@@ -47,16 +47,25 @@ async def _ensure_fuzzy_index(db):
 
 
 def _fuzzy_scan(qn, rows, limit):
-    """Чистый CPU-проход по кэш-индексу (в потоке): [pool_id] по возрастанию расстояния."""
+    """Чистый CPU-проход по кэш-индексу (в потоке): [pool_id] по возрастанию расстояния.
+    Инлайн word_close/tol_for + быстрый отсев по длине — без накладных вызовов на далёких токенах."""
+    lq = len(qn)
+    osa = fuzzy.osa
     scored = []
     for pid, toks in rows:
-        best = None
+        best = 99
         for w in toks:
-            if fuzzy.word_close(qn, w):
-                dd = fuzzy.osa(qn, w)
-                if best is None or dd < best:
-                    best = dd
-        if best is not None:
+            lw = len(w)
+            if abs(lw - lq) > 3:          # заведомо далеко — пропускаем без osa
+                continue
+            if w == qn:
+                best = 0
+                break
+            dd = osa(qn, w)
+            tol = 0 if lw <= 3 else 1 if lw <= 7 else 2
+            if dd <= tol and dd < best:
+                best = dd
+        if best < 99:
             scored.append((best, pid))
     scored.sort(key=lambda x: x[0])
     return [pid for _s, pid in scored[:limit]]
