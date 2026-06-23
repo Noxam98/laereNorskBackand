@@ -192,6 +192,15 @@ def _next_step(row, modes):
     return None
 
 
+def _review_step(row):
+    """Шаг ПОВТОРА выученного слова, ставшего due: последняя ступень рампы (продукция).
+    Для контентных это input_int2no (ввод с клавиатуры). Верный ответ → интервал растёт
+    (слово остаётся mastered); неверный → apply_result сбросит input+build → откат в рампу."""
+    last = required_cells(row)[-1]
+    mode, direction = last.split("_", 1)
+    return (last, mode, direction)
+
+
 def status_of(row, modes=None):
     """Статус слова из его состояния."""
     if row.get("archived"):
@@ -648,6 +657,14 @@ async def build_session(user_id, size=20, lang="ru"):
     maturing = sorted(
         [e for e in enriched if e["status"] in ("new", "learning", "review")],
         key=lambda e: (attempts(e) == 0, e["row"].get("strength") or 0))  # сначала тронутые, новые в хвост
+    # выученные, но ещё НЕ сертифицированные контентные слова, у которых наступил due — на ПОВТОР
+    # (ввод с клавиатуры), чтобы не «зависали» в ожидании зачёта пачкой. Сертифицированные не трогаем
+    # (у них свой аудит). Служебные исключаем — у них cloze-рампа, повтор так не делаем.
+    due_mastered = sorted(
+        [e for e in enriched if e["status"] == "mastered" and e["due"]
+         and not _is_certified(e["row"])
+         and not is_function_word(e["row"]["norwegian"], e["data"])],
+        key=lambda e: e["row"].get("due_at") or "")
 
     # «Умная очередь»: слово, показанное ТОЛЬКО ЧТО (last_seen свежее кулдауна), не ставим в начало
     # следующей сессии — откладываем в ХВОСТ очереди (а при достатке слов — фактически в следующую
@@ -660,18 +677,22 @@ async def build_session(user_id, size=20, lang="ru"):
     # func_gate_ok уже посчитан выше (после загрузки/добора)
     # кандидаты в порядке приоритета (дедуп; без mastered/archived и без следующего шага рампы)
     cand, seen, seen_wp = [], set(), set()
-    for pool in (returned, overdue, weak, maturing):
+    # (пул, review): review-пул выученных due-слов идёт на ПОВТОР (последняя ступень — ввод), а не
+    # по _next_step. Тир повторов — после returned/overdue, до weak/maturing (повторы важнее новых).
+    for pool, review in ((returned, False), (overdue, False), (due_mastered, True), (weak, False), (maturing, False)):
         for e in pool:
             pid = e["row"]["pool_id"]
             # не допускаем в сессии два одинаковых слова с одинаковой частью речи (омонимы с
             # РАЗНЫМ pos — можно, это разные слова; одинаковые (norwegian, pos) — нет)
             wp = (e["row"]["norwegian"], (e["data"] or {}).get("part_of_speech", "") or "")
-            if pid in seen or wp in seen_wp or e["status"] in ("mastered", "archived"):
+            if pid in seen or wp in seen_wp or e["status"] == "archived":
+                continue
+            if not review and e["status"] == "mastered":   # mastered в обычные пулы не берём
                 continue
             # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
             if attempts(e) == 0 and _func_locked(e):
                 continue
-            step = _next_step(e["row"], e["modes"])
+            step = _review_step(e["row"]) if review else _next_step(e["row"], e["modes"])
             if not step:
                 continue
             seen.add(pid)
