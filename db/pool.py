@@ -881,14 +881,17 @@ async def delete_pool_word(norwegian: str):
     _invalidate_candidates()  # слово больше не должно всплывать в «похожих»
 
 
+# (основной_ключ, добор|None). Направление — к основному ключу, добор всегда ASC.
+# Пара, а не строка с запятыми: основной ключ может сам содержать запятую (COALESCE(freq, -1)),
+# и наивный split(",") ломал SQL → 500 на сортировке по частоте.
 _POOL_SORTS = {
-    "alpha": "norwegian",
-    "added": "created_at, id",
+    "alpha": ("norwegian", None),
+    "added": ("created_at", "id"),
     # уровень: A1<…<C2, непроставленные в конец; добор по алфавиту
-    "level": "CASE level WHEN 'A1' THEN 1 WHEN 'A2' THEN 2 WHEN 'B1' THEN 3 "
-             "WHEN 'B2' THEN 4 WHEN 'C1' THEN 5 WHEN 'C2' THEN 6 ELSE 99 END, norwegian",
-    # частотность: добор по алфавиту; направление (часто/редко сначала) — кнопкой порядка
-    "freq": "COALESCE(freq, -1), norwegian",
+    "level": ("CASE level WHEN 'A1' THEN 1 WHEN 'A2' THEN 2 WHEN 'B1' THEN 3 "
+              "WHEN 'B2' THEN 4 WHEN 'C1' THEN 5 WHEN 'C2' THEN 6 ELSE 99 END", "norwegian"),
+    # частотность: NULL → -1 (в хвост при DESC); добор по алфавиту; направление — кнопкой порядка
+    "freq": ("COALESCE(freq, -1)", "norwegian"),
 }
 
 
@@ -978,14 +981,10 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         params += pos_params
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
-    order_by = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
+    primary, tie = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
     direction = "DESC" if str(order).lower() == "desc" else "ASC"
-    # направление применяем к первому ключу сортировки, добор оставляем по возрастанию
-    if "," in order_by:
-        first, rest = order_by.split(",", 1)
-        order_sql = f"{first} {direction},{rest}"
-    else:
-        order_sql = f"{order_by} {direction}"
+    # направление — к основному ключу; добор (tie) всегда по возрастанию
+    order_sql = f"{primary} {direction}" + (f", {tie}" if tie else "")
 
     db = await _conn()
     try:
