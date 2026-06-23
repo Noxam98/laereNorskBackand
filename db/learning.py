@@ -702,6 +702,7 @@ async def build_session(user_id, size=20, lang="ru"):
             "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
             "forms": (json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
             "mode": mode, "direction": direction, "step": cell,
+            "repeat": e["status"] in ("review", "weak"),  # повтор (уже учил), а не новое слово — для пометки в игре
         }
         if mode == "cloze":
             items = cloze_map.get(pid)
