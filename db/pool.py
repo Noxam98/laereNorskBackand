@@ -1040,6 +1040,42 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             (*params, limit, offset),
         ) as cur:
             rows = await cur.fetchall()
+        # fuzzy-fallback: подстрока ничего не нашла (опечатка) → ищем по неточному совпадению
+        # норвежского И переводов (любой язык), чтобы «молоок» находил melk. Только для чистого
+        # текстового запроса (без фильтров тема/уровень/missing/pos) — иначе результат сбивает с толку.
+        if total == 0 and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql:
+            qn = fuzzy.normalize(q)
+            async with db.execute("SELECT id, norwegian, data FROM word_pool") as curf:
+                allrows = await curf.fetchall()
+            scored = []
+            for r in allrows:
+                d = json.loads(r["data"]) if r["data"] else {}
+                terms = [r["norwegian"]]
+                for arr in (d.get("translate") or {}).values():
+                    if isinstance(arr, list):
+                        terms.extend(arr)
+                best = None
+                for term in terms:
+                    for w in fuzzy.normalize(term).split():
+                        if w and fuzzy.word_close(qn, w):
+                            dd = fuzzy.osa(qn, w)
+                            if best is None or dd < best:
+                                best = dd
+                if best is not None:
+                    scored.append((best, r["id"]))
+            scored.sort(key=lambda x: x[0])
+            fids = [i for _, i in scored[:limit]]
+            if fids:
+                marks = ",".join("?" for _ in fids)
+                async with db.execute(
+                    f"SELECT id, norwegian, data, level, forms, (tts IS NOT NULL) AS has_tts, "
+                    f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
+                    f"FROM word_pool WHERE id IN ({marks})", fids,
+                ) as cur:
+                    frows = await cur.fetchall()
+                pos_order = {pid: n for n, pid in enumerate(fids)}  # сохранить порядок по fuzzy-скору
+                rows = sorted(frows, key=lambda r: pos_order.get(r["id"], 1 << 30))
+                total = len(rows)
         # темы страницы — одним запросом (без N+1)
         ids = [r["id"] for r in rows]
         topic_map = {}
