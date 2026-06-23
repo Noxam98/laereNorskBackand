@@ -14,7 +14,7 @@ from db import (
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled, embed_text
 from task import description_task, desc_user_prompt
 from models import RedescribeBody, RediffBody, PoolEditBody, AskBody
 import runtime
@@ -108,7 +108,7 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq", "relevance") else "alpha"
-    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang)
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang, embed_fn=embed_text)
     res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang, user_id=user["id"])  # счётчики под текущий фильтр
     return res
 

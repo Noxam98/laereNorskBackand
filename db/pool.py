@@ -18,6 +18,7 @@ def _fold_no(s):
 _SQL_FOLD_NO = "replace(replace(replace(norwegian,'å','a'),'ø','o'),'æ','ae')"
 
 _POOL_LANGS = {"ru", "ukr", "en", "pl", "lt"}  # языки интерфейса = ключи translate в data
+_SEM_MAX_DIST = float(os.getenv("POOL_SEM_MAX_DIST", "0.62"))  # порог косинус-дистанции для семантики
 
 
 def _key_cond(key, lang):
@@ -1186,7 +1187,8 @@ _MISSING_SQL["forms"] = f"forms IS NULL AND {_FORMABLE_SQL}"
 
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
-                        missing: str = None, pos: str = None, user_id: int = None, lang: str = None):
+                        missing: str = None, pos: str = None, user_id: int = None, lang: str = None,
+                        embed_fn=None):
     """Список слов общего пула: поиск по норвежскому + языку интерфейса, фильтры тема/уровень/
     часть речи, фильтр missing, сортировка и пагинация."""
     conds, params = [], []
@@ -1264,6 +1266,35 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 pos_order = {pid: n for n, pid in enumerate(fids)}  # сохранить порядок по fuzzy-скору
                 rows = sorted(frows, key=lambda r: pos_order.get(r["id"], 1 << 30))
                 total = len(rows)
+        # семантический fallback: ни подстрока, ни fuzzy ничего не дали → ищем по смыслу
+        # (эмбеддинг запроса → ближайшие по косинусу через vec_words). embed_fn инжектится из
+        # роутера (квота-aware embed_text). Только для чистого текстового запроса.
+        if (not rows) and embed_fn and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql:
+            qvec = None
+            try:
+                qvec = await embed_fn(q)
+            except Exception:
+                qvec = None
+            if qvec:
+                raw = np.asarray(qvec, dtype=np.float16).tobytes()
+                near = await vec_nearest_rows(raw, limit * 4) or []
+                sids = [r["id"] for r in near if r.get("distance") is not None and r["distance"] <= _SEM_MAX_DIST]
+                if sids:
+                    marks = ",".join("?" for _ in sids)
+                    vis, vparams = "", []
+                    if user_id:
+                        vis = " AND (COALESCE(approved,1) = 1 OR created_by = ?)"
+                        vparams = [user_id]
+                    async with db.execute(
+                        f"SELECT id, norwegian, data, level, forms, (tts IS NOT NULL) AS has_tts, "
+                        f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
+                        f"FROM word_pool WHERE id IN ({marks}){vis}", (*sids, *vparams),
+                    ) as cur:
+                        srows = await cur.fetchall()
+                    sem_order = {pid: n for n, pid in enumerate(sids)}
+                    ranked = sorted(srows, key=lambda r: sem_order.get(r["id"], 1 << 30))
+                    total = len(ranked)
+                    rows = ranked[offset:offset + limit]
         # темы страницы — одним запросом (без N+1)
         ids = [r["id"] for r in rows]
         topic_map = {}
