@@ -335,24 +335,36 @@ async def set_status(user_id: int, pool_id: int, action: str):
 async def learning_add(user_id: int, pool_id: int):
     """Добавить слово из Базы прямо в Учёбу — кладём в скрытый авто-словарь (studying=1),
     чтобы не плодить именованные словари. Идемпотентно (UNIQUE dict_id,pool_id).
-    Слово сразу появляется в Учёбе как «новое» (см. _fetch_user_words)."""
+    Если слово раньше «мягко удаляли» (архив с сохранённым прогрессом) — возвращаем в ротацию
+    (archived=0), т.е. прогресс восстанавливается. Иначе слово появляется как «новое»."""
     from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
     dict_id = await get_or_create_hidden_dict(user_id)
     res = await add_word_to_dict(user_id, dict_id, pool_id)
     if res.get("error"):
         return res
+    db = await _conn()
+    try:
+        await db.execute(
+            "UPDATE user_words SET archived = 0, due_at = ? WHERE user_id = ? AND pool_id = ? AND archived = 1",
+            (_due_str(1), user_id, pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
     return {"ok": True, "pool_id": pool_id, "duplicate": bool(res.get("duplicate"))}
 
 
 async def learning_remove(user_id: int, pool_id: int):
-    """Полностью убрать слово из Учёбы: из всех словарей пользователя (dict_words)
-    и его SRS-прогресс (user_words). Обратимо повторным добавлением (прогресс при этом теряется)."""
+    """Мягко убрать слово из Учёбы: отвязать от словарей пользователя (dict_words), а прогресс
+    (user_words), если он есть, НЕ удалять — архивировать (archived=1). Так слово уходит из
+    ротации и из всех списков/счётчиков Учёбы (не попадает в _fetch_user_words без dict_words),
+    но при повторном добавлении прогресс восстановится. Свежее «новое» (без user_words) — просто
+    отвязка (чистая отмена добавления)."""
     db = await _conn()
     try:
         await db.execute(
             "DELETE FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
             (pool_id, user_id))
-        await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
+        await db.execute("UPDATE user_words SET archived = 1 WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
         await db.commit()
         return {"ok": True}
     finally:
