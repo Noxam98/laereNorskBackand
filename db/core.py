@@ -177,16 +177,25 @@ async def init_db():
         await db.execute("""
         CREATE TABLE IF NOT EXISTS word_pool (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            norwegian TEXT UNIQUE NOT NULL,
+            norwegian TEXT NOT NULL,
             data TEXT NOT NULL,
             description TEXT,
             embedding TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            pos TEXT,
+            UNIQUE(norwegian, pos)
         )
         """)
         # миграция для старых БД
         try:
             await db.execute("ALTER TABLE word_pool ADD COLUMN embedding TEXT")
+        except Exception:
+            pass
+        # часть речи в колонке — для омонимов (føde «еда»/«рожать»): запись = (norwegian, pos).
+        # На проде UNIQUE(norwegian)→UNIQUE(norwegian,pos) сделан отдельной миграцией (пересборка
+        # таблицы); здесь ALTER лишь добавляет колонку старым БД без неё.
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN pos TEXT")
         except Exception:
             pass
         try:

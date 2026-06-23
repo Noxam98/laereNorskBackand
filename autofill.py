@@ -472,6 +472,17 @@ async def dedup_loop():
                 await asyncio.sleep(2)
                 continue
             nid, nno, ndata, _dist = cand[0]
+            # омонимы: разные части речи = разные слова (føde «еда»/«рожать») — не сливаем
+            def _pos_of(d):
+                try:
+                    return ((json.loads(d) if isinstance(d, str) else (d or {})) or {}).get("part_of_speech", "") or ""
+                except Exception:
+                    return ""
+            pa, pb = _pos_of(data), _pos_of(ndata)
+            if pa and pb and pa != pb:
+                await mark_dedup(pid)
+                await asyncio.sleep(2)
+                continue
             user = (f"Слово A: «{no}» ({_tr_brief(data)})\n"
                     f"Слово B: «{nno}» ({_tr_brief(ndata)})")
             res = await ask_json(_DEDUP_SYS, user, DEDUP_SCHEMA, purpose="autofill",

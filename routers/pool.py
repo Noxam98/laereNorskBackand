@@ -214,7 +214,7 @@ async def pool_generate(body: dict, user=Depends(get_current_user)):
         raise HTTPException(status_code=502, detail="generation failed")
     for it in normalized:
         if isinstance(it, dict) and not it.get("error") and it.get("word"):
-            npid = await get_pool_id(it["word"])
+            npid = await get_pool_id(it["word"], it.get("part_of_speech", ""))
             if npid:
                 return {"word": it["word"], "pool_id": npid, "generated": True,
                         "translate": it.get("translate", {})}

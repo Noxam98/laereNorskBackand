@@ -7,21 +7,23 @@ from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete,
 
 
 async def get_or_create_pool(norwegian: str, data: dict):
-    """Вернуть id записи пула для норвежского слова, создав её при необходимости."""
+    """Вернуть id записи пула для (норвежское слово + часть речи), создав её при необходимости.
+    Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи."""
     key = normalize_word(norwegian)
     if not key:
         return None
+    pos = ((data or {}).get("part_of_speech") or "")
     db = await _conn()
     try:
-        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ?", (key, pos)) as cur:
             row = await cur.fetchone()
             if row:
                 return row["id"]
         # частотность проставляем СРАЗУ при создании — из корпус-лексикона (нет в нём → 0.0)
         cur = await db.execute(
-            "INSERT INTO word_pool (norwegian, data, created_at, freq) "
-            "VALUES (?, ?, ?, COALESCE((SELECT zipf FROM nb_lexicon WHERE word = ?), 0.0))",
-            (key, json.dumps(data, ensure_ascii=False), _now(), key),
+            "INSERT INTO word_pool (norwegian, data, created_at, pos, freq) "
+            "VALUES (?, ?, ?, ?, COALESCE((SELECT zipf FROM nb_lexicon WHERE word = ?), 0.0))",
+            (key, json.dumps(data, ensure_ascii=False), _now(), pos, key),
         )
         await db.commit()
         return cur.lastrowid
@@ -29,14 +31,19 @@ async def get_or_create_pool(norwegian: str, data: dict):
         await _release(db)
 
 
-async def get_pool_id(norwegian: str):
-    """id записи пула по норвежскому слову (без создания)."""
+async def get_pool_id(norwegian: str, pos: str = None):
+    """id записи пула по норвежскому слову (без создания). Если задан pos — по паре
+    (norwegian, pos) точно; иначе любая запись с этим словом (старшая по id)."""
     key = normalize_word(norwegian)
     if not key:
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        if pos is not None:
+            sql, args = "SELECT id FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ?", (key, pos or "")
+        else:
+            sql, args = "SELECT id FROM word_pool WHERE norwegian = ? ORDER BY id LIMIT 1", (key,)
+        async with db.execute(sql, args) as cur:
             r = await cur.fetchone()
             return r["id"] if r else None
     finally:

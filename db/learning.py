@@ -655,11 +655,14 @@ async def build_session(user_id, size=20, lang="ru"):
 
     # func_gate_ok уже посчитан выше (после загрузки/добора)
     # кандидаты в порядке приоритета (дедуп; без mastered/archived и без следующего шага рампы)
-    cand, seen = [], set()
+    cand, seen, seen_wp = [], set(), set()
     for pool in (returned, overdue, weak, maturing):
         for e in pool:
             pid = e["row"]["pool_id"]
-            if pid in seen or e["status"] in ("mastered", "archived"):
+            # не допускаем в сессии два одинаковых слова с одинаковой частью речи (омонимы с
+            # РАЗНЫМ pos — можно, это разные слова; одинаковые (norwegian, pos) — нет)
+            wp = (e["row"]["norwegian"], (e["data"] or {}).get("part_of_speech", "") or "")
+            if pid in seen or wp in seen_wp or e["status"] in ("mastered", "archived"):
                 continue
             # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
             if attempts(e) == 0 and _func_locked(e):
@@ -668,6 +671,7 @@ async def build_session(user_id, size=20, lang="ru"):
             if not step:
                 continue
             seen.add(pid)
+            seen_wp.add(wp)
             cand.append((e, step))
 
     # недавно показанные — в хвост (не лидируют следующую сессию); остальные сохраняют приоритет
