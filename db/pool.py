@@ -17,6 +17,23 @@ def _fold_no(s):
 # SQL-выражение, складывающее å/ø/æ в колонке norwegian (для LIKE без учёта норв. букв)
 _SQL_FOLD_NO = "replace(replace(replace(norwegian,'å','a'),'ø','o'),'æ','ae')"
 
+_POOL_LANGS = {"ru", "ukr", "en", "pl", "lt"}  # языки интерфейса = ключи translate в data
+
+
+def _key_cond(key, lang):
+    """SQL-условие подстрочного поиска: норвежский (+ свёртка å/ø/æ) И перевод на язык
+    интерфейса (json_extract по translate.<lang>). Ищем только по двум языкам — норвежскому и
+    системному — чтобы не цеплять чужие языки (напр. «male» в польском «maleć»). Если lang не из
+    списка — fallback на data LIKE (все языки, прежнее поведение). Возвращает (cond, params)."""
+    parts = ["norwegian LIKE ?", f"{_SQL_FOLD_NO} LIKE ?"]
+    params = [f"%{key}%", f"%{_fold_no(key)}%"]
+    if lang in _POOL_LANGS:
+        parts.append(f"json_extract(data, '$.translate.{lang}') LIKE ?")
+    else:
+        parts.append("data LIKE ?")
+    params.append(f"%{key}%")
+    return "(" + " OR ".join(parts) + ")", params
+
 
 # ---- Нечёткий (fuzzy) поиск по пулу: индекс токенов в памяти + rapidfuzz (C++) ----
 # Полный скан с json.loads+normalize по 6к слов дорог (~2-5с на слабом CPU). Строим индекс
@@ -847,7 +864,7 @@ async def get_pool_meta(word: str, user_id: int = None):
         await _release(db)
 
 
-async def get_pool_facets(q: str = None, topics=None, level: str = None):
+async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: str = None):
     """Динамические счётчики фильтров под текущий выбор (дизъюнктивный facet — каждая группа
     считается БЕЗ учёта собственного выбора, т.к. мультивыбор внутри группы = ИЛИ).
     Темы: число слов по каждой теме под (поиск + уровень), без учёта выбранных тем —
@@ -858,8 +875,9 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None):
     def base(use_level, use_topics):
         conds, params = [], []
         if key:
-            conds.append(f"(norwegian LIKE ? OR data LIKE ? OR {_SQL_FOLD_NO} LIKE ?)")
-            params += [f"%{key}%", f"%{key}%", f"%{_fold_no(key)}%"]
+            c, p = _key_cond(key, lang)
+            conds.append(c)
+            params += p
         if use_level and level:
             conds.append("level = ?")
             params.append(level)
@@ -1123,15 +1141,15 @@ _MISSING_SQL["forms"] = f"forms IS NULL AND {_FORMABLE_SQL}"
 
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
-                        missing: str = None, pos: str = None, user_id: int = None):
-    """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень/часть речи,
-    фильтр missing (без эмбеддинга/описания/озвучки/уровня/форм), сортировка и пагинация."""
+                        missing: str = None, pos: str = None, user_id: int = None, lang: str = None):
+    """Список слов общего пула: поиск по норвежскому + языку интерфейса, фильтры тема/уровень/
+    часть речи, фильтр missing, сортировка и пагинация."""
     conds, params = [], []
     key = normalize_word(q) if q else None
     if key:
-        # подстрока + å/ø/æ-нечувствительность по норвежскому (чтобы «male» находил «måle»)
-        conds.append(f"(norwegian LIKE ? OR data LIKE ? OR {_SQL_FOLD_NO} LIKE ?)")
-        params += [f"%{key}%", f"%{key}%", f"%{_fold_no(key)}%"]
+        c, p = _key_cond(key, lang)   # норвежский (+å/ø/æ) + перевод на язык интерфейса
+        conds.append(c)
+        params += p
     if topics:
         marks = ",".join("?" for _ in topics)
         conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")

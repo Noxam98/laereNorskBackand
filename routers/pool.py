@@ -103,12 +103,12 @@ async def pool_revoice(word: str, user=Depends(get_current_user)):
 async def pool(q: str = None, limit: int = 60, offset: int = 0,
               topics: str = None, level: str = None,
               sort: str = "alpha", order: str = "asc", missing: str = None, pos: str = None,
-              user=Depends(get_current_user)):
+              lang: str = None, user=Depends(get_current_user)):
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq") else "alpha"
-    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"])
-    res["facets"] = await get_pool_facets(q, topic_list, lvl)  # динамические счётчики под текущий фильтр
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang)
+    res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang)  # динамические счётчики под текущий фильтр
     return res
 
 
