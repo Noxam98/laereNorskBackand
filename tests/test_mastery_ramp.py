@@ -34,17 +34,24 @@ async def test_three_cells_not_mastered(fresh_db):
     assert _mastered_by_modes(r["modes"]) is False
 
 
-async def test_error_resets_only_that_cell(fresh_db):
+async def test_error_rolls_back_one_step(fresh_db):
+    """Ошибка сбрасывает текущую клетку И откатывает на ОДНУ ступень назад (первую/карточку не трогает).
+    Ошибка на input → сброшены input И build; снова mastered только после повторного build → input."""
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "katt", "кот")
     await _master_all(uid, pid)
-    # ошибка в input — сбрасывает только эту клетку
+    # ошибка в input — сбрасывает input И предыдущую ступень (build); ранние ступени не тронуты
     r = await apply_result(uid, pid, False, mode="input", direction="int2no")
     assert r["modes"]["input_int2no"] == ""
+    assert r["modes"]["build_int2no"] == ""        # откат на ступень назад
     assert r["modes"]["choice_no2int"] == "1"
+    assert r["modes"]["choice_int2no"] == "1"
     assert r["mastered"] is False
-    # повторно верно — снова mastered
+    # одного верного input мало — build ещё сброшен
     r = await apply_result(uid, pid, True, mode="input", direction="int2no")
+    assert r["mastered"] is False
+    # заново build → все клетки снова пройдены → mastered
+    r = await apply_result(uid, pid, True, mode="build", direction="int2no")
     assert r["mastered"] is True
 
 

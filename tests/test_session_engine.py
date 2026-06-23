@@ -26,6 +26,19 @@ async def _set_due(pool_id, user_id, due_at):
         await _release(db)
 
 
+async def _age_seen(pool_id, user_id):
+    """Состарить last_seen (за кулдаун) — слово перестаёт считаться «только что показанным»,
+    иначе «умная очередь» отправит его в хвост и собьёт проверку приоритета."""
+    db = await _conn()
+    try:
+        await db.execute(
+            "UPDATE user_words SET last_seen = ? WHERE user_id = ? AND pool_id = ?",
+            ("2000-01-01T00:00:00", user_id, pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 # (1) свежее слово → первый шаг — пассивная карточка, первая клетка рампы
 async def test_fresh_word_first_step_is_card(fresh_db):
     uid, did = await seed_user()
@@ -144,6 +157,7 @@ async def test_overdue_before_fresh_new(fresh_db):
     pid_over, _ = await seed_word(did, "overdue", "просрочено")
     await apply_result(uid, pid_over, True, mode="choice", direction="no2int")
     await _set_due(pid_over, uid, _due_str(-5))
+    await _age_seen(pid_over, uid)   # просрочка = давно не виделись (иначе кулдаун уведёт в хвост)
     pid_new, _ = await seed_word(did, "brandnew", "новое")
 
     res = await build_session(uid, size=20)

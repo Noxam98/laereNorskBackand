@@ -87,8 +87,10 @@ async def test_build_gate_exam_shape(fresh_db):
     ex = await build_gate_exam(uid, lang="ru")
     assert len(ex["questions"]) == SAMPLE
     for q in ex["questions"]:
-        assert set(q.keys()) >= {"no", "pool_id", "options"}
-        assert len(q["options"]) == 4
+        # типы: cloze/input/int2no/no2int — общие ключи только type+pool_id; вариантов у input нет
+        assert {"type", "pool_id"} <= set(q.keys())
+        if "options" in q:
+            assert len(q["options"]) == 4
 
 
 async def test_gate_pass_certifies_whole_pack(fresh_db):
@@ -128,7 +130,9 @@ async def test_gate_fail_demotes_double(fresh_db):
     pid0 = pack[n_correct][0]
     row = await _row(uid, pid0)
     modes = json.loads(row["modes"] or "{}")
-    assert all(modes.get(c, "") != "1" for c in ["choice_no2int", "input_int2no"])
+    # демоут возвращает слово на последнюю ступень рампы: input сброшен, ранние — пройдены
+    assert modes.get("input_int2no", "") == ""
+    assert modes.get("choice_no2int") == "1"
     assert row["certified"] == 0
     assert status_of(row, modes) != "mastered"
 

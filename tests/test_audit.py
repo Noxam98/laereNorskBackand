@@ -88,8 +88,10 @@ async def test_build_audit_picks_overdue_capped_and_ordered(fresh_db):
     # первым — самый давний (pid из overdue[0])
     assert ex["questions"][0]["pool_id"] == overdue[0][0]
     for q in ex["questions"]:
-        assert set(q.keys()) >= {"no", "pool_id", "options"}
-        assert len(q["options"]) == 4
+        # типы: cloze/input/int2no/no2int — общие ключи только type+pool_id; вариантов у input нет
+        assert {"type", "pool_id"} <= set(q.keys())
+        if "options" in q:
+            assert len(q["options"]) == 4
 
 
 async def test_build_audit_ignores_non_certified(fresh_db):
@@ -168,8 +170,10 @@ async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     st = status_of(row, modes)
     assert st != "mastered"
     assert st in ("review", "learning", "weak")
-    # клетки рампы сброшены (де-мастеринг)
-    assert all(modes.get(c, "") != "1" for c in ("choice_no2int", "input_int2no"))
+    # демоут возвращает слово СРАЗУ на последнюю ступень рампы: input сброшен (''→следующий шаг),
+    # ранние ступени помечены пройденными (_demote_fields) — слово больше не mastered (см. выше)
+    assert modes.get("input_int2no", "") == ""
+    assert modes.get("choice_no2int") == "1"
     # вернулось в очередь изучения: due проставлен на ближайшее, lapses вырос
     assert row["due_at"] is not None
     assert (row["lapses"] or 0) >= 1
