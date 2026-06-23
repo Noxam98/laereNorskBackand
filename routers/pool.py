@@ -232,6 +232,14 @@ async def pool_generate(body: dict, user=Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"pool generate '{word}' failed: {e}")
         raise HTTPException(status_code=502, detail="generation failed")
+    # уведомить админов (фоном, не блокируя ответ): пуш при закрытом приложении, тост — при открытом
+    async def _notify_mods():
+        try:
+            from webpush import notify_moderators
+            await notify_moderators(await pending_count())
+        except Exception:
+            pass
+    asyncio.create_task(_notify_mods())
     for it in normalized:
         if isinstance(it, dict) and not it.get("error") and it.get("word"):
             npid = await get_pool_id(it["word"], it.get("part_of_speech", ""))

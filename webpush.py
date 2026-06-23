@@ -36,6 +36,9 @@ REMINDER = {
     "url": "/#/learning",
 }
 
+MOD_THROTTLE_SEC = int(os.getenv("PUSH_MOD_THROTTLE_SEC", "900"))  # не чаще раза в 15 мин
+_LAST_MOD_NOTIFY = {"at": None}
+
 
 def configured():
     return bool(VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY)
@@ -116,6 +119,48 @@ def _quiet_now():
     if QUIET_FROM <= QUIET_TO:
         return QUIET_FROM <= hour < QUIET_TO
     return hour >= QUIET_FROM or hour < QUIET_TO
+
+
+# ---------- пуш админам: новые слова на модерации ----------
+async def notify_moderators(pending_count):
+    """Уведомить админов (web-push), что появились слова на модерации. Троттлинг (не чаще раза
+    в MOD_THROTTLE_SEC) + тихие часы. Fail-safe: при любой ошибке/не-конфиге молча выходим."""
+    try:
+        if not configured():
+            return
+        from auth import ADMIN_USERS
+        if not ADMIN_USERS:
+            return
+        if _quiet_now():
+            return
+        now = datetime.utcnow()
+        last = _LAST_MOD_NOTIFY["at"]
+        if last and (now - last).total_seconds() < MOD_THROTTLE_SEC:
+            return
+        marks = ",".join("?" for _ in ADMIN_USERS)
+        rows = await _exec(
+            f"SELECT s.endpoint, s.p256dh, s.auth FROM push_subscriptions s "
+            f"JOIN users u ON u.id = s.user_id WHERE lower(u.username) IN ({marks})",
+            tuple(ADMIN_USERS),
+        )
+        if not rows:
+            return
+        payload = {
+            "title": "Слова на модерации",
+            "body": f"Новых слов в очереди: {pending_count}",
+            "url": "/#/moderation",
+        }
+        sent = False
+        for r in rows:
+            ok, gone = await _send(r["endpoint"], r["p256dh"], r["auth"], payload)
+            if gone:
+                await delete_subscription(r["endpoint"])
+            elif ok:
+                sent = True
+        if sent:
+            _LAST_MOD_NOTIFY["at"] = now
+    except Exception as e:
+        logger.warning(f"notify_moderators: {str(e)[:160]}")
 
 
 # ---------- воркер напоминаний ----------
