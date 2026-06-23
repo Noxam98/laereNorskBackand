@@ -2,6 +2,7 @@ import json
 import os
 import time
 import asyncio
+import fuzzy
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
@@ -1098,6 +1099,29 @@ async def search_pool(prefix: str, limit: int = 10):
                 have.add(r["norwegian"].lower())
                 out.append({"word": r["norwegian"], "translate": d.get("translate", {}),
                             "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
+            # неточный (fuzzy) добор по опечаткам — по норвежскому слову; если точных мало.
+            # Языко-независим (osa по нормализованным строкам). Грузим лёгкую колонку id+norwegian.
+            if len(out) < limit and len(key) >= 3:
+                qn = fuzzy.normalize(prefix)
+                async with db.execute("SELECT id, norwegian FROM word_pool") as curf:
+                    cand = [(r["id"], r["norwegian"]) for r in await curf.fetchall()]
+                scored = sorted(
+                    ((fuzzy.osa(qn, fuzzy.normalize(nw)), pid, nw) for pid, nw in cand
+                     if nw.lower() not in have and fuzzy.word_close(qn, fuzzy.normalize(nw))),
+                    key=lambda x: x[0])[:max(0, limit - len(out))]
+                if scored:
+                    ids = [s[1] for s in scored]
+                    marks = ",".join("?" for _ in ids)
+                    async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", ids) as curd:
+                        dmap = {r["id"]: r for r in await curd.fetchall()}
+                    for _, pid, nw in scored:
+                        r = dmap.get(pid)
+                        if not r:
+                            continue
+                        d = json.loads(r["data"]) if r["data"] else {}
+                        out.append({"word": nw, "translate": d.get("translate", {}),
+                                    "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
+                        have.add(nw.lower())
             # добор из полного лексикона (слова, которых ещё нет в пуле) — по префиксу, частотные сначала
             if len(out) < limit:
                 try:

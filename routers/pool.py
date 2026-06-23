@@ -13,7 +13,7 @@ from db import (
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
-from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item
+from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled
 from task import description_task, desc_user_prompt
 from models import RedescribeBody, RediffBody, PoolEditBody, AskBody
 import runtime
@@ -189,6 +189,36 @@ async def admin_stats(user=Depends(get_admin_user)):
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, user=Depends(get_current_user)):
     return {"results": await search_pool(q, limit)}
+
+
+@router.post("/pool/generate")
+async def pool_generate(body: dict, user=Depends(get_current_user)):
+    """Сгенерировать новое слово (LLM) и положить в пул — для слов, которых нет ни в пуле, ни
+    в лексиконе. Если слово уже есть — просто вернуть его. Возвращает {word, pool_id, translate, generated}."""
+    word = (body.get("word") or "").strip()
+    if not word:
+        raise HTTPException(status_code=400, detail="no word")
+    pid = await get_pool_id(normalize_word(word))
+    if pid:
+        p = await get_pool_by_id(pid)
+        return {"word": word, "pool_id": pid, "generated": False,
+                "translate": (p or {}).get("translate", {}) if isinstance(p, dict) else {}}
+    if not text_enabled():
+        raise HTTPException(status_code=503, detail="generation disabled")
+    mark_activity()
+    try:
+        normalized, _ = await generate_words(word, None)
+        await persist_pool(normalized)
+    except Exception as e:
+        logger.warning(f"pool generate '{word}' failed: {e}")
+        raise HTTPException(status_code=502, detail="generation failed")
+    for it in normalized:
+        if isinstance(it, dict) and not it.get("error") and it.get("word"):
+            npid = await get_pool_id(it["word"])
+            if npid:
+                return {"word": it["word"], "pool_id": npid, "generated": True,
+                        "translate": it.get("translate", {})}
+    raise HTTPException(status_code=502, detail="generation produced nothing")
 
 
 @router.get("/pool/{word}/description")
