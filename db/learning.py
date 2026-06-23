@@ -380,7 +380,7 @@ def _shape(r):
     return {
         "pool_id": r["pool_id"], "no": r["norwegian"],
         "translate": data.get("translate", {}), "part_of_speech": data.get("part_of_speech", ""),
-        "level": r.get("level"), "topics": r.get("topics", []), "hasTts": bool(r.get("has_tts")),
+        "level": r.get("level"), "freq": r.get("freq"), "topics": r.get("topics", []), "hasTts": bool(r.get("has_tts")),
         "status": status_of(r, modes), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
         "modes": modes, "correct": r.get("correct") or 0, "incorrect": r.get("incorrect") or 0, "due": _is_due(r),
         "last_seen": r.get("last_seen"), "certified": bool(r.get("certified")),
@@ -388,7 +388,7 @@ def _shape(r):
     }
 
 
-async def get_learning(user_id, status=None, level=None, topic=None, q=None, sort="strength", limit=200, offset=0):
+async def get_learning(user_id, status=None, level=None, topic=None, q=None, sort="strength", order="asc", limit=200, offset=0):
     db = await _conn()
     try:
         rows = await _fetch_user_words(db, user_id)
@@ -411,12 +411,20 @@ async def get_learning(user_id, status=None, level=None, topic=None, q=None, sor
                     return True
             return False
         items = [w for w in items if hit(w)]
-    if sort == "alpha":
-        items.sort(key=lambda w: (w["no"] or "").lower())
-    elif sort == "due":
-        items.sort(key=lambda w: (w["due_at"] or "9999"))
-    else:  # strength (слабые сверху)
-        items.sort(key=lambda w: w["strength"])
+    # Единые типы сортировки (как в Пуле/Словаре): базово по возрастанию, направление — order.
+    _no = lambda w: (w["no"] or "").lower()
+    _LR = {"A1": 1, "A2": 2, "B1": 3, "B2": 4, "C1": 5, "C2": 6}
+    _keys = {
+        "alpha":    _no,
+        "due":      lambda w: ((w["due_at"] or "9999"), _no(w)),
+        "level":    lambda w: (_LR.get(w["level"] or "", 99), _no(w)),
+        "freq":     lambda w: (w["freq"] if w.get("freq") is not None else -1, _no(w)),
+        "pos":      lambda w: ((w["part_of_speech"] or "￿"), _no(w)),
+        "strength": lambda w: (w["strength"], _no(w)),
+    }
+    items.sort(key=_keys.get(sort, _keys["strength"]))
+    if str(order).lower() == "desc":
+        items.reverse()
     total = len(items)
     return {"total": total, "words": items[offset:offset + limit]}
 

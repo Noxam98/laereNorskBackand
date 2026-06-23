@@ -19,10 +19,10 @@ router = APIRouter()
 
 @router.get("/learning")
 async def learning_list(status: str = None, level: str = None, topic: str = None, q: str = None,
-                        sort: str = "strength", limit: int = 200, offset: int = 0,
+                        sort: str = "strength", order: str = "asc", limit: int = 200, offset: int = 0,
                         user=Depends(get_current_user)):
     return await learning_get(user["id"], status=status, level=level, topic=topic, q=q,
-                              sort=sort, limit=limit, offset=offset)
+                              sort=sort, order=order, limit=limit, offset=offset)
 
 
 @router.get("/learning/stats")
