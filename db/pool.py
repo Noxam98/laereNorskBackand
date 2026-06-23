@@ -718,13 +718,14 @@ async def get_pool_meta(word: str):
 
 
 async def get_pool_facets(q: str = None, topics=None, level: str = None):
-    """Динамические счётчики фильтров под текущий выбор.
-    Темы: число слов, попадающих под (поиск + уровень + выбранные темы), по каждой теме
-    (темы пересекаются — поэтому считаем по факту). Уровни: распределение под (поиск +
-    выбранные темы), без учёта самого выбранного уровня."""
+    """Динамические счётчики фильтров под текущий выбор (дизъюнктивный facet — каждая группа
+    считается БЕЗ учёта собственного выбора, т.к. мультивыбор внутри группы = ИЛИ).
+    Темы: число слов по каждой теме под (поиск + уровень), без учёта выбранных тем —
+    иначе невыбранный чип показывал бы пересечение с уже выбранными (прыгало бы при клике).
+    Уровни: распределение под (поиск + выбранные темы), без учёта самого выбранного уровня."""
     key = normalize_word(q) if q else None
 
-    def base(use_level):
+    def base(use_level, use_topics):
         conds, params = [], []
         if key:
             conds.append("(norwegian LIKE ? OR data LIKE ?)")
@@ -732,7 +733,7 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None):
         if use_level and level:
             conds.append("level = ?")
             params.append(level)
-        if topics:
+        if use_topics and topics:
             marks = ",".join("?" for _ in topics)
             conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")
             params += list(topics)
@@ -740,7 +741,8 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None):
 
     db = await _conn()
     try:
-        c1, p1 = base(True)
+        # темы — без учёта выбранных тем (только поиск + уровень)
+        c1, p1 = base(use_level=True, use_topics=False)
         w1 = ("WHERE " + " AND ".join(c1)) if c1 else ""
         async with db.execute(
             f"SELECT topic, COUNT(DISTINCT pool_id) c FROM word_topics "
@@ -748,7 +750,8 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None):
         ) as cur:
             topics_out = [{"topic": r["topic"], "count": r["c"]} for r in await cur.fetchall()]
 
-        c2, p2 = base(False)
+        # уровни — без учёта самого выбранного уровня (но с учётом выбранных тем)
+        c2, p2 = base(use_level=False, use_topics=True)
         c2.append("level IS NOT NULL")
         w2 = "WHERE " + " AND ".join(c2)
         async with db.execute(
