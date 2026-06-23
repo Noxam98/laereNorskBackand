@@ -9,6 +9,7 @@ from db import (
     set_pool_description, get_pool_list, delete_pool_word, pool_missing_description,
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta, get_pool_stats, get_usage_like,
     get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
+    pending_words, pending_count, set_word_approval,
 )
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
@@ -108,7 +109,7 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq", "relevance") else "alpha"
     res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang)
-    res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang)  # динамические счётчики под текущий фильтр
+    res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang, user_id=user["id"])  # счётчики под текущий фильтр
     return res
 
 
@@ -122,6 +123,24 @@ async def admin_delete_word(word: str, user=Depends(get_admin_user)):
     """Полностью удалить слово из общего пула (у всех + кэш + ANN-индекс). Только админ."""
     await delete_pool_word(word)
     return {"ok": True}
+
+
+@router.get("/admin/pending")
+async def admin_pending(limit: int = 300, offset: int = 0, user=Depends(get_admin_user)):
+    """Слова на модерации (личные расширения юзеров) — для админа."""
+    return {"words": await pending_words(limit, offset), "count": await pending_count()}
+
+
+@router.post("/admin/pending/{pool_id}/approve")
+async def admin_pending_approve(pool_id: int, user=Depends(get_admin_user)):
+    """Одобрить слово → в общую базу (видно всем)."""
+    return await set_word_approval(pool_id, 1)
+
+
+@router.post("/admin/pending/{pool_id}/reject")
+async def admin_pending_reject(pool_id: int, user=Depends(get_admin_user)):
+    """Отклонить → остаётся приватным у автора (из общей базы скрыто, у автора работает)."""
+    return await set_word_approval(pool_id, 2)
 
 
 @router.get("/admin/embeddings")
@@ -208,7 +227,8 @@ async def pool_generate(body: dict, user=Depends(get_current_user)):
     mark_activity()
     try:
         normalized, _ = await generate_words(word, None)
-        await persist_pool(normalized)
+        # модерация: новые слова от юзера → в его личное расширение (approved=0), не в общую базу
+        await persist_pool(normalized, created_by=user["id"], approved=0)
     except Exception as e:
         logger.warning(f"pool generate '{word}' failed: {e}")
         raise HTTPException(status_code=502, detail="generation failed")

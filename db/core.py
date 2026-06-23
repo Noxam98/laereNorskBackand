@@ -183,6 +183,8 @@ async def init_db():
             embedding TEXT,
             created_at TEXT NOT NULL,
             pos TEXT,
+            created_by INTEGER,
+            approved INTEGER DEFAULT 1,
             UNIQUE(norwegian, pos)
         )
         """)
@@ -196,6 +198,17 @@ async def init_db():
         # таблицы); здесь ALTER лишь добавляет колонку старым БД без неё.
         try:
             await db.execute("ALTER TABLE word_pool ADD COLUMN pos TEXT")
+        except Exception:
+            pass
+        # модерация: created_by = автор (NULL = системное/одобренное), approved = 1 общая база /
+        # 0 на модерации (личное расширение автора) / 2 отклонено (остаётся приватным у автора).
+        # ADD COLUMN с DEFAULT 1 проставит существующим словам approved=1 (они уже в общей базе).
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN created_by INTEGER")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE word_pool ADD COLUMN approved INTEGER DEFAULT 1")
         except Exception:
             pass
         try:

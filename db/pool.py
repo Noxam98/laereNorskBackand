@@ -176,9 +176,11 @@ async def fuzzy_pool_ids(db, query, limit=10):
     return await asyncio.to_thread(_fuzzy_scan, qn, _FUZZY_IDX["flat"], limit)
 
 
-async def get_or_create_pool(norwegian: str, data: dict):
+async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None, approved: int = 1):
     """Вернуть id записи пула для (норвежское слово + часть речи), создав её при необходимости.
-    Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи."""
+    Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи.
+    created_by/approved задаются только для НОВОЙ записи (существующую не трогаем — иначе можно
+    случайно «разодобрить» общее слово). approved=0 + created_by=user → личное расширение."""
     key = normalize_word(norwegian)
     if not key:
         return None
@@ -191,9 +193,9 @@ async def get_or_create_pool(norwegian: str, data: dict):
                 return row["id"]
         # частотность проставляем СРАЗУ при создании — из корпус-лексикона (нет в нём → 0.0)
         cur = await db.execute(
-            "INSERT INTO word_pool (norwegian, data, created_at, pos, freq) "
-            "VALUES (?, ?, ?, ?, COALESCE((SELECT zipf FROM nb_lexicon WHERE word = ?), 0.0))",
-            (key, json.dumps(data, ensure_ascii=False), _now(), pos, key),
+            "INSERT INTO word_pool (norwegian, data, created_at, pos, created_by, approved, freq) "
+            "VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT zipf FROM nb_lexicon WHERE word = ?), 0.0))",
+            (key, json.dumps(data, ensure_ascii=False), _now(), pos, created_by, approved, key),
         )
         await db.commit()
         return cur.lastrowid
@@ -902,7 +904,7 @@ async def get_pool_meta(word: str, user_id: int = None):
         await _release(db)
 
 
-async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: str = None):
+async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: str = None, user_id: int = None):
     """Динамические счётчики фильтров под текущий выбор (дизъюнктивный facet — каждая группа
     считается БЕЗ учёта собственного выбора, т.к. мультивыбор внутри группы = ИЛИ).
     Темы: число слов по каждой теме под (поиск + уровень), без учёта выбранных тем —
@@ -912,6 +914,11 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: s
 
     def base(use_level, use_topics):
         conds, params = [], []
+        if user_id:
+            conds.append("(COALESCE(approved,1) = 1 OR created_by = ?)")
+            params.append(user_id)
+        else:
+            conds.append("COALESCE(approved,1) = 1")
         if key:
             c, p = _key_cond(key, lang)
             conds.append(c)
@@ -1183,6 +1190,12 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
     """Список слов общего пула: поиск по норвежскому + языку интерфейса, фильтры тема/уровень/
     часть речи, фильтр missing, сортировка и пагинация."""
     conds, params = [], []
+    # видимость модерации: общая база (approved=1) + личное расширение автора (его pending/rejected)
+    if user_id:
+        conds.append("(COALESCE(approved,1) = 1 OR created_by = ?)")
+        params.append(user_id)
+    else:
+        conds.append("COALESCE(approved,1) = 1")
     key = normalize_word(q) if q else None
     if key:
         c, p = _key_cond(key, lang)   # норвежский (+å/ø/æ) + перевод на язык интерфейса
@@ -1368,5 +1381,54 @@ async def search_pool(prefix: str, limit: int = 10, lang: str = None):
                 except Exception:
                     pass
             return out
+    finally:
+        await _release(db)
+
+
+# ---------------- Модерация пользовательских слов (личное расширение → общая база) ----------------
+async def pending_words(limit: int = 300, offset: int = 0):
+    """Слова на модерации (approved=0) по всем юзерам — для админа, с автором."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT wp.id, wp.norwegian, wp.data, wp.pos, wp.created_at, wp.created_by, "
+            "u.username AS author "
+            "FROM word_pool wp LEFT JOIN users u ON u.id = wp.created_by "
+            "WHERE COALESCE(wp.approved, 1) = 0 "
+            "ORDER BY wp.created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ) as cur:
+            rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            d = _loads(r["data"])
+            out.append({
+                "pool_id": r["id"], "word": r["norwegian"],
+                "part_of_speech": r["pos"] or d.get("part_of_speech", ""),
+                "translate": d.get("translate", {}),
+                "level": d.get("level"), "topics": d.get("topics", []),
+                "author": r["author"], "author_id": r["created_by"], "created_at": r["created_at"],
+            })
+        return out
+    finally:
+        await _release(db)
+
+
+async def pending_count():
+    db = await _conn()
+    try:
+        async with db.execute("SELECT COUNT(*) c FROM word_pool WHERE COALESCE(approved, 1) = 0") as cur:
+            return (await cur.fetchone())["c"]
+    finally:
+        await _release(db)
+
+
+async def set_word_approval(pool_id: int, approved: int):
+    """approved: 1 — одобрить (в общую базу), 2 — отклонить (остаётся приватным у автора)."""
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (int(approved), pool_id))
+        await db.commit()
+        return {"ok": True, "pool_id": pool_id, "approved": int(approved)}
     finally:
         await _release(db)

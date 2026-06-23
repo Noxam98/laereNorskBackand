@@ -77,12 +77,13 @@ async def generate_words(prompt, model=None):
     return normalized, False
 
 
-async def persist_pool(normalized):
-    """Сохранить слова в общий пул + посчитать эмбеддинги ПАЧКОЙ (один запрос)."""
+async def persist_pool(normalized, created_by=None, approved=1):
+    """Сохранить слова в пул + посчитать эмбеддинги ПАЧКОЙ. created_by/approved — для модерации:
+    при генерации юзером (created_by=user, approved=0) новые слова идут в его личное расширение."""
     pairs = []
     for item in normalized:
         if isinstance(item, dict) and not item.get("error") and item.get("word"):
-            pid = await get_or_create_pool(item["word"], item)
+            pid = await get_or_create_pool(item["word"], item, created_by=created_by, approved=approved)
             if pid:
                 await apply_item_meta(pid, item)
                 pairs.append((pid, item))
