@@ -35,15 +35,41 @@ def _build_fuzzy_rows(fetched):
     return out
 
 
+_FUZZY_REBUILDING = {"on": False}
+
+
+async def _rebuild_fuzzy_index(cnt, db=None):
+    own = db is None
+    if own:
+        db = await _conn()
+    try:
+        async with db.execute("SELECT id, norwegian, data FROM word_pool") as cur:
+            fetched = await cur.fetchall()
+    finally:
+        if own:
+            await _release(db)
+    rows = await asyncio.to_thread(_build_fuzzy_rows, fetched)
+    _FUZZY_IDX.update(count=cnt, built=time.time(), rows=rows)
+
+
 async def _ensure_fuzzy_index(db):
     async with db.execute("SELECT COUNT(*) c FROM word_pool") as cur:
         cnt = (await cur.fetchone())["c"]
     if _FUZZY_IDX["rows"] and _FUZZY_IDX["count"] == cnt and (time.time() - _FUZZY_IDX["built"]) < _FUZZY_TTL:
         return
-    async with db.execute("SELECT id, norwegian, data FROM word_pool") as cur:
-        fetched = await cur.fetchall()
-    rows = await asyncio.to_thread(_build_fuzzy_rows, fetched)
-    _FUZZY_IDX.update(count=cnt, built=time.time(), rows=rows)
+    if _FUZZY_IDX["rows"]:
+        # есть устаревший индекс — отдаём его сразу, пересборка в фоне (не блокирует этот запрос)
+        if not _FUZZY_REBUILDING["on"]:
+            _FUZZY_REBUILDING["on"] = True
+            async def _bg():
+                try:
+                    await _rebuild_fuzzy_index(cnt)
+                finally:
+                    _FUZZY_REBUILDING["on"] = False
+            asyncio.create_task(_bg())
+        return
+    # индекса ещё нет — строим синхронно один раз (на том же соединении)
+    await _rebuild_fuzzy_index(cnt, db)
 
 
 def _fuzzy_scan(qn, rows, limit):
