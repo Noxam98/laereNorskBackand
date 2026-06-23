@@ -9,6 +9,15 @@ from rapidfuzz.distance import OSA
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
+def _fold_no(s):
+    """Свернуть норвежские å/ø/æ → a/o/ae (для поиска без норвежской раскладки: «male»↔«måle»)."""
+    return (s or "").replace("å", "a").replace("ø", "o").replace("æ", "ae")
+
+
+# SQL-выражение, складывающее å/ø/æ в колонке norwegian (для LIKE без учёта норв. букв)
+_SQL_FOLD_NO = "replace(replace(replace(norwegian,'å','a'),'ø','o'),'æ','ae')"
+
+
 # ---- Нечёткий (fuzzy) поиск по пулу: индекс токенов в памяти + rapidfuzz (C++) ----
 # Полный скан с json.loads+normalize по 6к слов дорог (~2-5с на слабом CPU). Строим индекс
 # ОДИН раз (плоский список токенов + numpy-массивы pool_id/допуск) и переиспользуем; матчинг
@@ -849,8 +858,8 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None):
     def base(use_level, use_topics):
         conds, params = [], []
         if key:
-            conds.append("(norwegian LIKE ? OR data LIKE ?)")
-            params += [f"%{key}%", f"%{key}%"]
+            conds.append(f"(norwegian LIKE ? OR data LIKE ? OR {_SQL_FOLD_NO} LIKE ?)")
+            params += [f"%{key}%", f"%{key}%", f"%{_fold_no(key)}%"]
         if use_level and level:
             conds.append("level = ?")
             params.append(level)
@@ -1120,8 +1129,9 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
     conds, params = [], []
     key = normalize_word(q) if q else None
     if key:
-        conds.append("(norwegian LIKE ? OR data LIKE ?)")
-        params += [f"%{key}%", f"%{key}%"]
+        # подстрока + å/ø/æ-нечувствительность по норвежскому (чтобы «male» находил «måle»)
+        conds.append(f"(norwegian LIKE ? OR data LIKE ? OR {_SQL_FOLD_NO} LIKE ?)")
+        params += [f"%{key}%", f"%{key}%", f"%{_fold_no(key)}%"]
     if topics:
         marks = ",".join("?" for _ in topics)
         conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")
