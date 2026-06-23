@@ -1062,13 +1062,18 @@ async def build_gate_exam(user_id, lang="ru"):
     return {"questions": questions, "sample": SAMPLE, "pass": PASS}
 
 
-def _demote_fields(modes):
-    """Демоут слова: сбросить клетки рампы, силу/историю/ease вниз, certified=0.
-    Возвращает (modes_json, strength, ease)."""
+def _demote_fields(modes, cells=REQUIRED_CELLS):
+    """Демоут слова (забыл на аудите / провал зачёта): слово возвращается в очередь СРАЗУ на
+    ПОСЛЕДНЕЙ ступени рампы (ввод / последний cloze), а не гоняется заново с выбора. Все ступени,
+    кроме последней, помечаем пройденными ('1'), последнюю — '' (pending → её и вернёт _next_step).
+    Если на ней не вспомнит — apply_result откатит на ступень назад (build) и доучит обычной рампой.
+    Силу/историю/ease — вниз, certified=0. Возвращает (modes_json, strength, ease)."""
     m = {k: v for k, v in (modes or {}).items() if k not in ALL_CELLS and k != "hist"}
     m["hist"] = ""
     for c in ALL_CELLS:
         m[c] = ""
+    for c in cells[:-1]:        # все ступени, кроме последней, — пройдены
+        m[c] = "1"
     return json.dumps(m, ensure_ascii=False), 0, 1.3
 
 
@@ -1079,7 +1084,7 @@ async def _demote(db, user_id, r):
         modes = json.loads(r.get("modes") or "{}")
     except Exception:
         modes = {}
-    modes_json, strength, ease = _demote_fields(modes)
+    modes_json, strength, ease = _demote_fields(modes, required_cells(r))
     await db.execute("""
         UPDATE user_words
         SET modes = ?, strength = ?, ease = ?, certified = 0,
