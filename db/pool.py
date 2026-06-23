@@ -691,8 +691,9 @@ async def get_pool_topics_counts():
         await _release(db)
 
 
-async def get_pool_meta(word: str):
-    """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле."""
+async def get_pool_meta(word: str, user_id: int = None):
+    """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле.
+    inLearning — есть ли слово в Учёбе пользователя (в любом его словаре)."""
     key = normalize_word(word)
     if not key:
         return None
@@ -704,14 +705,21 @@ async def get_pool_meta(word: str):
                 return None
         async with db.execute("SELECT topic FROM word_topics WHERE pool_id = ?", (row["id"],)) as cur:
             topics = [r["topic"] for r in await cur.fetchall()]
+        in_learning = False
+        if user_id:
+            async with db.execute(
+                "SELECT 1 FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?) LIMIT 1",
+                (row["id"], user_id)) as cur:
+                in_learning = (await cur.fetchone()) is not None
         d = json.loads(row["data"]) if row["data"] else {}
         return {
-            "level": row["level"], "topics": topics,
+            "level": row["level"], "topics": topics, "pool_id": row["id"],
             "part_of_speech": d.get("part_of_speech", ""),
             "translate": d.get("translate", {}),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
             "hasTts": bool(row["has_tts"]),
             "freq": row["freq"], "freqBand": freq_band(row["freq"]),
+            "inLearning": in_learning,
         }
     finally:
         await _release(db)
@@ -993,7 +1001,7 @@ _MISSING_SQL["forms"] = f"forms IS NULL AND {_FORMABLE_SQL}"
 
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
-                        missing: str = None, pos: str = None):
+                        missing: str = None, pos: str = None, user_id: int = None):
     """Список слов общего пула: поиск по всем языкам, фильтры тема/уровень/часть речи,
     фильтр missing (без эмбеддинга/описания/озвучки/уровня/форм), сортировка и пагинация."""
     conds, params = [], []
@@ -1042,16 +1050,27 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             ) as cur:
                 for tr in await cur.fetchall():
                     topic_map.setdefault(tr["pool_id"], []).append(tr["topic"])
+        # какие слова страницы уже в Учёбе пользователя (в любом его словаре) — одним запросом
+        in_learning = set()
+        if user_id and ids:
+            marks = ",".join("?" for _ in ids)
+            async with db.execute(
+                f"SELECT DISTINCT pool_id FROM dict_words "
+                f"WHERE pool_id IN ({marks}) AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
+                (*ids, user_id),
+            ) as cur:
+                in_learning = {tr["pool_id"] for tr in await cur.fetchall()}
         words = []
         for r in rows:
             d = json.loads(r["data"]) if r["data"] else {}
             words.append({
-                "word": r["norwegian"], "translate": d.get("translate", {}),
+                "word": r["norwegian"], "pool_id": r["id"], "translate": d.get("translate", {}),
                 "part_of_speech": d.get("part_of_speech", ""),
                 "level": r["level"], "topics": topic_map.get(r["id"], []),
                 "hasTts": bool(r["has_tts"]),
                 "hasEmbedding": bool(r["has_emb"]), "hasDescription": bool(r["has_desc"]),
                 "forms": json.loads(r["forms"]) if r["forms"] else None,
+                "inLearning": r["id"] in in_learning,
             })
         return {"total": total, "words": words}
     finally:

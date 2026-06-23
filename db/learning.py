@@ -332,6 +332,33 @@ async def set_status(user_id: int, pool_id: int, action: str):
         await _release(db)
 
 
+async def learning_add(user_id: int, pool_id: int):
+    """Добавить слово из Базы прямо в Учёбу — кладём в скрытый авто-словарь (studying=1),
+    чтобы не плодить именованные словари. Идемпотентно (UNIQUE dict_id,pool_id).
+    Слово сразу появляется в Учёбе как «новое» (см. _fetch_user_words)."""
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
+    dict_id = await get_or_create_hidden_dict(user_id)
+    res = await add_word_to_dict(user_id, dict_id, pool_id)
+    if res.get("error"):
+        return res
+    return {"ok": True, "pool_id": pool_id, "duplicate": bool(res.get("duplicate"))}
+
+
+async def learning_remove(user_id: int, pool_id: int):
+    """Полностью убрать слово из Учёбы: из всех словарей пользователя (dict_words)
+    и его SRS-прогресс (user_words). Обратимо повторным добавлением (прогресс при этом теряется)."""
+    db = await _conn()
+    try:
+        await db.execute(
+            "DELETE FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
+            (pool_id, user_id))
+        await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await _release(db)
+
+
 # ---------------- выборка слов пользователя ----------------
 
 async def _fetch_user_words(db, user_id):

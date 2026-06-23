@@ -1,14 +1,14 @@
 """Раздел «Учёба»: интервальные повторения над всеми словами пользователя,
 статусы/фильтры, Smart Review, статистика прогресса.
-Новые слова система ДОСЫПАЕТ сама (авто-добор в build_session при пустом пуле новых) —
-ручного эндпоинта «докинуть» больше нет."""
-from fastapi import APIRouter, Depends
+Новые слова система ДОСЫПАЕТ сама (авто-добор в build_session при пустом пуле новых);
+плюс ручное добавление из Базы прямо в Учёбу (POST /learning/add — кладёт в скрытый словарь)."""
+from fastapi import APIRouter, Depends, HTTPException
 from auth import get_current_user
 from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
-    learning_session,
+    learning_session, learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
 )
@@ -47,6 +47,33 @@ async def learning_session_route(size: int = 20, lang: str = "ru", user=Depends(
 @router.get("/learning/activity")
 async def learning_activity_route(days: int = 119, user=Depends(get_current_user)):
     return await learning_activity(user["id"], days=max(7, min(370, days)))
+
+
+async def _resolve_pool_id(body: dict):
+    pid = body.get("pool_id")
+    if pid:
+        return int(pid)
+    word = (body.get("word") or body.get("norwegian") or "").strip()
+    return await get_pool_id(word) if word else None
+
+
+@router.post("/learning/add")
+async def learning_add_route(body: dict, user=Depends(get_current_user)):
+    """Добавить слово из Базы прямо в Учёбу (по pool_id или norwegian)."""
+    mark_activity()
+    pid = await _resolve_pool_id(body)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    return await learning_add(user["id"], pid)
+
+
+@router.post("/learning/remove")
+async def learning_remove_route(body: dict, user=Depends(get_current_user)):
+    """Убрать слово из Учёбы (по pool_id или norwegian)."""
+    pid = await _resolve_pool_id(body)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    return await learning_remove(user["id"], pid)
 
 
 @router.post("/learning/answer")

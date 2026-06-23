@@ -107,7 +107,7 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq") else "alpha"
-    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos)
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"])
     res["facets"] = await get_pool_facets(q, topic_list, lvl)  # динамические счётчики под текущий фильтр
     return res
 
@@ -467,5 +467,5 @@ async def pool_rediff(body: RediffBody, user=Depends(get_current_user)):
 @router.get("/pool/{word}/meta")
 async def pool_meta(word: str, user=Depends(get_current_user)):
     """Темы и уровень слова (для показа в карточке)."""
-    meta = await get_pool_meta(word)
+    meta = await get_pool_meta(word, user_id=user["id"])
     return meta or {"level": None, "topics": []}
