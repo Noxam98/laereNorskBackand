@@ -6,6 +6,72 @@ import fuzzy
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 
 
+# ---- Нечёткий (fuzzy) поиск по пулу: индекс нормализованных токенов в памяти ----
+# Полный скан с json.loads+normalize по 6к слов дорог (~2-5с на слабом CPU). Строим индекс
+# ОДИН раз и переиспользуем; на каждый промах — только дешёвый word_close/osa в потоке.
+# Инвалидация: по числу слов (новое сгенерили → пересоберём) + TTL (ловит правки переводов).
+_FUZZY_IDX = {"count": -1, "built": 0.0, "rows": []}  # rows: [(pool_id, (token, ...))]
+_FUZZY_TTL = 600  # сек
+
+
+def _build_fuzzy_rows(fetched):
+    """CPU-часть постройки индекса (json.loads + normalize) — гоняется в потоке."""
+    out = []
+    for r in fetched:
+        try:
+            d = json.loads(r["data"]) if r["data"] else {}
+        except Exception:
+            d = {}
+        terms = [r["norwegian"]]
+        for arr in (d.get("translate") or {}).values():
+            if isinstance(arr, list):
+                terms.extend(arr)
+        toks = set()
+        for t in terms:
+            for w in fuzzy.normalize(t).split():
+                if len(w) >= 2:
+                    toks.add(w)
+        out.append((r["id"], tuple(toks)))
+    return out
+
+
+async def _ensure_fuzzy_index(db):
+    async with db.execute("SELECT COUNT(*) c FROM word_pool") as cur:
+        cnt = (await cur.fetchone())["c"]
+    if _FUZZY_IDX["rows"] and _FUZZY_IDX["count"] == cnt and (time.time() - _FUZZY_IDX["built"]) < _FUZZY_TTL:
+        return
+    async with db.execute("SELECT id, norwegian, data FROM word_pool") as cur:
+        fetched = await cur.fetchall()
+    rows = await asyncio.to_thread(_build_fuzzy_rows, fetched)
+    _FUZZY_IDX.update(count=cnt, built=time.time(), rows=rows)
+
+
+def _fuzzy_scan(qn, rows, limit):
+    """Чистый CPU-проход по кэш-индексу (в потоке): [pool_id] по возрастанию расстояния."""
+    scored = []
+    for pid, toks in rows:
+        best = None
+        for w in toks:
+            if fuzzy.word_close(qn, w):
+                dd = fuzzy.osa(qn, w)
+                if best is None or dd < best:
+                    best = dd
+        if best is not None:
+            scored.append((best, pid))
+    scored.sort(key=lambda x: x[0])
+    return [pid for _s, pid in scored[:limit]]
+
+
+async def fuzzy_pool_ids(db, query, limit=10):
+    """Ранжированные pool_id по неточному совпадению (норвежский + переводы любых языков),
+    через кэш-индекс. Тяжёлый CPU-проход — в отдельном потоке (не блокирует event loop)."""
+    qn = fuzzy.normalize(query or "")
+    if len(qn) < 3:
+        return []
+    await _ensure_fuzzy_index(db)
+    return await asyncio.to_thread(_fuzzy_scan, qn, _FUZZY_IDX["rows"], limit)
+
+
 async def get_or_create_pool(norwegian: str, data: dict):
     """Вернуть id записи пула для (норвежское слово + часть речи), создав её при необходимости.
     Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи."""
@@ -1051,27 +1117,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         # норвежского И переводов (любой язык), чтобы «молоок» находил melk. Только для чистого
         # текстового запроса (без фильтров тема/уровень/missing/pos) — иначе результат сбивает с толку.
         if total == 0 and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql:
-            qn = fuzzy.normalize(q)
-            async with db.execute("SELECT id, norwegian, data FROM word_pool") as curf:
-                allrows = await curf.fetchall()
-            scored = []
-            for r in allrows:
-                d = json.loads(r["data"]) if r["data"] else {}
-                terms = [r["norwegian"]]
-                for arr in (d.get("translate") or {}).values():
-                    if isinstance(arr, list):
-                        terms.extend(arr)
-                best = None
-                for term in terms:
-                    for w in fuzzy.normalize(term).split():
-                        if w and fuzzy.word_close(qn, w):
-                            dd = fuzzy.osa(qn, w)
-                            if best is None or dd < best:
-                                best = dd
-                if best is not None:
-                    scored.append((best, r["id"]))
-            scored.sort(key=lambda x: x[0])
-            fids = [i for _, i in scored[:limit]]
+            fids = await fuzzy_pool_ids(db, q, limit)
             if fids:
                 marks = ",".join("?" for _ in fids)
                 async with db.execute(
@@ -1165,35 +1211,23 @@ async def search_pool(prefix: str, limit: int = 10, lang: str = None):
                 have.add(r["norwegian"].lower())
                 out.append({"word": r["norwegian"], "translate": d.get("translate", {}),
                             "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
-            # неточный (fuzzy) добор по опечаткам — по норвежскому И переводу на язык `lang`
-            # (Вариант 1). Языко-независимый osa; пул грузим один раз и только при нехватке точных.
+            # неточный (fuzzy) добор по опечаткам — через общий кэш-индекс (норвежский + переводы).
             if len(out) < limit and len(key) >= 3:
-                qn = fuzzy.normalize(prefix)
-                async with db.execute("SELECT norwegian, data FROM word_pool") as curf:
-                    rowsf = await curf.fetchall()
-                scored = []
-                for r in rowsf:
-                    nw = r["norwegian"]
-                    if nw.lower() in have:
-                        continue
-                    d = json.loads(r["data"]) if r["data"] else {}
-                    terms = [nw] + (((d.get("translate") or {}).get(lang) or []) if lang else [])
-                    best = None
-                    for term in terms:
-                        for w in fuzzy.normalize(term).split():
-                            if w and fuzzy.word_close(qn, w):
-                                dd = fuzzy.osa(qn, w)
-                                if best is None or dd < best:
-                                    best = dd
-                    if best is not None:
-                        scored.append((best, nw, d))
-                scored.sort(key=lambda x: x[0])
-                for _, nw, d in scored[:max(0, limit - len(out))]:
-                    if len(out) >= limit:
-                        break
-                    out.append({"word": nw, "translate": d.get("translate", {}),
-                                "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
-                    have.add(nw.lower())
+                fids = await fuzzy_pool_ids(db, prefix, limit * 2)
+                if fids:
+                    marks = ",".join("?" for _ in fids)
+                    async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", fids) as curf:
+                        byid = {r["id"]: r for r in await curf.fetchall()}
+                    for fid in fids:
+                        if len(out) >= limit:
+                            break
+                        r = byid.get(fid)
+                        if not r or r["norwegian"].lower() in have:
+                            continue
+                        d = json.loads(r["data"]) if r["data"] else {}
+                        out.append({"word": r["norwegian"], "translate": d.get("translate", {}),
+                                    "part_of_speech": d.get("part_of_speech", ""), "inPool": True})
+                        have.add(r["norwegian"].lower())
             # добор из полного лексикона (слова, которых ещё нет в пуле) — по префиксу, частотные сначала
             if len(out) < limit:
                 try:
