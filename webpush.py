@@ -44,6 +44,22 @@ def configured():
     return bool(VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY)
 
 
+_VAPID_OBJ = None
+
+
+def _vapid_obj():
+    """Загруженный Vapid-ключ (кэш). pywebpush НЕ умеет грузить PEM из строки сам
+    (Could not deserialize key data) — передаём ему готовый объект."""
+    global _VAPID_OBJ
+    if _VAPID_OBJ is None and VAPID_PRIVATE_KEY:
+        from py_vapid import Vapid01
+        if "-----" in VAPID_PRIVATE_KEY:
+            _VAPID_OBJ = Vapid01.from_pem(VAPID_PRIVATE_KEY.encode())
+        else:
+            _VAPID_OBJ = Vapid01.from_raw(VAPID_PRIVATE_KEY.encode())
+    return _VAPID_OBJ
+
+
 # ---------- хранилище подписок (своя таблица, своё соединение) ----------
 async def _exec(sql, params=()):
     async with aiosqlite.connect(DATABASE_URL) as db:
@@ -88,7 +104,7 @@ def _send_sync(endpoint, p256dh, auth, payload):
         webpush(
             subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
             data=json.dumps(payload),
-            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_private_key=_vapid_obj(),
             vapid_claims={"sub": VAPID_SUBJECT},
             timeout=20,
         )
