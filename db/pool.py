@@ -35,6 +35,44 @@ def _key_cond(key, lang):
     return "(" + " OR ".join(parts) + ")", params
 
 
+def _loads(s):
+    try:
+        return json.loads(s) if s else {}
+    except Exception:
+        return {}
+
+
+def _pool_relevance(norwegian, data, qn, qf, freq, lang):
+    """Оценка релевантности слова запросу (выше = вероятнее искомое). Сигналы: точное/префиксное/
+    подстрочное совпадение норвежского (со свёрткой å/ø/æ) и перевода на язык интерфейса целым
+    словом/префиксом/подстрокой; частота — лёгкий тай-брейкер."""
+    nwf = _fold_no((norwegian or "").lower())
+    s = 0
+    if qf and nwf == qf:
+        s = 1000
+    elif qf and nwf.startswith(qf):
+        s = 850 - min(len(nwf) - len(qf), 50)
+    elif qf and qf in nwf:
+        s = 600 - min(nwf.index(qf), 50)
+    tr = data.get("translate") or {}
+    arr = tr.get(lang) if lang in _POOL_LANGS else None
+    if not isinstance(arr, list):  # без языка интерфейса — по всем переводам
+        arr = [t for v in tr.values() if isinstance(v, list) for t in v]
+    for t in (arr or []):
+        tl = (t or "").lower()
+        if not tl:
+            continue
+        if tl == qn:
+            s = max(s, 800)
+        elif qn in tl.split():
+            s = max(s, 750)
+        elif tl.startswith(qn):
+            s = max(s, 500)
+        elif qn in tl:
+            s = max(s, 200)
+    return s + min(float(freq or 0), 8.0) * 0.5
+
+
 # ---- Нечёткий (fuzzy) поиск по пулу: индекс токенов в памяти + rapidfuzz (C++) ----
 # Полный скан с json.loads+normalize по 6к слов дорог (~2-5с на слабом CPU). Строим индекс
 # ОДИН раз (плоский список токенов + numpy-массивы pool_id/допуск) и переиспользуем; матчинг
@@ -1174,13 +1212,29 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
     try:
         async with db.execute(f"SELECT COUNT(*) c FROM word_pool {where}", params) as cur:
             total = (await cur.fetchone())["c"]
-        async with db.execute(
-            f"SELECT id, norwegian, data, level, forms, (tts IS NOT NULL) AS has_tts, "
-            f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
-            f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
-            (*params, limit, offset),
-        ) as cur:
-            rows = await cur.fetchall()
+        if key and sort == "relevance":
+            # релевантность: тянем все совпадения (с потолком), считаем score в питоне, сортируем,
+            # пагинируем — точное/префиксное/перевод-целиком выше похожих и подстрок-в-середине.
+            async with db.execute(
+                f"SELECT id, norwegian, data, freq, level, forms, (tts IS NOT NULL) AS has_tts, "
+                f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
+                f"FROM word_pool {where} LIMIT 800", params,
+            ) as cur:
+                allm = await cur.fetchall()
+            qf = _fold_no(key)
+            ranked = sorted(
+                allm,
+                key=lambda r: (-_pool_relevance(r["norwegian"], _loads(r["data"]), key, qf, r["freq"], lang), r["norwegian"]),
+            )
+            rows = ranked[offset:offset + limit]
+        else:
+            async with db.execute(
+                f"SELECT id, norwegian, data, level, forms, (tts IS NOT NULL) AS has_tts, "
+                f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
+                f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ) as cur:
+                rows = await cur.fetchall()
         # fuzzy-fallback: подстрока ничего не нашла (опечатка) → ищем по неточному совпадению
         # норвежского И переводов (любой язык), чтобы «молоок» находил melk. Только для чистого
         # текстового запроса (без фильтров тема/уровень/missing/pos) — иначе результат сбивает с толку.
