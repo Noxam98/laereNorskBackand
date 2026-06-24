@@ -485,9 +485,12 @@ async def get_learning(user_id, status=None, level=None, topic=None, q=None, sor
     # Единые типы сортировки (как в Пуле/Словаре): базово по возрастанию, направление — order.
     _no = lambda w: (w["no"] or "").lower()
     _LR = {"A1": 1, "A2": 2, "B1": 3, "B2": 4, "C1": 5, "C2": 6}
+    # эффективный срок «когда повторять»: у сертифицированных — аудит (audit_due), иначе due_at.
+    # Так сортировка совпадает с показанным на карточке счётчиком (без него порядок «непонятен»).
+    _next_at = lambda w: (w["audit_due"] if (w.get("certified") and w.get("audit_due")) else w.get("due_at")) or "9999"
     _keys = {
         "alpha":    _no,
-        "due":      lambda w: ((w["due_at"] or "9999"), _no(w)),
+        "due":      lambda w: (_next_at(w), _no(w)),
         "level":    lambda w: (_LR.get(w["level"] or "", 99), _no(w)),
         "freq":     lambda w: (w["freq"] if w.get("freq") is not None else -1, _no(w)),
         "pos":      lambda w: ((w["part_of_speech"] or "￿"), _no(w)),
