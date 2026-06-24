@@ -11,6 +11,7 @@ from db import (
     learning_session, learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
+    learning_leaderboard,
     report_word, pending_count, reported_count,
 )
 import asyncio
@@ -49,6 +50,13 @@ async def learning_session_route(size: int = 20, lang: str = "ru", user=Depends(
 @router.get("/learning/activity")
 async def learning_activity_route(days: int = 119, user=Depends(get_current_user)):
     return await learning_activity(user["id"], days=max(7, min(370, days)))
+
+
+@router.get("/learning/leaderboard")
+async def learning_leaderboard_route(period: str = "week", limit: int = 50, user=Depends(get_current_user)):
+    """Рейтинг: period=week (очки за неделю) | all (выучено слов). Топ + строка текущего юзера."""
+    return await learning_leaderboard(user["id"], period=("all" if period == "all" else "week"),
+                                      limit=max(3, min(100, limit)))
 
 
 async def _resolve_pool_id(body: dict):
