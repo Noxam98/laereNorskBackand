@@ -486,8 +486,11 @@ async def get_learning(user_id, status=None, level=None, topic=None, q=None, sor
     _no = lambda w: (w["no"] or "").lower()
     _LR = {"A1": 1, "A2": 2, "B1": 3, "B2": 4, "C1": 5, "C2": 6}
     # эффективный срок «когда повторять»: у сертифицированных — аудит (audit_due), иначе due_at.
-    # Так сортировка совпадает с показанным на карточке счётчиком (без него порядок «непонятен»).
-    _next_at = lambda w: (w["audit_due"] if (w.get("certified") and w.get("audit_due")) else w.get("due_at")) or "9999"
+    # Новые (нет расписания) и архивные (отложены, не повторяются) — в КОНЕЦ ("9999"), чтобы
+    # «Скоро повторять» показывало сверху реально предстоящие повторы, а не их. Совпадает со
+    # счётчиком на карточке (у активных).
+    _next_at = lambda w: ("9999" if w.get("dstatus") in ("new", "archived")
+                          else ((w["audit_due"] if (w.get("certified") and w.get("audit_due")) else w.get("due_at")) or "9999"))
     _keys = {
         "alpha":    _no,
         "due":      lambda w: (_next_at(w), _no(w)),
