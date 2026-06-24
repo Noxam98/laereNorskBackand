@@ -1268,7 +1268,10 @@ async def learning_stats(user_id):
     due_count = 0
     for w in items:
         by_status[w["status"]] = by_status.get(w["status"], 0) + 1
-        if w["due"]:
+        # «к повторению» = только то, что РЕАЛЬНО попадёт в задание: сертифицированные слова
+        # повторяются отдельным аудитом (по audit_due), их due_at — вестигиальный (остаётся старым
+        # после сертификации) и не должен надувать счётчик «повторить» на карточке (фантомные due).
+        if w["due"] and not w["certified"]:
             due_count += 1
         lv = w["level"] if w["level"] in by_level else None
         if lv:

@@ -251,6 +251,26 @@ async def test_fresh_mastered_still_needs_gate(fresh_db):
     assert pid in {r["pool_id"] for r in pack_rows}
 
 
+async def test_stats_due_excludes_certified(fresh_db):
+    """Регрессия «фантомных повторить»: сертифицированное слово с просроченным due_at НЕ считается
+    «к повторению» (stats.due). Оно повторяется аудитом (audit_due), его due_at — вестигиальный."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    pid = pack[0][0]
+    # «состарим» due_at сертифицированного (как у давно выученных), audit_due остаётся в будущем
+    db = await _conn()
+    try:
+        await db.execute("UPDATE user_words SET due_at=? WHERE user_id=? AND pool_id=?",
+                         ((datetime.utcnow() - timedelta(days=10)).isoformat(), uid, pid))
+        await db.commit()
+    finally:
+        await _release(db)
+    stats = await learning_stats(uid)
+    assert stats["due"] == 0, "сертифицированное с прошедшим due_at не должно надувать «повторить»"
+    # при этом оно НЕ на аудите (audit_due в будущем) — то есть честно «сейчас повторять нечего»
+    assert stats["audit"]["due"] == 0
+
+
 async def test_grade_audit_throttle_when_many_forgot(fresh_db):
     uid, did = await seed_user()
     pack = await _seed_certified_pack(uid, did, PACK_FIRST)
