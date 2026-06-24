@@ -223,6 +223,23 @@ def _is_due(row):
     return bool(due) and due <= _now() and not row.get("archived")
 
 
+def _display_status(row, st):
+    """Статус для ОТОБРАЖЕНИЯ (счётчики/фильтры/карточки), НЕ для логики сессии:
+      • learning + review → 'in_progress' («В процессе»: начато, ещё не выучено);
+      • mastered + подошёл срок повтора → 'repeat' («Повторение»): не-серт. с due ИЛИ серт. с audit_due;
+      • mastered без срока → 'mastered' («Выучено»);
+      • остальное (new/weak/archived) — как есть.
+    status_of (внутренняя логика рампы/пулов) при этом не меняется."""
+    if st in ("learning", "review"):
+        return "in_progress"
+    if st == "mastered":
+        now = _now()
+        is_repeat = ((row.get("due_at") and row["due_at"] <= now and not row.get("certified"))
+                     or (row.get("certified") and row.get("audit_due") and row["audit_due"] <= now))
+        return "repeat" if is_repeat else "mastered"
+    return st
+
+
 # ---------------- запись результата ответа (SRS) ----------------
 
 async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
@@ -427,11 +444,13 @@ def _shape(r):
         modes = json.loads(r.get("modes") or "{}")
     except Exception:
         modes = {}
+    st = status_of(r, modes)
     return {
         "pool_id": r["pool_id"], "no": r["norwegian"],
         "translate": data.get("translate", {}), "part_of_speech": data.get("part_of_speech", ""),
         "level": r.get("level"), "freq": r.get("freq"), "topics": r.get("topics", []), "hasTts": bool(r.get("has_tts")),
-        "status": status_of(r, modes), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
+        # status — ВНУТРЕННИЙ (рампа/уровни/пулы); dstatus — для отображения (см. _display_status)
+        "status": st, "dstatus": _display_status(r, st), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
         "modes": modes, "correct": r.get("correct") or 0, "incorrect": r.get("incorrect") or 0, "due": _is_due(r),
         "last_seen": r.get("last_seen"), "certified": bool(r.get("certified")),
         "audit_due": r.get("audit_due"),
@@ -445,12 +464,10 @@ async def get_learning(user_id, status=None, level=None, topic=None, q=None, sor
     finally:
         await _release(db)
     items = [_shape(r) for r in rows]
-    if status == "due":
-        # «к повторению» = подошёл интервал (как stats.due). Сертифицированные исключаем — их
-        # повторяет отдельный аудит (по audit_due), их due_at вестигиальный.
-        items = [w for w in items if w["due"] and not w["certified"]]
-    elif status and status != "all":
-        items = [w for w in items if w["status"] == status]
+    if status and status != "all":
+        # фильтр по ОТОБРАЖАЕМОМУ статусу (new/in_progress/repeat/weak/mastered/archived).
+        # 'repeat' = выученное, подошёл срок повтора (см. _display_status) — то же, что чип «повторить».
+        items = [w for w in items if w["dstatus"] == status]
     if level:
         items = [w for w in items if (w["level"] or "") == level]
     if topic:
@@ -1271,7 +1288,7 @@ async def learning_stats(user_id):
     by_level = {lv: {"total": 0, "mastered": 0, "target": LEVEL_TARGETS[lv], "done": False} for lv in LEVELS}
     due_count = 0
     for w in items:
-        by_status[w["status"]] = by_status.get(w["status"], 0) + 1
+        by_status[w["dstatus"]] = by_status.get(w["dstatus"], 0) + 1   # счётчики по ОТОБРАЖАЕМОМУ статусу
         # «к повторению» = только то, что РЕАЛЬНО попадёт в задание: сертифицированные слова
         # повторяются отдельным аудитом (по audit_due), их due_at — вестигиальный (остаётся старым
         # после сертификации) и не должен надувать счётчик «повторить» на карточке (фантомные due).
@@ -1294,7 +1311,8 @@ async def learning_stats(user_id):
     to_next = max(0, cur["target"] - cur["mastered"])
     # ретеншн = доля выученных среди (выучено+слабых); «выучено за неделю» — по last_seen
     from datetime import datetime, timedelta
-    mastered_n = (by_status.get("mastered", 0) + by_status.get("archived", 0))
+    # «выучено» для ретеншна = mastered + repeat (повтор — это тоже выученное, просто подошёл срок) + архив
+    mastered_n = (by_status.get("mastered", 0) + by_status.get("repeat", 0) + by_status.get("archived", 0))
     weak_n = by_status.get("weak", 0)
     retention = round(100 * mastered_n / (mastered_n + weak_n)) if (mastered_n + weak_n) else None
     week_cut = (datetime.utcnow() - timedelta(days=7)).isoformat()
