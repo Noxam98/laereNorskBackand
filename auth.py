@@ -290,6 +290,8 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["sound"] = bool(body.sound)
     if body.kbdHintSeen is not None:
         prefs["kbdHintSeen"] = bool(body.kbdHintSeen)
+    if body.choiceHintSeen is not None:
+        prefs["choiceHintSeen"] = bool(body.choiceHintSeen)
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))
     return {"gamePrefs": prefs}
 

@@ -106,6 +106,7 @@ class GamePrefsBody(BaseModel):
     dir: str | None = None    # no2int | int2no
     sound: bool | None = None
     kbdHintSeen: bool | None = None   # видел сноску «можно печатать с клавиатуры» (ПК) — больше не показывать
+    choiceHintSeen: bool | None = None  # видел сноску «можно выбирать цифрами» в «Выборе» (ПК)
 
 
 class RedescribeBody(BaseModel):
