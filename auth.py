@@ -279,14 +279,17 @@ async def set_focus_topics(body: dict, user=Depends(get_current_user)):
 
 @router.post("/me/game_prefs")
 async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
-    """Запоминаем последние настройки игры (режим/направление/звук)."""
-    prefs = {}
+    """Настройки игры (режим/направление/звук) + UI-флаги. MERGE с уже сохранёнными — частичный
+    апдейт (напр. только kbdHintSeen) не затирает остальные поля."""
+    prefs = _parse_game_prefs(user.get("game_prefs")) or {}
     if body.type in ("study", "input", "choice"):
         prefs["type"] = body.type
     if body.dir in ("no2int", "int2no"):
         prefs["dir"] = body.dir
     if body.sound is not None:
         prefs["sound"] = bool(body.sound)
+    if body.kbdHintSeen is not None:
+        prefs["kbdHintSeen"] = bool(body.kbdHintSeen)
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))
     return {"gamePrefs": prefs}
 

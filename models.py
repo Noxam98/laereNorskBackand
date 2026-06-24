@@ -105,6 +105,7 @@ class GamePrefsBody(BaseModel):
     type: str | None = None   # study | input | choice
     dir: str | None = None    # no2int | int2no
     sound: bool | None = None
+    kbdHintSeen: bool | None = None   # видел сноску «можно печатать с клавиатуры» (ПК) — больше не показывать
 
 
 class RedescribeBody(BaseModel):
