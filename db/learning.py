@@ -445,12 +445,15 @@ def _shape(r):
     except Exception:
         modes = {}
     st = status_of(r, modes)
+    _rcells = required_cells(r)   # ступени рампы слова (контент: 4 REQUIRED_CELLS; служебное: 3 cloze)
     return {
         "pool_id": r["pool_id"], "no": r["norwegian"],
         "translate": data.get("translate", {}), "part_of_speech": data.get("part_of_speech", ""),
         "level": r.get("level"), "freq": r.get("freq"), "topics": r.get("topics", []), "hasTts": bool(r.get("has_tts")),
         # status — ВНУТРЕННИЙ (рампа/уровни/пулы); dstatus — для отображения (см. _display_status)
         "status": st, "dstatus": _display_status(r, st), "strength": r.get("strength") or 0, "due_at": r.get("due_at"),
+        # прогресс по рампе (для «в процессе»): сколько ступеней пройдено из total
+        "ramp": {"done": sum(1 for c in _rcells if modes.get(c) == "1"), "total": len(_rcells)},
         "modes": modes, "correct": r.get("correct") or 0, "incorrect": r.get("incorrect") or 0, "due": _is_due(r),
         "last_seen": r.get("last_seen"), "certified": bool(r.get("certified")),
         "audit_due": r.get("audit_due"),
