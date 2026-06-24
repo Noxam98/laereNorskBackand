@@ -4,3 +4,4 @@ __pycache__/
 users.db
 app.log
 .env
+.junk_deleted_backup.json
