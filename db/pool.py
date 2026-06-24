@@ -802,11 +802,11 @@ async def pool_missing_description(limit: int = 1):
     чтобы описание генерилось под конкретное значение (часть речи + переводы)."""
     db = await _conn()
     try:
-        async with db.execute("SELECT norwegian, data FROM word_pool WHERE description IS NULL LIMIT ?", (limit,)) as cur:
+        async with db.execute("SELECT id, norwegian, data FROM word_pool WHERE description IS NULL LIMIT ?", (limit,)) as cur:
             out = []
             for r in await cur.fetchall():
                 d = json.loads(r["data"]) if r["data"] else {}
-                out.append({"word": r["norwegian"], "pos": d.get("part_of_speech", ""), "translate": d.get("translate", {})})
+                out.append({"id": r["id"], "word": r["norwegian"], "pos": d.get("part_of_speech", ""), "translate": d.get("translate", {})})
             return out
     finally:
         await _release(db)
@@ -827,12 +827,13 @@ async def pool_missing_meta(limit: int = 50):
     db = await _conn()
     try:
         async with db.execute(
-            "SELECT norwegian, data FROM word_pool WHERE level IS NULL LIMIT ?", (limit,)
+            "SELECT id, norwegian, data FROM word_pool WHERE level IS NULL LIMIT ?", (limit,)
         ) as cur:
             out = []
             for r in await cur.fetchall():
                 d = json.loads(r["data"]) if r["data"] else {}
-                out.append({"word": r["norwegian"], "translate": d.get("translate", {})})
+                out.append({"id": r["id"], "word": r["norwegian"], "pos": d.get("part_of_speech", ""),
+                            "translate": d.get("translate", {})})
             return out
     finally:
         await _release(db)

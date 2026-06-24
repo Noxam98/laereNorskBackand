@@ -171,22 +171,25 @@ async def classify_batch(items):
     results = (data or {}).get("results", []) if isinstance(data, dict) else []
     # как и в describe — сопоставляем ответ ВХОДНОМУ слову (нормализованно/позиционно),
     # чтобы «исправленное» моделью написание не оставляло слово вечно неклассифицированным.
-    words = [it["word"] for it in items]
-    norm_to_word = {normalize_word(w): w for w in words}
-    positional = len(results) == len(words)
+    norm_to_item = {normalize_word(it["word"]): it for it in items}
+    positional = len(results) == len(items)
     done, seen = 0, set()
     for i, r in enumerate(results):
         if not isinstance(r, dict):
             continue
-        src = norm_to_word.get(normalize_word(r.get("word") or ""))
-        if src is None and positional:
-            src = words[i]
-        if not src or src in seen:
+        rw = normalize_word(r.get("word") or "")
+        # омонимы: пишем по id из выборки, а не через get_pool_id без pos (см. describe_batch)
+        it = items[i] if (positional and rw == normalize_word(items[i]["word"])) else None
+        if it is None:
+            it = norm_to_item.get(rw)
+        if it is None and positional:
+            it = items[i]
+        if not it:
             continue
-        seen.add(src)
-        pid = await get_pool_id(src)
-        if not pid:
+        pid = it.get("id") or await get_pool_id(it["word"], it.get("pos"))
+        if not pid or pid in seen:
             continue
+        seen.add(pid)
         level = r.get("level") if r.get("level") in CEFR_LEVELS else None
         topics = [t for t in (r.get("topics") or []) if t in TOPIC_KEYS]
         if level or topics:
@@ -234,21 +237,28 @@ async def describe_batch(words):
     # Сохраняем описание по ВХОДНОМУ слову (что спрашивали), а не по тому, как модель его
     # переписала: по нормализованному имени, иначе позиционно. Иначе слова с «кривым»
     # написанием (модель его «исправляет») никогда не сохраняются и крутят очередь вечно.
-    norm_to_word = {normalize_word(it["word"]): it["word"] for it in items}
+    norm_to_item = {normalize_word(it["word"]): it for it in items}
     positional = len(results) == len(items)
     done, seen = 0, set()
     for i, r in enumerate(results):
         if not isinstance(r, dict):
             continue
-        src = norm_to_word.get(normalize_word(r.get("word") or ""))
-        if src is None and positional:
-            src = items[i]["word"]
-        if not src or src in seen:
+        rw = normalize_word(r.get("word") or "")
+        # точное позиционное совпадение различает омонимы (одно написание, разный pos) в пачке;
+        # иначе — по нормализованному слову; иначе позиционно (модель «исправила» написание).
+        it = items[i] if (positional and rw == normalize_word(items[i]["word"])) else None
+        if it is None:
+            it = norm_to_item.get(rw)
+        if it is None and positional:
+            it = items[i]
+        if not it:
             continue
-        seen.add(src)
-        pid = await get_pool_id(src)
-        if not pid:
+        # пишем строго по id из выборки: get_pool_id без pos попал бы в старшую запись омонима,
+        # description у нужной записи остался бы NULL — и очередь крутила бы её вечно (слив квоты).
+        pid = it.get("id") or await get_pool_id(it["word"], it.get("pos"))
+        if not pid or pid in seen:
             continue
+        seen.add(pid)
         desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt")}
         await set_pool_description(pid, desc)
         done += 1
