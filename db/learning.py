@@ -254,10 +254,6 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
         bit = "1" if correct else "0"
         ease = st["ease"]; interval = st["interval_days"]
         modes["hist"] = _push(modes.get("hist", ""), bit, CAPACITY)   # общее окно для силы
-        # «слово реально упражняли в игре» — пассивная карточка-интро (study) НЕ считается.
-        # Это честный признак «повтора» для бейджа: карточка бампит reps, но повтором её считать нельзя.
-        if mode and mode != "study":
-            modes["ex"] = "1"
         # клетка рампы — только для тестовых типов с заданным направлением (study/без direction — пассив)
         if mode and mode != "study" and direction and direction in _DIR_ALLOWED.get(mode, ()):
             cell = f"{mode}_{direction}"
@@ -284,23 +280,25 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
             st["lapses"] += 1; st["incorrect"] += 1; st["streak"] = 0
             due = _due_str(1)
         modes_json = json.dumps(modes, ensure_ascii=False)
+        mastered_now = 1 if _is_mastered(wrow, modes) else 0   # хранимый флаг: ставим при mastered, снимаем при откате
         await db.execute("""
             INSERT INTO user_words (user_id, pool_id, strength, reps, lapses, ease, interval_days, due_at,
-                                    correct, incorrect, streak, archived, modes, last_seen, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                    correct, incorrect, streak, archived, modes, last_seen, created_at, mastered)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id, pool_id) DO UPDATE SET
                 strength=excluded.strength, reps=excluded.reps, lapses=excluded.lapses, ease=excluded.ease,
                 interval_days=excluded.interval_days, due_at=excluded.due_at, correct=excluded.correct,
-                incorrect=excluded.incorrect, streak=excluded.streak, modes=excluded.modes, last_seen=excluded.last_seen
+                incorrect=excluded.incorrect, streak=excluded.streak, modes=excluded.modes, last_seen=excluded.last_seen,
+                mastered=excluded.mastered
         """, (user_id, pool_id, strength, st["reps"], st["lapses"], ease, interval, due,
-              st["correct"], st["incorrect"], st["streak"], st.get("archived", 0), modes_json, _now(), _now()))
+              st["correct"], st["incorrect"], st["streak"], st.get("archived", 0), modes_json, _now(), _now(), mastered_now))
         # Замыкание петли забывания (§2.4-B, «вариант A»): забытое на аудите слово было
         # де-сертифицировано (certified=0) и доучивалось в общей очереди. Как только оно снова
         # достигает mastered — СРАЗУ ре-сертифицируем, минуя зачётные ворота, и возвращаем под
         # редкий аудит (audit_due = now + FIRST_AUDIT_DAYS). Признак «ранее сертифицировано/выпало
         # из аудита» — was_certified=1; свежие (никогда не сертифицированные) mastered идут через
         # ворота как раньше (§2.4-A), поэтому условие именно certified=0 AND was_certified=1.
-        if _is_mastered(wrow, modes) and not st.get("certified") and st.get("was_certified"):
+        if mastered_now and not st.get("certified") and st.get("was_certified"):
             await db.execute(
                 "UPDATE user_words SET certified = 1, audit_due = ?, audit_interval = ? "
                 "WHERE user_id = ? AND pool_id = ?",
@@ -312,7 +310,7 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
             ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
         """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
         await db.commit()
-        return {"ok": True, "strength": strength, "due_at": due, "modes": modes, "mastered": _is_mastered(wrow, modes)}
+        return {"ok": True, "strength": strength, "due_at": due, "modes": modes, "mastered": bool(mastered_now)}
     finally:
         await _release(db)
 
@@ -324,11 +322,11 @@ async def set_status(user_id: int, pool_id: int, action: str):
         if action == "know":
             m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
             m["hist"] = "1" * CAPACITY
-            fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?"
+            fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
         elif action == "reset":
             fields = ("archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
-                      "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, "
+                      "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, mastered=0, "
                       "certified=0, was_certified=0, audit_due=NULL, audit_interval=0")
             args = ()
         elif action == "unarchive":
@@ -392,7 +390,7 @@ async def _fetch_user_words(db, user_id):
         SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
-               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified
+               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered
         FROM (
               -- новые слова — только из словарей «в обучении» (studying=1)
               SELECT pool_id FROM dict_words
@@ -727,9 +725,9 @@ async def build_session(user_id, size=20, lang="ru"):
             "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
             "forms": (json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
             "mode": mode, "direction": direction, "step": cell,
-            # повтор = слово РЕАЛЬНО упражняли (флаг ex) или есть пройденная ramp-клетка (страховка для
-            # слов до введения флага). Пассивная карточка-интро повтором НЕ считается (см. apply_result).
-            "repeat": (e["modes"].get("ex") == "1") or any(e["modes"].get(c) == "1" for c in ALL_CELLS),
+            # повтор = ХРАНИМЫЙ флаг mastered (слово было доведено до выученного и теперь на повторении),
+            # а не эвристика. Слова в первом прохождении рампы повтором НЕ считаются.
+            "repeat": (e["row"].get("mastered") == 1),
         }
         if mode == "cloze":
             items = cloze_map.get(pid)
@@ -1115,7 +1113,7 @@ async def _demote(db, user_id, r):
     modes_json, strength, ease = _demote_fields(modes, required_cells(r))
     await db.execute("""
         UPDATE user_words
-        SET modes = ?, strength = ?, ease = ?, certified = 0,
+        SET modes = ?, strength = ?, ease = ?, certified = 0, mastered = 0,
             reps = MAX(1, reps), lapses = lapses + 1, interval_days = 1, streak = 0,
             due_at = ?, last_seen = ?
         WHERE user_id = ? AND pool_id = ?

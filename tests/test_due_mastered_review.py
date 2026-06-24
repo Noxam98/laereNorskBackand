@@ -42,6 +42,7 @@ async def test_due_mastered_comes_back_at_input(fresh_db):
     import json
     r = await _row(uid, pid)
     assert status_of(r, json.loads(r["modes"] or "{}")) == "mastered"
+    assert r["mastered"] == 1, "хранимый флаг mastered проставлен при достижении выученного"
     assert not r.get("certified")
     # сделать due (в прошлом)
     await _set_due(pid, uid, _due_str(-3))
@@ -79,3 +80,4 @@ async def test_wrong_input_rolls_back(fresh_db):
     assert modes.get("input_int2no") != "1", "input сброшен"
     assert modes.get("build_int2no") != "1", "build откатан"
     assert status_of(r, modes) != "mastered", "после ошибки слово больше не выучено"
+    assert r["mastered"] == 0, "хранимый флаг mastered снят при откате"

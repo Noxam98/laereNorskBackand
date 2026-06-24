@@ -174,6 +174,7 @@ async def test_grade_audit_wrong_decertifies_and_returns(fresh_db):
     # ранние ступени помечены пройденными (_demote_fields) — слово больше не mastered (см. выше)
     assert modes.get("input_int2no", "") == ""
     assert modes.get("choice_no2int") == "1"
+    assert row.get("mastered") == 0   # хранимый флаг снят при демоуте
     # вернулось в очередь изучения: due проставлен на ближайшее, lapses вырос
     assert row["due_at"] is not None
     assert (row["lapses"] or 0) >= 1

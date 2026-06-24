@@ -402,6 +402,21 @@ async def init_db():
             await db.execute("ALTER TABLE user_words ADD COLUMN was_certified INTEGER DEFAULT 0")
         except Exception:
             pass
+        try:
+            # ХРАНИМЫЙ флаг «слово доведено до mastered» (не вычисляемый): ставится в apply_result при
+            # достижении mastered, снимается при откате ниже. По нему помечаем «повтор» в игре. Бэкфилл
+            # существующих: все клетки рампы пройдены (контентные REQUIRED_CELLS ИЛИ служебные cloze).
+            await db.execute("ALTER TABLE user_words ADD COLUMN mastered INTEGER DEFAULT 0")
+            await db.execute("""
+                UPDATE user_words SET mastered = 1 WHERE
+                  (json_extract(modes,'$.choice_no2int')='1' AND json_extract(modes,'$.choice_int2no')='1'
+                   AND json_extract(modes,'$.build_int2no')='1' AND json_extract(modes,'$.input_int2no')='1')
+                  OR (json_extract(modes,'$.cloze_1')='1' AND json_extract(modes,'$.cloze_2')='1'
+                      AND json_extract(modes,'$.cloze_3')='1')
+            """)
+            await db.commit()   # закрыть транзакцию DML-бэкфилла (ниже PRAGMA WAL нельзя в транзакции)
+        except Exception:
+            pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (

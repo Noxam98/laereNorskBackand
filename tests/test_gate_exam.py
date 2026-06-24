@@ -134,6 +134,7 @@ async def test_gate_fail_demotes_double(fresh_db):
     assert modes.get("input_int2no", "") == ""
     assert modes.get("choice_no2int") == "1"
     assert row["certified"] == 0
+    assert row.get("mastered") == 0   # хранимый флаг снят при демоуте
     assert status_of(row, modes) != "mastered"
 
 
