@@ -445,7 +445,11 @@ async def get_learning(user_id, status=None, level=None, topic=None, q=None, sor
     finally:
         await _release(db)
     items = [_shape(r) for r in rows]
-    if status and status != "all":
+    if status == "due":
+        # «к повторению» = подошёл интервал (как stats.due). Сертифицированные исключаем — их
+        # повторяет отдельный аудит (по audit_due), их due_at вестигиальный.
+        items = [w for w in items if w["due"] and not w["certified"]]
+    elif status and status != "all":
         items = [w for w in items if w["status"] == status]
     if level:
         items = [w for w in items if (w["level"] or "") == level]
@@ -487,7 +491,7 @@ async def get_due(user_id, limit=20):
     finally:
         await _release(db)
     items = [_shape(r) for r in rows]
-    due = sorted([w for w in items if w["due"]], key=lambda w: w["due_at"] or "")
+    due = sorted([w for w in items if w["due"] and not w["certified"]], key=lambda w: w["due_at"] or "")
     weak = sorted([w for w in items if w["status"] == "weak" and not w["due"]], key=lambda w: w["strength"])
     new = [w for w in items if w["status"] == "new"]
     queue, seen = [], set()

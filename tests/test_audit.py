@@ -271,6 +271,29 @@ async def test_stats_due_excludes_certified(fresh_db):
     assert stats["audit"]["due"] == 0
 
 
+async def test_learning_list_due_excludes_certified(fresh_db):
+    """Набор «На повторении» (status='due'): подошёл интервал, но БЕЗ сертифицированных (их повторяет
+    аудит). Не-mastered с прошедшим due — попадает; сертифицированный с прошедшим due_at — нет."""
+    from db.learning import get_learning
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    cpid = pack[0][0]
+    npid, _ = await seed_word(did, "nyord", "новое")
+    await apply_result(uid, npid, True, mode="choice", direction="no2int")  # есть прогресс (не mastered)
+    db = await _conn()
+    try:
+        past = (datetime.utcnow() - timedelta(days=3)).isoformat()
+        await db.execute("UPDATE user_words SET due_at=? WHERE user_id=? AND pool_id=?", (past, uid, cpid))
+        await db.execute("UPDATE user_words SET due_at=? WHERE user_id=? AND pool_id=?", (past, uid, npid))
+        await db.commit()
+    finally:
+        await _release(db)
+    res = await get_learning(uid, status="due")
+    ids = {w["pool_id"] for w in res["words"]}
+    assert npid in ids, "не-mastered due-слово должно быть в наборе «На повторении»"
+    assert cpid not in ids, "сертифицированное (аудит) не должно попадать в due-набор"
+
+
 async def test_grade_audit_throttle_when_many_forgot(fresh_db):
     uid, did = await seed_user()
     pack = await _seed_certified_pack(uid, did, PACK_FIRST)
