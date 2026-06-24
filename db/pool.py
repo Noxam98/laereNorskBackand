@@ -320,7 +320,7 @@ def freq_band(z):
 async def pool_by_freq(limit: int = 80, level: str = None):
     """Слова пула по убыванию частотности (самые употребимые сначала; freq IS NULL — в хвост).
     [{pool_id, norwegian, translate, part_of_speech, freq}]. Фильтр по уровню CEFR."""
-    conds, params = ["data IS NOT NULL"], []
+    conds, params = ["data IS NOT NULL", "COALESCE(learn_excluded, 0) = 0"], []
     if level:
         conds.append("level = ?"); params.append(level)
     sql = (f"SELECT id, norwegian, data, freq FROM word_pool WHERE {' AND '.join(conds)} "
@@ -348,7 +348,7 @@ async def pool_by_freq_topics(limit: int, level, topics):
     """Как pool_by_freq, но только слова с любой из тем `topics` (для фокуса Учёбы). По частоте."""
     if not topics:
         return []
-    conds, params = ["wp.data IS NOT NULL"], []
+    conds, params = ["wp.data IS NOT NULL", "COALESCE(wp.learn_excluded, 0) = 0"], []
     if level:
         conds.append("wp.level = ?"); params.append(level)
     marks = ",".join("?" for _ in topics)
@@ -1466,5 +1466,90 @@ async def set_word_approval(pool_id: int, approved: int):
         await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (int(approved), pool_id))
         await db.commit()
         return {"ok": True, "pool_id": pool_id, "approved": int(approved)}
+    finally:
+        await _release(db)
+
+
+# ---------------- Жалобы «не учить» (мусорные слова → модерация → убрать из учёбы / оставить) ----------------
+async def report_word(pool_id: int, user_id: int):
+    """Пользователь жалуется «не учить». Убираем слово из ЕГО учёбы и решаем судьбу жалобы:
+      • learn_excluded=1     → уже убрано из учёбы для всех (status=excluded, тихо);
+      • report_dismiss_left>0 → админ ранее решил «оставить» → гасим жалобу (−1, status=dismissed);
+      • иначе                 → ставим в очередь админа (reported=1, report_count+1, status=queued)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COALESCE(learn_excluded,0) le, COALESCE(report_dismiss_left,0) dl "
+            "FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"error": "not_found"}
+        # «не учить» — убрать слово из Учёбы этого пользователя (если оно там было)
+        await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
+        if row["le"]:
+            status = "excluded"
+        elif row["dl"] > 0:
+            await db.execute("UPDATE word_pool SET report_dismiss_left = report_dismiss_left - 1 WHERE id = ?", (pool_id,))
+            status = "dismissed"
+        else:
+            await db.execute("UPDATE word_pool SET reported = 1, report_count = COALESCE(report_count,0) + 1 WHERE id = ?", (pool_id,))
+            status = "queued"
+        await db.commit()
+        return {"ok": True, "pool_id": pool_id, "status": status}
+    finally:
+        await _release(db)
+
+
+async def reported_words(limit: int = 300, offset: int = 0):
+    """Слова с активными жалобами «не учить» (reported=1) — для админа."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, norwegian, data, pos, level, COALESCE(report_count,0) rc "
+            "FROM word_pool WHERE COALESCE(reported,0) = 1 "
+            "ORDER BY rc DESC, id DESC LIMIT ? OFFSET ?", (limit, offset)) as cur:
+            rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            d = _loads(r["data"])
+            out.append({
+                "pool_id": r["id"], "word": r["norwegian"],
+                "part_of_speech": r["pos"] or d.get("part_of_speech", ""),
+                "translate": d.get("translate", {}),
+                "level": r["level"] or d.get("level"),
+                "reports": r["rc"],
+            })
+        return out
+    finally:
+        await _release(db)
+
+
+async def reported_count():
+    db = await _conn()
+    try:
+        async with db.execute("SELECT COUNT(*) c FROM word_pool WHERE COALESCE(reported,0) = 1") as cur:
+            return (await cur.fetchone())["c"]
+    finally:
+        await _release(db)
+
+
+async def resolve_report(pool_id: int, action: str):
+    """Вердикт админа по жалобе:
+      • 'exclude' — убрать из учёбы (learn_excluded=1, снять жалобу);
+      • 'keep'    — оставить слово, следующие 5 жалоб гасить автоматически (report_dismiss_left=5)."""
+    db = await _conn()
+    try:
+        if action == "exclude":
+            await db.execute(
+                "UPDATE word_pool SET learn_excluded = 1, reported = 0, report_count = 0, report_dismiss_left = 0 WHERE id = ?",
+                (pool_id,))
+        elif action == "keep":
+            await db.execute(
+                "UPDATE word_pool SET reported = 0, report_count = 0, report_dismiss_left = 5 WHERE id = ?",
+                (pool_id,))
+        else:
+            return {"error": "bad_action"}
+        await db.commit()
+        return {"ok": True, "pool_id": pool_id, "action": action}
     finally:
         await _release(db)

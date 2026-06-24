@@ -11,7 +11,9 @@ from db import (
     learning_session, learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
+    report_word, pending_count, reported_count,
 )
+import asyncio
 from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody
 
 router = APIRouter()
@@ -74,6 +76,25 @@ async def learning_remove_route(body: dict, user=Depends(get_current_user)):
     if not pid:
         raise HTTPException(status_code=404, detail="Word not in pool")
     return await learning_remove(user["id"], pid)
+
+
+@router.post("/learning/report")
+async def learning_report_route(body: dict, user=Depends(get_current_user)):
+    """«Не учить»: пожаловаться на мусорное слово. Убирает его из Учёбы пользователя и (если
+    жалоба не гасится автоматически) ставит в очередь админ-модерации."""
+    pid = await _resolve_pool_id(body)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    res = await report_word(pid, user["id"])
+    if res.get("status") == "queued":
+        async def _notify_mods():
+            try:
+                from webpush import notify_moderators
+                await notify_moderators(await pending_count() + await reported_count())
+            except Exception:
+                pass
+        asyncio.create_task(_notify_mods())
+    return res
 
 
 @router.post("/learning/answer")

@@ -10,6 +10,7 @@ from db import (
     search_pool, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta, get_pool_stats, get_usage_like,
     get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
     pending_words, pending_count, set_word_approval,
+    reported_words, reported_count, resolve_report,
 )
 from auth import get_current_user, get_admin_user
 from activity import mark_activity
@@ -141,6 +142,24 @@ async def admin_pending_approve(pool_id: int, user=Depends(get_admin_user)):
 async def admin_pending_reject(pool_id: int, user=Depends(get_admin_user)):
     """Отклонить → остаётся приватным у автора (из общей базы скрыто, у автора работает)."""
     return await set_word_approval(pool_id, 2)
+
+
+@router.get("/admin/reported")
+async def admin_reported(limit: int = 300, offset: int = 0, user=Depends(get_admin_user)):
+    """Слова с жалобами «не учить» (мусорные) — для админа."""
+    return {"words": await reported_words(limit, offset), "count": await reported_count()}
+
+
+@router.post("/admin/reported/{pool_id}/exclude")
+async def admin_reported_exclude(pool_id: int, user=Depends(get_admin_user)):
+    """Убрать слово из учёбы — больше не предлагать никому (learn_excluded=1)."""
+    return await resolve_report(pool_id, "exclude")
+
+
+@router.post("/admin/reported/{pool_id}/keep")
+async def admin_reported_keep(pool_id: int, user=Depends(get_admin_user)):
+    """Оставить слово; следующие 5 жалоб на него гасить автоматически (report_dismiss_left=5)."""
+    return await resolve_report(pool_id, "keep")
 
 
 @router.get("/admin/embeddings")

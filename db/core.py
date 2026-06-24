@@ -251,6 +251,23 @@ async def init_db():
         except Exception:
             pass
 
+        # «Не учить»: жалобы пользователей на мусорные слова (типа «покемон»).
+        #   learn_excluded     — слово убрано из рекомендаций Учёбы (suggest_words его не предлагает);
+        #   reported           — есть активная жалоба → в очереди админа;
+        #   report_count       — сколько жалоб накопилось (для контекста админу);
+        #   report_dismiss_left — после вердикта «оставить» столько ближайших жалоб гасим автоматически
+        #                         (запоминаем выбор админа на следующие 5 отправлений).
+        for _ddl in (
+            "ALTER TABLE word_pool ADD COLUMN learn_excluded INTEGER DEFAULT 0",
+            "ALTER TABLE word_pool ADD COLUMN reported INTEGER DEFAULT 0",
+            "ALTER TABLE word_pool ADD COLUMN report_count INTEGER DEFAULT 0",
+            "ALTER TABLE word_pool ADD COLUMN report_dismiss_left INTEGER DEFAULT 0",
+        ):
+            try:
+                await db.execute(_ddl)
+            except Exception:
+                pass
+
         # Теги-темы общего пула (много на слово).
         await db.execute("""
         CREATE TABLE IF NOT EXISTS word_topics (

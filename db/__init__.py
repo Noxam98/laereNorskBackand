@@ -30,6 +30,7 @@ from .pool import (
     get_pool_candidates, set_pool_description, delete_pool_word,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,
     pending_words, pending_count, set_word_approval,
+    report_word, reported_words, reported_count, resolve_report,
     set_pool_forms, pos_missing_forms, set_pool_pos, pos_uncategorized, clear_nonformable_forms,
 )
 from .cache import (
