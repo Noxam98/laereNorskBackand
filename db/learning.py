@@ -333,13 +333,20 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
 
 
 async def set_status(user_id: int, pool_id: int, action: str):
-    """action: know (в архив, сила 100) | reset (сброс) | unarchive (вернуть в ротацию)."""
+    """action: know (в архив) | known (в Выучено) | reset (сброс) | unarchive (вернуть в ротацию)."""
     db = await _conn()
     try:
         if action == "know":
             m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
             m["hist"] = "1" * CAPACITY
             fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
+            args = (json.dumps(m, ensure_ascii=False), _due_str(120))
+        elif action == "known":
+            # «Уже знаю» (из игры): слово сразу в ВЫУЧЕНО (mastered, НЕ архив) — считается выученным,
+            # больше не предлагается. Срок повтора далеко (без срочного «Повторения») — «может и нет».
+            m = {c: "1" for c in ALL_CELLS}
+            m["hist"] = "1" * CAPACITY
+            fields = "archived=0, strength=100, reps=MAX(reps,3), correct=MAX(correct,1), modes=?, due_at=?, mastered=1"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
         elif action == "reset":
             fields = ("archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
@@ -1537,6 +1544,9 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
         # уже имеющиеся слова — по ВСЕМ словарям пользователя (чтобы не дублировать существующие)
         async with db.execute("SELECT DISTINCT pool_id FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)", (user_id,)) as cur:
             have = {r["pool_id"] for r in await cur.fetchall()}
+        # персональная свалка «не учить» — НИКОГДА не предлагать этому юзеру (даже если модератор оставил)
+        async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
     # кандидаты по уровню, по ЧАСТОТНОСТИ. ВАЖНО: окно расширяем за все уже имеющиеся слова —

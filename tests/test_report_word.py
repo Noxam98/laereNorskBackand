@@ -64,3 +64,33 @@ async def test_report_on_already_excluded_is_silent(fresh_db):
     r = await report_word(pid, uid)
     assert r["status"] == "excluded"
     assert await reported_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_report_puts_word_in_personal_skip_and_unlinks(fresh_db):
+    """«Отправить на модерацию» → персональная свалка + слово убрано из словарей юзера."""
+    uid, did = await pytest.seed_user()
+    pid, _ = await pytest.seed_word(did, "junkx")
+    await report_word(pid, uid)
+    dbc = await _conn()
+    try:
+        async with dbc.execute("SELECT COUNT(*) c FROM user_word_skips WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            assert (await cur.fetchone())["c"] == 1   # в свалке
+        async with dbc.execute("SELECT COUNT(*) c FROM dict_words WHERE pool_id=? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id=?)", (pid, uid)) as cur:
+            assert (await cur.fetchone())["c"] == 0   # отвязано от словарей
+        async with dbc.execute("SELECT COUNT(*) c FROM user_words WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            assert (await cur.fetchone())["c"] == 0   # прогресс удалён (не «выучено»)
+    finally:
+        await _release(dbc)
+
+
+@pytest.mark.asyncio
+async def test_known_marks_mastered_not_archived(fresh_db):
+    """«Уже знаю» → в Выучено (mastered), НЕ в архив."""
+    from db import learning_set_status, learning_stats
+    uid, did = await pytest.seed_user()
+    pid, _ = await pytest.seed_word(did, "kjentord")
+    await learning_set_status(uid, pid, "known")
+    st = await learning_stats(uid)
+    assert st["byStatus"].get("mastered", 0) >= 1
+    assert st["byStatus"].get("archived", 0) == 0

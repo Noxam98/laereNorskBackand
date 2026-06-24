@@ -1484,8 +1484,15 @@ async def report_word(pool_id: int, user_id: int):
             row = await cur.fetchone()
         if not row:
             return {"error": "not_found"}
-        # «не учить» — убрать слово из Учёбы этого пользователя (если оно там было)
+        # «Отправить на модерацию» = в персональную СВАЛКУ юзера: учить НЕ будет НАВСЕГДА, независимо
+        # от решения модератора. Убираем из его словарей (dict_words) и прогресса (user_words —
+        # удаляем, это мусор, не «выучено»), и заносим в user_word_skips, чтобы suggest_words больше
+        # никогда не предлагал это слово ЭТОМУ юзеру (даже если модератор слово оставит).
+        await db.execute(
+            "DELETE FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
+            (pool_id, user_id))
         await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
+        await db.execute("INSERT OR IGNORE INTO user_word_skips (user_id, pool_id, created_at) VALUES (?,?,?)", (user_id, pool_id, _now()))
         if row["le"]:
             status = "excluded"
         elif row["dl"] > 0:

@@ -262,11 +262,28 @@ async def init_db():
             "ALTER TABLE word_pool ADD COLUMN reported INTEGER DEFAULT 0",
             "ALTER TABLE word_pool ADD COLUMN report_count INTEGER DEFAULT 0",
             "ALTER TABLE word_pool ADD COLUMN report_dismiss_left INTEGER DEFAULT 0",
+            # 0 = админ ещё не просматривал слово вручную. Под будущий инструмент: пройтись по всем
+            # словам и решить, предлагать ли их юзерам к учёбе (тогда выставлять admin_reviewed=1).
+            "ALTER TABLE word_pool ADD COLUMN admin_reviewed INTEGER DEFAULT 0",
         ):
             try:
                 await db.execute(_ddl)
             except Exception:
                 pass
+
+        # Персональная «свалка» юзера: слова, которые ОН учить не будет (жалоба «отправить на
+        # модерацию»). Не предлагаются ему в suggest_words НЕЗАВИСИМО от решения модератора
+        # (модератор решает лишь глобальную видимость для ДРУГИХ через word_pool.learn_excluded).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_word_skips (
+                user_id INTEGER NOT NULL,
+                pool_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, pool_id),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
+            )
+        """)
 
         # Теги-темы общего пула (много на слово).
         await db.execute("""
