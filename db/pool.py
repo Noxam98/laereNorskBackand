@@ -535,10 +535,13 @@ async def get_pool_meta_all():
 
 
 async def pool_missing_embedding(limit: int = 1):
+    """[(id, norwegian)] — записи без вектора. id нужен, чтобы эмбеддинг записать ИМЕННО
+    в эту запись: омонимы (один norwegian → несколько записей с разным pos) имеют каждый
+    свой вектор, а get_pool_id без pos попал бы в старшую и NULL у нужной не очистился бы."""
     db = await _conn()
     try:
-        async with db.execute("SELECT norwegian FROM word_pool WHERE embedding IS NULL LIMIT ?", (limit,)) as cur:
-            return [r["norwegian"] for r in await cur.fetchall()]
+        async with db.execute("SELECT id, norwegian FROM word_pool WHERE embedding IS NULL LIMIT ?", (limit,)) as cur:
+            return [(r["id"], r["norwegian"]) for r in await cur.fetchall()]
     finally:
         await _release(db)
 

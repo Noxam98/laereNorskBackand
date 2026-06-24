@@ -108,16 +108,28 @@ def _pick_prefix():
     return first + random.choice(pool2)
 
 
-async def complete_batch(words):
-    """Доделать ПАЧКУ слов: эмбеддинги одним запросом (для тех, у кого вектора нет) +
+async def complete_batch(items):
+    """Доделать ПАЧКУ записей: эмбеддинги одним запросом (для тех, у кого вектора нет) +
     озвучка каждого (edge, бесплатно). Ключ/модель эмбеддинга — внутри llm.embed_texts.
+    items — [(pid, norwegian)] ИЛИ [norwegian] (строки для совместимости: pid резолвится
+    по слову → старшая запись). embedding пишется по id (омонимы: у каждой записи свой
+    вектор), tts — по слову (set_pool_tts обновляет все записи этого написания).
     Возвращает число посчитанных эмбеддингов."""
-    pending = []  # (pid, текст-для-эмбеддинга) — только у кого вектора ещё нет
+    # нормализуем к [(pid, word)]
+    pairs = []
+    for it in items:
+        if isinstance(it, (tuple, list)):
+            pairs.append((it[0], it[1]))
+        else:
+            pid = await get_pool_id(it)
+            if pid:
+                pairs.append((pid, it))
+    pending, seen_emb = [], set()  # (pid, текст) — только у кого вектора ещё нет
     if llm.embed_enabled() and not runtime.PAUSED["embed"]:
-        for w in words:
-            pid = await get_pool_id(w)
-            if not pid:
+        for pid, w in pairs:
+            if not pid or pid in seen_emb:
                 continue
+            seen_emb.add(pid)
             p = await get_pool_by_id(pid)
             if p and not p.get("embedding"):
                 pending.append((pid, semantic_embed_text(p["data"]) or w))
@@ -129,7 +141,12 @@ async def complete_batch(words):
                 await set_pool_embedding(pid, encode_emb(vec))
                 await mark_sem_embed(pid)
             n = len(pending)
-    for w in words:  # озвучка — по одному (edge бесплатный, без квоты)
+    seen_tts = set()
+    for _pid, w in pairs:  # озвучка — по слову (edge бесплатный, без квоты), один раз на написание
+        key = normalize_word(w)
+        if key in seen_tts:
+            continue
+        seen_tts.add(key)
         if not await get_pool_tts(w):
             async with _tts_lock:
                 try:
@@ -834,7 +851,10 @@ async def autofill_loop():
                                 pid = await get_or_create_pool(it["word"], normalize_word_item(it))
                                 if pid:
                                     await apply_item_meta(pid, it)
-                                (dup_words if existed else new_words).append(it["word"])
+                                if existed:
+                                    dup_words.append(it["word"])
+                                else:
+                                    new_words.append((pid, it["word"]))  # pid новой записи → эмбеддинг по нему
                     except Exception as e:
                         ok = False
                         errors.report(e, "autofill generate")  # ошибку уже отчитали — «пусто» не шлём
