@@ -109,6 +109,7 @@ class GamePrefsBody(BaseModel):
     choiceHintSeen: bool | None = None  # видел сноску «можно выбирать цифрами» в «Выборе» (ПК)
     leaderboardOptOut: bool | None = None  # не участвовать в рейтинге (скрыт от других)
     listenOff: bool | None = None  # задания «на слух» выключены для аккаунта (синк между устройствами)
+    lang: str | None = None  # язык интерфейса (синк между устройствами): ru|ukr|en|pl|lt
 
 
 class RedescribeBody(BaseModel):
