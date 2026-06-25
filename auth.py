@@ -294,6 +294,8 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["choiceHintSeen"] = bool(body.choiceHintSeen)
     if body.leaderboardOptOut is not None:
         prefs["leaderboardOptOut"] = bool(body.leaderboardOptOut)
+    if body.listenOff is not None:
+        prefs["listenOff"] = bool(body.listenOff)
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))
     return {"gamePrefs": prefs}
 

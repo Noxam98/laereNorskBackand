@@ -108,6 +108,7 @@ class GamePrefsBody(BaseModel):
     kbdHintSeen: bool | None = None   # видел сноску «можно печатать с клавиатуры» (ПК) — больше не показывать
     choiceHintSeen: bool | None = None  # видел сноску «можно выбирать цифрами» в «Выборе» (ПК)
     leaderboardOptOut: bool | None = None  # не участвовать в рейтинге (скрыт от других)
+    listenOff: bool | None = None  # задания «на слух» выключены для аккаунта (синк между устройствами)
 
 
 class RedescribeBody(BaseModel):
