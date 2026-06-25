@@ -56,29 +56,38 @@ async def tts(word: str, lang: str = None):
     if not text:
         raise HTTPException(status_code=400, detail="word is required")
 
-    if lang and lang in _TRANSLATION_LANGS:
-        return await _tts_translation(text, lang)
+    # ЛЮБОЙ сбой превращаем в HTTPException: он отдаётся НИЖЕ CORS-мидлвари и получает
+    # Access-Control-Allow-Origin. Иначе необработанное исключение (сбой Tigris/БД/синтеза)
+    # уходит мимо CORS → в браузере выглядит как «No ACAO header» + net::ERR_FAILED (а не как 502).
+    try:
+        if lang and lang in _TRANSLATION_LANGS:
+            return await _tts_translation(text, lang)
 
-    # Норвежский — как было.
-    key = normalize_word(text)
-    cached = await get_pool_tts(key)
-    if cached:
-        return Response(content=bytes(cached), media_type="audio/mpeg", headers=_TTS_HEADERS)
-
-    async with _tts_lock:
-        cached = await get_pool_tts(key)  # могли сгенерить, пока ждали очередь
+        # Норвежский — как было.
+        key = normalize_word(text)
+        cached = await get_pool_tts(key)
         if cached:
             return Response(content=bytes(cached), media_type="audio/mpeg", headers=_TTS_HEADERS)
-        try:
-            mp3 = await synth_tts(key)
-        except Exception as e:
-            logger.warning(f"tts failed: {e}")
-            raise HTTPException(status_code=502, detail="TTS provider error")
-        if not mp3:
-            raise HTTPException(status_code=502, detail="No audio")
-        if await get_pool_id(key):
-            await set_pool_tts(key, mp3)
-        return Response(content=mp3, media_type="audio/mpeg", headers=_TTS_HEADERS)
+
+        async with _tts_lock:
+            cached = await get_pool_tts(key)  # могли сгенерить, пока ждали очередь
+            if cached:
+                return Response(content=bytes(cached), media_type="audio/mpeg", headers=_TTS_HEADERS)
+            try:
+                mp3 = await synth_tts(key)
+            except Exception as e:
+                logger.warning(f"tts failed: {e}")
+                raise HTTPException(status_code=502, detail="TTS provider error")
+            if not mp3:
+                raise HTTPException(status_code=502, detail="No audio")
+            if await get_pool_id(key):
+                await set_pool_tts(key, mp3)
+            return Response(content=mp3, media_type="audio/mpeg", headers=_TTS_HEADERS)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"tts route failed (lang={lang}): {e}")
+        raise HTTPException(status_code=502, detail="TTS error")
 
 
 @router.post("/pool/{word}/revoice")
