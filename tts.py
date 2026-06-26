@@ -2,6 +2,7 @@ import os
 import asyncio
 from config import logger
 from db import normalize_word, get_pool_tts, set_pool_tts, get_pool_id, tr_tts_pending, mark_tr_tts_done
+from langs import TTS_VOICE_MAP, TTS_TR_PAIRS
 import storage
 
 # --- TTS через Microsoft Edge (нейро-голоса, бесплатно, без ключа и без лимитов) ---
@@ -9,15 +10,11 @@ TTS_VOICE = os.getenv("TTS_VOICE", "nb-NO-FinnNeural")  # норвежский �
 TTS_RATE = os.getenv("TTS_RATE", "-5%")    # скорость, напр. "-15%", "+10%"
 TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")  # высота, напр. "+5Hz", "-5Hz"
 
-# Голоса по языку перевода (нейро-голоса Edge, бесплатные). Коды как на фронте.
-TTS_VOICES = {
-    "nb": TTS_VOICE,
-    "ru": os.getenv("TTS_VOICE_RU", "ru-RU-SvetlanaNeural"),
-    "uk": os.getenv("TTS_VOICE_UK", "uk-UA-PolinaNeural"),
-    "en": os.getenv("TTS_VOICE_EN", "en-US-AriaNeural"),
-    "pl": os.getenv("TTS_VOICE_PL", "pl-PL-ZofiaNeural"),
-    "lt": os.getenv("TTS_VOICE_LT", "lt-LT-OnaNeural"),
-}
+# Голоса по языку перевода — из реестра langs.py (добавление языка = одна запись там).
+# Каждый переопределяем env-ом TTS_VOICE_<TTS> (напр. TTS_VOICE_RU). "nb" — целевой норвежский.
+TTS_VOICES = {"nb": TTS_VOICE}
+for _tts, _voice in TTS_VOICE_MAP.items():
+    TTS_VOICES[_tts] = os.getenv(f"TTS_VOICE_{_tts.upper()}", _voice)
 
 # Сериализует генерацию озвучки (одна за раз).
 _tts_lock = asyncio.Lock()
@@ -60,8 +57,8 @@ def schedule_tts(words):
 
 
 # --- Фоновая озвучка переводов: все имеющиеся переводы каждого слова → Tigris ---
-# (ключ в data.translate, код голоса озвучки). Украинский в данных — "ukr", голос — "uk".
-TTS_TR_LANGS = [("ru", "ru"), ("ukr", "uk"), ("en", "en"), ("pl", "pl"), ("lt", "lt")]
+# (ключ в data.translate, код голоса озвучки) — из реестра langs.py. Украинский: "ukr" → голос "uk".
+TTS_TR_LANGS = TTS_TR_PAIRS
 TTS_TR_BATCH = int(os.getenv("TTS_TR_BATCH", "5"))        # слов за тик
 TTS_TR_CHECK_SEC = int(os.getenv("TTS_TR_CHECK_SEC", "15"))  # период проверки очереди
 
