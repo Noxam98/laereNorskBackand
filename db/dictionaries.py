@@ -204,22 +204,29 @@ async def remove_word_from_set(user_id: int, set_id: int, pool_id: int):
 
 
 async def get_set_words(user_id: int, set_id: int):
-    """Слова набора для показа: [{pool_id, norwegian, translate, part_of_speech, level}] или None."""
+    """Слова набора + статус изучения по каждому (для прогресса набора): None если набор чужой.
+    status: mastered (выучено) | learning (в процессе) | new (ещё не трогали)."""
     db = await _conn()
     try:
         if not await _owns_dict(db, user_id, set_id):
             return None
         async with db.execute("""
-            SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level
-            FROM dict_words dw JOIN word_pool wp ON wp.id = dw.pool_id
+            SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level,
+                   uw.mastered AS mastered, uw.correct AS correct, uw.incorrect AS incorrect
+            FROM dict_words dw
+            JOIN word_pool wp ON wp.id = dw.pool_id
+            LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
             WHERE dw.dict_id = ? ORDER BY dw.created_at, dw.id
-        """, (set_id,)) as cur:
+        """, (user_id, set_id)) as cur:
             out = []
             for r in await cur.fetchall():
                 data = json.loads(r["data"]) if r["data"] else {}
+                attempts = (r["correct"] or 0) + (r["incorrect"] or 0)
+                status = "mastered" if r["mastered"] == 1 else ("learning" if attempts > 0 else "new")
                 out.append({"pool_id": r["pool_id"], "norwegian": r["norwegian"],
                             "translate": data.get("translate", {}),
-                            "part_of_speech": data.get("part_of_speech", ""), "level": r["level"]})
+                            "part_of_speech": data.get("part_of_speech", ""), "level": r["level"],
+                            "status": status})
             return out
     finally:
         await _release(db)

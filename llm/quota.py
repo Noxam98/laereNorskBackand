@@ -86,7 +86,11 @@ def _any_fresh(models, keys, kind):
 
 # --- key-free интерфейс наружу ---
 def text_candidates(purpose, model=None):
-    models = [model] if model else TEXT_PROFILES[purpose]
+    # model может быть строкой (одна модель) ИЛИ списком — своя цепочка приоритета (напр. 3.5→lite)
+    if model:
+        models = list(model) if isinstance(model, (list, tuple)) else [model]
+    else:
+        models = TEXT_PROFILES[purpose]
     return candidates(models, LLM_API_KEYS, "text")
 
 

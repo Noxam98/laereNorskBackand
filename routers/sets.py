@@ -96,6 +96,25 @@ async def sets_words_remove(set_id: int, pool_id: int, user=Depends(get_current_
     return _bad(await remove_word_from_set(user["id"], set_id, pool_id))
 
 
+@router.post("/sets/{set_id}/generate")
+async def sets_generate(set_id: int, body: dict, user=Depends(get_current_user)):
+    """Сгенерировать слова через ИИ по теме/уровню/количеству (0–20) и добавить в набор.
+    Тема — ключ темы или свободный текст; level — A1..C2 (необяз.); lang — язык переводов."""
+    mark_activity()
+    words = await get_set_words(user["id"], set_id)
+    if words is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    body = body or {}
+    count = max(0, min(20, int(body.get("count") or 0)))
+    if count > 0:
+        from autofill import generate_set_words   # ленивый импорт — избегаем циклов на старте
+        pids = await generate_set_words(body.get("topic"), body.get("level"), count, body.get("lang") or "ru")
+        if pids:
+            await add_words_to_set(user["id"], set_id, pids)
+        words = await get_set_words(user["id"], set_id)
+    return {"words": words}
+
+
 @router.get("/sets/{set_id}/session")
 async def sets_session(set_id: int, size: int = 20, lang: str = "ru", user=Depends(get_current_user)):
     """Дрилл «Учить набор»: сессия только по словам набора (рампа из общего SRS,

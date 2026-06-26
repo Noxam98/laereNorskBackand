@@ -775,6 +775,58 @@ async def ai_game_words(lang, level, topic, count, on_phase=None):
     return await get_pool_words_by_names(names)
 
 
+# модель для генерации набора: 3.5-flash (качество) → фолбэк 3.1-flash-lite (если 429/нет квоты)
+SET_GEN_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+
+
+async def generate_set_words(topic, level, count, lang="ru"):
+    """AI-набор слов для ЛИЧНОГО набора: тематическая генерация под уровень/количество (0–20).
+    Модель — 3.5-flash с фолбэком на 3.1-flash-lite. Слова кладём в общий пул (обогащение фоном).
+    Возвращает список pool_id добавленных/существующих слов (без дублей)."""
+    n = max(1, min(20, int(count or 0)))
+    lang_name = LANG_NAMES.get(lang, lang)
+    topic_txt = (topic or "").strip()
+    topic_label = TOPIC_TAGS.get(topic_txt, topic_txt) if topic_txt else None
+    nonce = random.randint(1000, 99999)
+    prompt = (
+        f"Подбери РОВНО {n} распространённых, но РАЗНЫХ норвежских слов (bokmål) для изучения. "
+        + (f"Уровень CEFR — около {level}. " if level else "")
+        + (f"Тема: {topic_label}. " if topic_label else "Тема: общеупотребительная лексика. ")
+        + f"Для каждого дай перевод на язык: {lang_name}. Каждое слово однозначное и переводимое. "
+        f"(вариант {nonce})"
+    )
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                              purpose="user", model=SET_GEN_MODELS, label="AI-набор слов")
+    except Exception as e:
+        errors.report(e, "generate_set_words")
+        return []
+    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    pids, seen, new_emb = [], set(), []
+    for it in items:
+        if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
+            continue
+        existed = await get_pool_id(it["word"])
+        data_item = normalize_word_item(it)
+        pid = await get_or_create_pool(it["word"], data_item)
+        if not pid or pid in seen:
+            continue
+        await apply_item_meta(pid, it)
+        seen.add(pid); pids.append(pid)
+        if not existed:
+            new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
+        if len(pids) >= n:
+            break
+    # вектора новым словам (как в ai_game_words) — чтобы сразу участвовали в подборе/похожих
+    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
+        vecs = await embed_texts([t for _, t in new_emb])
+        if vecs and len(vecs) == len(new_emb):
+            for (pid, _), vec in zip(new_emb, vecs):
+                await set_pool_embedding(pid, encode_emb(vec))
+                await mark_sem_embed(pid)
+    return pids
+
+
 async def autofill_loop():
     await asyncio.sleep(15)
     i = 0
