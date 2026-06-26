@@ -11,7 +11,7 @@ from activity import mark_activity
 from db import (
     list_user_sets, create_dictionary, rename_dictionary, delete_dictionary,
     set_dictionary_studying, add_words_to_set, remove_word_from_set, get_set_words,
-    sets_for_words, learning_session, get_pool_id,
+    sets_for_words, reset_set_ramp, learning_session, get_pool_id,
 )
 
 router = APIRouter()
@@ -113,6 +113,12 @@ async def sets_generate(set_id: int, body: dict, user=Depends(get_current_user))
             await add_words_to_set(user["id"], set_id, pids)
         words = await get_set_words(user["id"], set_id)
     return {"words": words}
+
+
+@router.post("/sets/{set_id}/reset")
+async def sets_reset(set_id: int, user=Depends(get_current_user)):
+    """Сбросить рампу выученных слов набора (до звукового задания, не до карточки)."""
+    return _bad(await reset_set_ramp(user["id"], set_id))
 
 
 @router.get("/sets/{set_id}/session")

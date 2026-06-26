@@ -210,9 +210,11 @@ async def get_set_words(user_id: int, set_id: int):
     try:
         if not await _owns_dict(db, user_id, set_id):
             return None
+        from .learning import required_cells   # ленивый импорт — избегаем цикла на загрузке модуля
         async with db.execute("""
             SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level,
-                   uw.mastered AS mastered, uw.correct AS correct, uw.incorrect AS incorrect
+                   uw.mastered AS mastered, uw.correct AS correct, uw.incorrect AS incorrect,
+                   uw.strength AS strength, uw.modes AS modes
             FROM dict_words dw
             JOIN word_pool wp ON wp.id = dw.pool_id
             LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
@@ -223,11 +225,53 @@ async def get_set_words(user_id: int, set_id: int):
                 data = json.loads(r["data"]) if r["data"] else {}
                 attempts = (r["correct"] or 0) + (r["incorrect"] or 0)
                 status = "mastered" if r["mastered"] == 1 else ("learning" if attempts > 0 else "new")
+                try:
+                    modes = json.loads(r["modes"]) if r["modes"] else {}
+                except Exception:
+                    modes = {}
+                rcells = required_cells({"norwegian": r["norwegian"], "data": r["data"]})
+                ramp = {"done": sum(1 for c in rcells if modes.get(c) == "1"), "total": len(rcells)}
                 out.append({"pool_id": r["pool_id"], "norwegian": r["norwegian"],
                             "translate": data.get("translate", {}),
                             "part_of_speech": data.get("part_of_speech", ""), "level": r["level"],
-                            "status": status})
+                            "status": status, "ramp": ramp, "strength": r["strength"] or 0})
             return out
+    finally:
+        await _release(db)
+
+
+async def reset_set_ramp(user_id: int, set_id: int):
+    """Сбросить рампу ВЫУЧЕННЫХ слов набора — НЕ до интро-карточки, а до первого упражнения
+    (звукового: choice_no2int). Чистим клетки рампы, снимаем mastered/сертификацию, но оставляем
+    attempts>0, чтобы интро-карточка (которая показывается при 0 попыток) не появлялась. due=сейчас."""
+    from .learning import ALL_CELLS   # ленивый импорт (избегаем цикла на загрузке модуля)
+    db = await _conn()
+    try:
+        if not await _owns_dict(db, user_id, set_id):
+            return {"error": "Not found"}
+        async with db.execute("""
+            SELECT uw.id AS uid, uw.modes AS modes, uw.correct AS correct, uw.incorrect AS incorrect
+            FROM dict_words dw
+            JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = dw.pool_id
+            WHERE dw.dict_id = ? AND uw.mastered = 1
+        """, (user_id, set_id)) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+        for r in rows:
+            try:
+                modes = json.loads(r["modes"]) if r["modes"] else {}
+            except Exception:
+                modes = {}
+            for c in ALL_CELLS:
+                modes[c] = ""
+            corr = r["correct"] or 0
+            if (corr + (r["incorrect"] or 0)) == 0:   # attempts==0 → поставим 1, чтобы не интро-карточка
+                corr = 1
+            await db.execute(
+                "UPDATE user_words SET modes = ?, mastered = 0, certified = 0, was_certified = 0, "
+                "strength = 0, reps = 0, interval_days = 0, correct = ?, due_at = ? WHERE id = ?",
+                (json.dumps(modes, ensure_ascii=False), corr, _now(), r["uid"]))
+        await db.commit()
+        return {"ok": True, "reset": len(rows)}
     finally:
         await _release(db)
 
