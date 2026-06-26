@@ -58,6 +58,12 @@ async def _run(kind, cands, attempt, incr, label, icon):
             res = await attempt(model, key)
         except Exception as e:
             ek = errors.classify(e).kind
+            if ek == errors.SERVER:
+                # 5xx/перегрузка модели (напр. 503 «high demand, UNAVAILABLE») — это НЕ квота:
+                # пробуем следующего кандидата (другой ключ → запасная модель), а не падаем сразу.
+                notify.feed(f"{icon} {label} [{model}] · k{idx} ⚠️ 5xx — следующий кандидат")
+                last = e
+                continue
             if ek != errors.QUOTA:
                 notify.feed(f"{icon} {label} [{model}] · k{idx} ❌ {ek}")
                 raise
