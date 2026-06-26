@@ -17,7 +17,7 @@ def _fold_no(s):
 # SQL-выражение, складывающее å/ø/æ в колонке norwegian (для LIKE без учёта норв. букв)
 _SQL_FOLD_NO = "replace(replace(replace(norwegian,'å','a'),'ø','o'),'æ','ae')"
 
-_POOL_LANGS = {"ru", "ukr", "en", "pl", "lt"}  # языки интерфейса = ключи translate в data
+_POOL_LANGS = {"ru", "ukr", "en", "pl", "lt", "lv"}  # языки интерфейса = ключи translate в data
 _SEM_MAX_DIST = float(os.getenv("POOL_SEM_MAX_DIST", "0.52"))   # порог косинус-дистанции для семантики
 _SEM_MAX_RESULTS = int(os.getenv("POOL_SEM_MAX_RESULTS", "12"))  # семантика — подсказка, не полный список
 

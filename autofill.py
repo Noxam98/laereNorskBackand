@@ -219,7 +219,7 @@ DESCRIBE_BATCH = int(os.getenv("DESCRIBE_BATCH", "10"))
 DESCRIBE_CHECK_SEC = int(os.getenv("DESCRIBE_CHECK_SEC", "4"))  # как часто проверять очередь описаний (5 ключей → можно чаще)
 _DESCRIBE_SYS = (
     "Ты — преподаватель норвежского. Для каждого норвежского слова дай краткое "
-    "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt. "
+    "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt, lv. "
     "У слов в скобках указаны часть речи и переводы — описывай ИМЕННО это значение слова, "
     "а не другой смысл того же написания. "
     "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
@@ -238,7 +238,7 @@ async def describe_batch(words):
         if it.get("pos"):
             ctx.append(f"часть речи: {it['pos']}")
         tr = it.get("translate") or {}
-        for l in ("ru", "ukr", "en", "pl", "lt"):
+        for l in ("ru", "ukr", "en", "pl", "lt", "lv"):
             vals = [v for v in (tr.get(l) or []) if v]
             if vals:
                 ctx.append(f"{l}: {', '.join(vals)}")
@@ -276,7 +276,7 @@ async def describe_batch(words):
         if not pid or pid in seen:
             continue
         seen.add(pid)
-        desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt")}
+        desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt", "lv")}
         await set_pool_description(pid, desc)
         done += 1
     return done
@@ -323,18 +323,18 @@ async def describe_loop():
 
 
 # --- Догенерация недостающих переводов (на все 5 языков) ---
-TRANSLATE_LANGS = ["ru", "ukr", "en", "pl", "lt"]
+TRANSLATE_LANGS = ["ru", "ukr", "en", "pl", "lt", "lv"]
 TRANSLATE_BATCH = int(os.getenv("TRANSLATE_BATCH", "10"))
 TRANSLATE_CHECK_SEC = int(os.getenv("TRANSLATE_CHECK_SEC", "6"))
 _TRANSLATE_SYS = (
     "Ты — переводчик с норвежского (bokmål). Для каждого норвежского слова дай перевод "
-    "на 5 языков: ru, ukr, en, pl, lt — по 1-3 варианта (массив строк), без пояснений. "
+    "на 6 языков: ru, ukr, en, pl, lt, lv — по 1-3 варианта (массив строк), без пояснений. "
     "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
 )
 
 
 async def translate_batch(words):
-    """Пакетный перевод списка норвежских слов на 5 языков. Возвращает {norm_word: result}."""
+    """Пакетный перевод списка норвежских слов на 6 языков. Возвращает {norm_word: result}."""
     if not words:
         return {}
     user = "Переведи норвежские слова:\n" + "\n".join(f"- {w}" for w in words)
