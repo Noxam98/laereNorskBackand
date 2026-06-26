@@ -18,6 +18,7 @@ LANGUAGES = [
     {"code": "pl",  "name": "польский",   "name_in": "polskim",    "tts": "pl"},
     {"code": "lt",  "name": "литовский",  "name_in": "lietuvių",   "tts": "lt"},
     {"code": "lv",  "name": "латышский",  "name_in": "latviešu",   "tts": "lv"},
+    {"code": "ar",  "name": "арабский",   "name_in": "арабском",   "tts": "ar"},
 ]
 
 # --- производные (НЕ редактировать вручную) ---
