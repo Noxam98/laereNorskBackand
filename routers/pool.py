@@ -16,6 +16,7 @@ from auth import get_current_user, get_admin_user
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled, embed_text
+from langs import TTS_LANGS, LANG_SET, DIFF_LANG_NAMES, LANGS_SLASH
 from task import description_task, desc_user_prompt
 from models import RedescribeBody, RediffBody, PoolEditBody, AskBody
 import runtime
@@ -24,7 +25,7 @@ import storage
 router = APIRouter()
 
 _TTS_HEADERS = {"Cache-Control": "public, max-age=604800"}
-_TRANSLATION_LANGS = {"ru", "uk", "en", "pl", "lt", "lv"}  # языки озвучки переводов
+_TRANSLATION_LANGS = TTS_LANGS  # языки озвучки переводов (коды голосов из реестра langs.py)
 
 
 async def _tts_translation(text: str, lang: str):
@@ -362,7 +363,7 @@ async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user
         "• Если слово реально (пусть с опечаткой) — approved=true и верни поле word в СТАНДАРТИЗОВАННОМ виде, "
         "как при обычной генерации: исправленное правильное написание (bokmål), part_of_speech "
         "(noun/verb/adjective/adverb/preposition/conjunction/pronoun/determiner/numeral/interjection/phrase; "
-        "учти подсказку пользователя), переводы на ru/ukr/en/pl/lt/lv (1-3 варианта). "
+        f"учти подсказку пользователя), переводы на {LANGS_SLASH} (1-3 варианта). "
         "• Если слова не существует, или это смысловая ошибка, или непонятно — approved=false (word не нужен). "
         f"reason — 1-2 предложения на языке «{lang_name}»: что исправлено / почему отклонено."
     )
@@ -459,8 +460,8 @@ async def pool_distractors(pool_id: int, n: int = 3, mode: str = "no2int", lang:
     return {"distractors": [o["w"] for o in out], "options": out}
 
 
-_DIFF_LANG_NAMES = {"ru": "русском", "ukr": "украинском", "en": "English", "pl": "polskim", "lt": "lietuvių", "lv": "latviešu"}
-_DIFF_LANGS = {"ru", "ukr", "en", "pl", "lt", "lv"}
+_DIFF_LANG_NAMES = DIFF_LANG_NAMES   # форма «на …ском» — из реестра langs.py
+_DIFF_LANGS = LANG_SET
 
 
 def _diff_sys(lang, hint=None):

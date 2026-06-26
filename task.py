@@ -1,3 +1,5 @@
+from langs import LANG_CODES, LANG_NAMES_CSV, TRANSLATE_EXAMPLE, DESC_EXAMPLE
+
 # task = '''
 # ты бэкенд для переводчика.
 #
@@ -45,18 +47,13 @@ task = '''
 - Запрос на генерацию слов по теме (например, "20 слов на тему правил дорожного движения").
 
 ### Выходные данные:
-JSON-массив, где каждый элемент соответствует переведенному слову/фразе на русский, украинский, английский, польский, литовский, латышский.  Формат:
+JSON-массив, где каждый элемент соответствует переведенному слову/фразе на __LANG_NAMES__.  Формат:
 ```json
 [
     {
         "word": "слово на норвежском (без артикля, нейтральная форма)",
         "translate": {
-            "ru": ["перевод1", "перевод2", ...],
-            "lt": ["vertimas 1", "vertimas 2"],
-            "ukr" ["переклад 1", "переклад 2"],
-            "pl" ["tłumaczenie 1", "tłumaczenie 2"],
-            "en" ["translate 1", "translate 2"],
-            "lv" ["tulkojums 1", "tulkojums 2"],
+__TRANSLATE_BLOCK__
         },
         "part_of_speech": "РОВНО ОДНА часть речи (один ключ): noun|verb|adjective|adverb|preposition|conjunction|pronoun|determiner|numeral|interjection|phrase",
         "level": "уровень CEFR: A1/A2/B1/B2/C1/C2",
@@ -100,6 +97,8 @@ JSON-массив, где каждый элемент соответствует
     adverb, preposition, conjunction, pronoun, determiner, numeral, interjection, phrase.
     НЕ перечисляй несколько через "/" или запятую — только одна часть речи.
     '''
+# Языковые куски промпта — из реестра langs.py (добавление языка не требует правки текста).
+task = task.replace("__TRANSLATE_BLOCK__", TRANSLATE_EXAMPLE).replace("__LANG_NAMES__", LANG_NAMES_CSV)
 
 
 description_task = '''
@@ -107,21 +106,18 @@ description_task = '''
 На вход получаешь одно норвежское слово.
 
 Верни КРАТКОЕ описание значения и употребления этого слова (1–3 предложения)
-на пяти языках. Если у слова несколько значений — упомяни основные.
+на __N_LANGS__ языках. Если у слова несколько значений — упомяни основные.
 По возможности добавь типичный пример употребления.
 
 Формат ответа — строго JSON-объект и ничего больше:
 ```json
 {
-    "ru": "описание на русском",
-    "lt": "aprašymas lietuvių kalba",
-    "ukr": "опис українською",
-    "pl": "opis po polsku",
-    "en": "description in English"
+__DESC_BLOCK__
 }
 ```
 Никакого текста вне JSON.
 '''
+description_task = description_task.replace("__DESC_BLOCK__", DESC_EXAMPLE).replace("__N_LANGS__", str(len(LANG_CODES)))
 
 
 
@@ -133,7 +129,7 @@ def desc_user_prompt(norwegian, data=None, extra=""):
     pos = (data.get("part_of_speech") or "").strip()
     tr = data.get("translate") or {}
     pairs = []
-    for l in ("ru", "ukr", "en", "pl", "lt", "lv"):
+    for l in LANG_CODES:
         vals = [v for v in (tr.get(l) or []) if v]
         if vals:
             pairs.append(f"{l}: {', '.join(vals)}")

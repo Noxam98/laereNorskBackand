@@ -28,6 +28,7 @@ from llm import (
     DEDUP_SCHEMA,
 )
 from tts import synth_tts, _tts_lock
+from langs import LANG_CODES, LANGS_CSV
 from task import task
 
 # --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
@@ -219,7 +220,7 @@ DESCRIBE_BATCH = int(os.getenv("DESCRIBE_BATCH", "10"))
 DESCRIBE_CHECK_SEC = int(os.getenv("DESCRIBE_CHECK_SEC", "4"))  # как часто проверять очередь описаний (5 ключей → можно чаще)
 _DESCRIBE_SYS = (
     "Ты — преподаватель норвежского. Для каждого норвежского слова дай краткое "
-    "(1-2 предложения) понятное описание-толкование на каждом языке: ru, ukr, en, pl, lt, lv. "
+    f"(1-2 предложения) понятное описание-толкование на каждом языке: {LANGS_CSV}. "
     "У слов в скобках указаны часть речи и переводы — описывай ИМЕННО это значение слова, "
     "а не другой смысл того же написания. "
     "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
@@ -238,7 +239,7 @@ async def describe_batch(words):
         if it.get("pos"):
             ctx.append(f"часть речи: {it['pos']}")
         tr = it.get("translate") or {}
-        for l in ("ru", "ukr", "en", "pl", "lt", "lv"):
+        for l in LANG_CODES:
             vals = [v for v in (tr.get(l) or []) if v]
             if vals:
                 ctx.append(f"{l}: {', '.join(vals)}")
@@ -276,7 +277,7 @@ async def describe_batch(words):
         if not pid or pid in seen:
             continue
         seen.add(pid)
-        desc = {k: (r.get(k) or "") for k in ("ru", "ukr", "en", "pl", "lt", "lv")}
+        desc = {k: (r.get(k) or "") for k in LANG_CODES}
         await set_pool_description(pid, desc)
         done += 1
     return done
@@ -322,13 +323,13 @@ async def describe_loop():
         await asyncio.sleep(DESCRIBE_CHECK_SEC)
 
 
-# --- Догенерация недостающих переводов (на все 5 языков) ---
-TRANSLATE_LANGS = ["ru", "ukr", "en", "pl", "lt", "lv"]
+# --- Догенерация недостающих переводов (на все языки реестра) ---
+TRANSLATE_LANGS = LANG_CODES
 TRANSLATE_BATCH = int(os.getenv("TRANSLATE_BATCH", "10"))
 TRANSLATE_CHECK_SEC = int(os.getenv("TRANSLATE_CHECK_SEC", "6"))
 _TRANSLATE_SYS = (
     "Ты — переводчик с норвежского (bokmål). Для каждого норвежского слова дай перевод "
-    "на 6 языков: ru, ukr, en, pl, lt, lv — по 1-3 варианта (массив строк), без пояснений. "
+    f"на {len(LANG_CODES)} языков: {LANGS_CSV} — по 1-3 варианта (массив строк), без пояснений. "
     "Верни results: по объекту на каждое входное слово (поле word — ровно как на входе)."
 )
 
