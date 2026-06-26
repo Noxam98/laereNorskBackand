@@ -130,6 +130,10 @@ async def delete_dictionary(user_id: int, dict_id: int):
         async with db.execute("SELECT COUNT(*) c FROM dictionaries WHERE user_id = ?", (user_id,)) as cur:
             if (await cur.fetchone())["c"] <= 1:
                 return {"error": "Cannot delete the last dictionary"}
+        # сначала членство (dict_words не каскадятся по FK), затем сам словарь.
+        # Прогресс SRS (user_words) НЕ трогаем: слово остаётся выученным, если оно ещё
+        # в другом наборе или уже начато (см. _fetch_user_words «общий прогресс»).
+        await db.execute("DELETE FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE id = ? AND user_id = ?)", (dict_id, user_id))
         await db.execute("DELETE FROM dictionaries WHERE id = ? AND user_id = ?", (dict_id, user_id))
         await db.commit()
         return {"ok": True}
@@ -140,6 +144,106 @@ async def delete_dictionary(user_id: int, dict_id: int):
 async def _owns_dict(db, user_id, dict_id):
     async with db.execute("SELECT id FROM dictionaries WHERE id = ? AND user_id = ?", (dict_id, user_id)) as cur:
         return (await cur.fetchone()) is not None
+
+
+# ---------------- личные наборы для изучения («sets» = словари с hidden=0) ----------------
+# Набор = обычный словарь пользователя (hidden=0). Прогресс SRS общий (user_words по pool_id),
+# набор — лишь членство (dict_words) + флаг studying («питать ли ежедневную умную сессию»).
+
+async def list_user_sets(user_id: int):
+    """Личные наборы (hidden=0) с числом слов и флагом studying. Авто-словарь (hidden=1) скрыт.
+    Рудимент: пустой системный словарь 'default' (создаётся при регистрации, но в него ничего
+    не кладётся — слова идут в скрытый авто-словарь) НЕ показываем как набор. Если у легаси-юзера
+    в 'default' есть слова — показываем (чтобы не прятать его слова)."""
+    db = await _conn()
+    try:
+        async with db.execute("""
+            SELECT d.id, d.name, COALESCE(d.studying, 0) AS studying,
+                   (SELECT COUNT(*) FROM dict_words dw WHERE dw.dict_id = d.id) AS cnt
+            FROM dictionaries d
+            WHERE d.user_id = ? AND COALESCE(d.hidden, 0) = 0
+            ORDER BY d.created_at, d.id
+        """, (user_id,)) as cur:
+            return [{"id": r["id"], "name": r["name"], "studying": bool(r["studying"]), "count": r["cnt"]}
+                    for r in await cur.fetchall()
+                    if not (r["name"] == "default" and r["cnt"] == 0)]
+    finally:
+        await _release(db)
+
+
+async def add_words_to_set(user_id: int, set_id: int, pool_ids):
+    """Массово добавить слова пула в набор (дубли игнорируем). Возвращает {added}."""
+    db = await _conn()
+    try:
+        if not await _owns_dict(db, user_id, set_id):
+            return {"error": "Not found"}
+        added = 0
+        for pid in [int(p) for p in (pool_ids or []) if p]:
+            try:
+                await db.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?, ?, ?)", (set_id, pid, _now()))
+                added += 1
+            except aiosqlite.IntegrityError:
+                pass  # уже в наборе
+        await db.commit()
+        return {"ok": True, "added": added}
+    finally:
+        await _release(db)
+
+
+async def remove_word_from_set(user_id: int, set_id: int, pool_id: int):
+    """Убрать слово из набора по pool_id. Прогресс SRS (user_words) не трогаем."""
+    db = await _conn()
+    try:
+        if not await _owns_dict(db, user_id, set_id):
+            return {"error": "Not found"}
+        await db.execute("DELETE FROM dict_words WHERE dict_id = ? AND pool_id = ?", (set_id, pool_id))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await _release(db)
+
+
+async def get_set_words(user_id: int, set_id: int):
+    """Слова набора для показа: [{pool_id, norwegian, translate, part_of_speech, level}] или None."""
+    db = await _conn()
+    try:
+        if not await _owns_dict(db, user_id, set_id):
+            return None
+        async with db.execute("""
+            SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level
+            FROM dict_words dw JOIN word_pool wp ON wp.id = dw.pool_id
+            WHERE dw.dict_id = ? ORDER BY dw.created_at, dw.id
+        """, (set_id,)) as cur:
+            out = []
+            for r in await cur.fetchall():
+                data = json.loads(r["data"]) if r["data"] else {}
+                out.append({"pool_id": r["pool_id"], "norwegian": r["norwegian"],
+                            "translate": data.get("translate", {}),
+                            "part_of_speech": data.get("part_of_speech", ""), "level": r["level"]})
+            return out
+    finally:
+        await _release(db)
+
+
+async def sets_for_words(user_id: int, pool_ids):
+    """Карта pool_id → [set_id]: в каких личных наборах уже лежит каждое слово (для пикера)."""
+    ids = [int(p) for p in (pool_ids or []) if p]
+    if not ids:
+        return {}
+    db = await _conn()
+    try:
+        marks = ",".join("?" for _ in ids)
+        out = {}
+        async with db.execute(f"""
+            SELECT dw.pool_id, dw.dict_id FROM dict_words dw
+            JOIN dictionaries d ON d.id = dw.dict_id
+            WHERE d.user_id = ? AND COALESCE(d.hidden, 0) = 0 AND dw.pool_id IN ({marks})
+        """, (user_id, *ids)) as cur:
+            for r in await cur.fetchall():
+                out.setdefault(r["pool_id"], []).append(r["dict_id"])
+        return out
+    finally:
+        await _release(db)
 
 
 async def add_word_to_dict(user_id: int, dict_id: int, pool_id: int):

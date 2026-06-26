@@ -408,14 +408,20 @@ async def learning_remove(user_id: int, pool_id: int):
 
 # ---------------- выборка слов пользователя ----------------
 
-async def _fetch_user_words(db, user_id):
-    """Все слова пользователя (уникальные по пулу) + состояние SRS + темы."""
-    async with db.execute("""
-        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
-               uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
-               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
-               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered
-        FROM (
+async def _fetch_user_words(db, user_id, set_id=None):
+    """Все слова пользователя (уникальные по пулу) + состояние SRS + темы.
+    set_id задан → ограничиваемся словами ОДНОГО набора (для дрилла «Учить набор»):
+    берём все слова набора независимо от флага studying (явная тренировка по набору)."""
+    if set_id is not None:
+        # слова конкретного набора пользователя (проверка владения по d.user_id)
+        src_sql = """
+              SELECT dw.pool_id FROM dict_words dw
+              JOIN dictionaries d ON d.id = dw.dict_id
+              WHERE d.user_id = ? AND d.id = ?
+        """
+        src_params = (user_id, set_id)
+    else:
+        src_sql = """
               -- новые слова — только из словарей «в обучении» (studying=1)
               SELECT pool_id FROM dict_words
               WHERE dict_id IN (SELECT id FROM dictionaries
@@ -427,10 +433,17 @@ async def _fetch_user_words(db, user_id):
               WHERE d.user_id = ?
                 AND EXISTS (SELECT 1 FROM user_words uw
                             WHERE uw.user_id = ? AND uw.pool_id = dw.pool_id)
-             ) up
+        """
+        src_params = (user_id, user_id, user_id)
+    async with db.execute(f"""
+        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
+               uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
+               uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
+               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered
+        FROM ({src_sql}) up
         JOIN word_pool wp ON wp.id = up.pool_id
         LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
-    """, (user_id, user_id, user_id, user_id)) as cur:
+    """, (*src_params, user_id)) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     # темы пачкой
     if rows:
@@ -600,7 +613,7 @@ async def _attach_choice_options(session, lang, n=3):
         e["distractors"] = [o["w"] for o in out]
 
 
-async def build_session(user_id, size=20, lang="ru"):
+async def build_session(user_id, size=20, lang="ru", set_id=None):
     """Программа занятия, которую готовит СИСТЕМА (без выбора режима игроком).
     Приоритет пулов:
       (1) возвращённые на доучивание / слабые с лапсами (errored, вернулись в учёбу),
@@ -611,12 +624,15 @@ async def build_session(user_id, size=20, lang="ru"):
     'card' для совсем нового (0 попыток), иначе первая клетка REQUIRED_CELLS != '1'.
     Лимит одновременно-в-работе: не вводим новые слова, если число не-mastered
     (new+learning) уже >= WIP_LIMIT. Mastered-слова как «новые» не вводим.
+    set_id задан → ДРИЛЛ ПО НАБОРУ: берём только слова этого набора, без авто-добора из
+    «Базы» и без лимита WIP/ворот на ввод новых (явная тренировка — даём учить что выбрано).
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
+    scoped = set_id is not None
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
         db = await _conn()
         try:
-            rows = await _fetch_user_words(db, user_id)
+            rows = await _fetch_user_words(db, user_id, set_id)
             throttled = await _audit_throttled(db, user_id)
         finally:
             await _release(db)
@@ -664,7 +680,7 @@ async def build_session(user_id, size=20, lang="ru"):
     # «База» не подмешивается. Дополнительно: ворота не закрыты (не ждём экзамен / нет
     # тормоза аудита) И есть свободный слот в работе (in_work < WIP_LIMIT — иначе новые
     # всё равно не вводятся по лимиту). Сколько досыпать — до WIP_LIMIT по in_work.
-    if not gate_open:
+    if not scoped and not gate_open:
         # залоченные пословным порогом новые служебные не считаем «доступными новыми» — иначе они
         # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются
         new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e))
@@ -749,8 +765,9 @@ async def build_session(user_id, size=20, lang="ru"):
 
     session = []
     for e, step in ordered:
-        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах
-        if attempts(e) == 0 and (in_work >= WIP_LIMIT or gate_open):
+        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах.
+        # В дрилле по набору (scoped) лимит не действует — пользователь явно учит выбранные слова.
+        if attempts(e) == 0 and not scoped and (in_work >= WIP_LIMIT or gate_open):
             continue
         cell, mode, direction = step
         pid = e["row"]["pool_id"]

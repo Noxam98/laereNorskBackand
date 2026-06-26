@@ -11,6 +11,7 @@ from routers.words import router as words_router
 from routers.pool import router as pool_router
 from online import router as online_router
 from routers.learning import router as learning_router
+from routers.sets import router as sets_router
 from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
@@ -27,6 +28,7 @@ app.include_router(words_router)
 app.include_router(pool_router)
 app.include_router(online_router)
 app.include_router(learning_router)
+app.include_router(sets_router)
 # Веб-пуши — подключаем защищённо: если модуль/зависимость отвалятся, бэкенд всё равно поднимется.
 try:
     from webpush import router as push_router
