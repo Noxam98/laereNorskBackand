@@ -842,14 +842,7 @@ async def ai_game_words(lang, level, topic, count, on_phase=None):
         names.append(it["word"])
         if not existed:   # новое слово → нужен вектор
             new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
-    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
-        if on_phase:
-            await on_phase("indexing")
-        vecs = await embed_texts([t for _, t in new_emb])
-        if vecs and len(vecs) == len(new_emb):
-            for (pid, _), vec in zip(new_emb, vecs):
-                await set_pool_embedding(pid, encode_emb(vec))
-                await mark_sem_embed(pid)
+    await _embed_new(new_emb, on_phase)
     return await get_pool_words_by_names(names)
 
 
@@ -858,6 +851,20 @@ SET_GEN_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
 VISION_MODELS = ["gemini-3.5-flash"]   # OCR/распознавание с фото — только vision-способная модель (не lite)
 WORDS_ONLY_SCHEMA = {"name": "words", "schema": {"type": "object", "properties": {
     "words": {"type": "array", "items": {"type": "string"}}}, "required": ["words"]}}
+
+
+async def _embed_new(new_emb, on_phase=None):
+    """Посчитать и сохранить семантические эмбеддинги новым словам: new_emb = [(pool_id, текст)].
+    on_phase — необязательный колбэк прогресса (для генерации слов игры)."""
+    if not (new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]):
+        return
+    if on_phase:
+        await on_phase("indexing")
+    vecs = await embed_texts([t for _, t in new_emb])
+    if vecs and len(vecs) == len(new_emb):
+        for (pid, _), vec in zip(new_emb, vecs):
+            await set_pool_embedding(pid, encode_emb(vec))
+            await mark_sem_embed(pid)
 
 
 async def _persist_word_items(items, n):
@@ -877,13 +884,7 @@ async def _persist_word_items(items, n):
             new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
         if len(pids) >= n:
             break
-    # вектора новым словам — чтобы сразу участвовали в подборе/похожих
-    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
-        vecs = await embed_texts([t for _, t in new_emb])
-        if vecs and len(vecs) == len(new_emb):
-            for (pid, _), vec in zip(new_emb, vecs):
-                await set_pool_embedding(pid, encode_emb(vec))
-                await mark_sem_embed(pid)
+    await _embed_new(new_emb)   # вектора новым словам — чтобы сразу участвовали в подборе/похожих
     return pids
 
 

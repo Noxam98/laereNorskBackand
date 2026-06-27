@@ -1,14 +1,15 @@
 """Движок сессии build_session: программу занятия ведёт сервер (игрок режим не выбирает).
 Проверяем реальное поведение приоритизации и пейсинга, а не подгонку под реализацию:
-  (1) свежее слово (0 попыток) → первый шаг 'card' / клетка choice_no2int;
+  (1) свежее слово (0 попыток) → первый шаг 'card' / клетка choice_int2no (аудио — вторым);
   (2) длина сессии не превышает size;
   (3) лимит одновременно-в-работе: при >=WIP_LIMIT не-mastered новые не подсыпаются;
-  (4) просроченные по due идут раньше дозревающих (new/learning).
+  (4) просроченные по due идут раньше дозревающих (new/learning);
+  (5) приток новых карточек за сессию ограничен NEW_PER_SESSION.
 """
 import pytest
 from db.core import _conn, _release, _now
 from db.learning import (
-    build_session, apply_result, REQUIRED_CELLS, WIP_LIMIT,
+    build_session, apply_result, REQUIRED_CELLS, WIP_LIMIT, NEW_PER_SESSION,
     status_of, _is_due, _due_str,
 )
 from tests.conftest import seed_user, seed_word
@@ -56,18 +57,18 @@ async def test_fresh_word_first_step_is_card(fresh_db):
 
 async def test_first_test_cell_after_card(fresh_db):
     """После прохождения карточки (любой ответ создаёт строку) первая клетка рампы —
-    choice_no2int (первая невыполненная ступень REQUIRED_CELLS)."""
+    choice_int2no (аудио-вопрос choice_no2int теперь ВТОРОЙ)."""
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "bil", "машина")
     # «прошли» карточку — даём один ответ по первой клетке неверно, чтобы попытки>0,
     # но клетка осталась не пройдена → следующий шаг снова первая клетка рампы
-    await apply_result(uid, pid, False, mode="choice", direction="no2int")
+    await apply_result(uid, pid, False, mode="choice", direction="int2no")
     res = await build_session(uid, size=20)
     w = res["words"][0]
     assert w["pool_id"] == pid
-    assert w["step"] == REQUIRED_CELLS[0] == "choice_no2int"
+    assert w["step"] == REQUIRED_CELLS[0] == "choice_int2no"
     assert w["mode"] == "choice"
-    assert w["direction"] == "no2int"
+    assert w["direction"] == "int2no"
 
 
 # (2) длина сессии не превышает size
@@ -163,3 +164,31 @@ async def test_overdue_before_fresh_new(fresh_db):
     res = await build_session(uid, size=20)
     order = [w["pool_id"] for w in res["words"]]
     assert order.index(pid_over) < order.index(pid_new)
+
+
+def test_audio_question_is_second_in_ramp():
+    """Порядок рампы: сначала выбор по переводу (choice_int2no), аудио (choice_no2int) — ВТОРЫМ."""
+    assert REQUIRED_CELLS[0] == "choice_int2no"
+    assert REQUIRED_CELLS[1] == "choice_no2int"
+
+
+async def test_new_cards_capped_per_session(fresh_db):
+    """Новых карточек-знакомств за сессию не больше NEW_PER_SESSION (остальное — задания рампы)."""
+    uid, did = await seed_user()
+    for i in range(NEW_PER_SESSION + 5):          # заведомо больше потолка
+        await seed_word(did, f"ord{i}", f"слово{i}")
+    res = await build_session(uid, size=20)
+    fresh = [w for w in res["words"] if w["step"] == "card"]
+    assert len(fresh) <= NEW_PER_SESSION
+    assert res["composition"]["fresh"] == len(fresh)
+
+
+async def test_session_returns_composition(fresh_db):
+    """build_session отдаёт честный состав сессии: ключи на месте, total == числу слов."""
+    uid, did = await seed_user()
+    await seed_word(did, "hund", "собака")
+    res = await build_session(uid, size=20)
+    comp = res["composition"]
+    assert set(comp) >= {"fresh", "review", "weak", "progress", "total"}
+    assert comp["total"] == len(res["words"])
+    assert comp["fresh"] + comp["review"] + comp["weak"] + comp["progress"] == comp["total"]
