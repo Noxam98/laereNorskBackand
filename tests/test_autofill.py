@@ -4,16 +4,25 @@
 """
 import pytest
 import autofill
-from db.pool import get_pool_id, get_pool_by_id
+from db.pool import get_pool_id, get_pool_by_id, get_pool_meta
+from db.core import normalize_word
+
+
+async def _seed(no, ru, pos="noun"):
+    return await autofill.get_or_create_pool(no, {
+        "word": no, "translate": {"ru": [ru]}, "part_of_speech": pos})
 
 
 @pytest.fixture
 def mock_ask(monkeypatch):
-    """Подменить autofill.ask_json фиксированным ответом модели."""
+    """Подменить ask_json фиксированным ответом модели — в обоих модулях
+    (batch-процессоры живут в autofill, генерация слов — в autofill_wordgen)."""
+    import autofill_wordgen
     def _set(resp):
         async def fake(system, user, schema, **kw):
             return resp
         monkeypatch.setattr(autofill, "ask_json", fake)
+        monkeypatch.setattr(autofill_wordgen, "ask_json", fake)
     return _set
 
 
@@ -51,3 +60,40 @@ async def test_restore_yo_strict(mock_ask):
     ]})
     out = await autofill.restore_yo(["елка", "дом", "кот"])
     assert out == {"елка": "ёлка"}
+
+
+async def test_translate_batch(mock_ask):
+    mock_ask({"results": [{"word": "hund", "ru": ["собака"], "en": ["dog"]}]})
+    out = await autofill.translate_batch(["hund"])
+    assert normalize_word("hund") in out and out[normalize_word("hund")]["ru"] == ["собака"]
+
+
+async def test_classify_batch(fresh_db, mock_ask):
+    pid = await _seed("ku", "корова")
+    mock_ask({"results": [{"word": "ku", "level": "A1", "topics": ["animals"]}]})
+    assert await autofill.classify_batch([{"word": "ku", "translate": {"ru": ["корова"]}, "id": pid}]) == 1
+    meta = await get_pool_meta("ku")
+    assert meta and meta.get("level") == "A1"
+
+
+async def test_describe_batch(fresh_db, mock_ask):
+    pid = await _seed("sau", "овца")
+    mock_ask({"results": [{"word": "sau", "ru": "овца — животное", "en": "a sheep"}]})
+    assert await autofill.describe_batch([{"word": "sau", "translate": {"ru": ["овца"]}, "id": pid}]) == 1
+    by = await get_pool_by_id(pid)
+    assert by["description"] and by["description"].get("ru")
+
+
+async def test_forms_batch(fresh_db, mock_ask):
+    pid = await _seed("bok", "книга")
+    mock_ask({"results": [{"word": "bok", "gender": "ei", "def_sg": "boka", "indef_pl": "bøker", "def_pl": "bøkene"}]})
+    assert await autofill.forms_batch("noun", [(pid, "bok", {"translate": {"ru": ["книга"]}})]) == 1
+    by = await get_pool_by_id(pid)
+    assert by["forms"] and by["forms"].get("pos") == "noun" and by["forms"].get("def_sg") == "boka"
+
+
+async def test_ai_game_words(fresh_db, mock_ask):
+    mock_ask({"words": [{"word": "fisk", "translate": {"ru": ["рыба"]}, "part_of_speech": "noun", "level": "A1"}]})
+    words = await autofill.ai_game_words("ru", "A1", "еда", 5)
+    assert isinstance(words, list)
+    assert await get_pool_id("fisk") is not None
