@@ -218,7 +218,7 @@ async def get_set_words(user_id: int, set_id: int):
             FROM dict_words dw
             JOIN word_pool wp ON wp.id = dw.pool_id
             LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
-            WHERE dw.dict_id = ? ORDER BY dw.created_at, dw.id
+            WHERE dw.dict_id = ? ORDER BY dw.created_at DESC, dw.id DESC
         """, (user_id, set_id)) as cur:
             out = []
             for r in await cur.fetchall():
