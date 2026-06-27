@@ -777,6 +777,36 @@ async def ai_game_words(lang, level, topic, count, on_phase=None):
 
 # модель для генерации набора: 3.5-flash (качество) → фолбэк 3.1-flash-lite (если 429/нет квоты)
 SET_GEN_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+VISION_MODELS = ["gemini-3.5-flash"]   # OCR/распознавание с фото — только vision-способная модель (не lite)
+WORDS_ONLY_SCHEMA = {"name": "words", "schema": {"type": "object", "properties": {
+    "words": {"type": "array", "items": {"type": "string"}}}, "required": ["words"]}}
+
+
+async def _persist_word_items(items, n):
+    """Положить items (формат WORDS_SCHEMA) в общий пул: перевод/мета/эмбеддинги. → pool_id без дублей."""
+    pids, seen, new_emb = [], set(), []
+    for it in items:
+        if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
+            continue
+        existed = await get_pool_id(it["word"])
+        data_item = normalize_word_item(it)
+        pid = await get_or_create_pool(it["word"], data_item)
+        if not pid or pid in seen:
+            continue
+        await apply_item_meta(pid, it)
+        seen.add(pid); pids.append(pid)
+        if not existed:
+            new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
+        if len(pids) >= n:
+            break
+    # вектора новым словам — чтобы сразу участвовали в подборе/похожих
+    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
+        vecs = await embed_texts([t for _, t in new_emb])
+        if vecs and len(vecs) == len(new_emb):
+            for (pid, _), vec in zip(new_emb, vecs):
+                await set_pool_embedding(pid, encode_emb(vec))
+                await mark_sem_embed(pid)
+    return pids
 
 
 async def generate_set_words(topic, level, count, lang="ru"):
@@ -802,29 +832,55 @@ async def generate_set_words(topic, level, count, lang="ru"):
         errors.report(e, "generate_set_words")
         return []
     items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    pids, seen, new_emb = [], set(), []
-    for it in items:
-        if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
-            continue
-        existed = await get_pool_id(it["word"])
-        data_item = normalize_word_item(it)
-        pid = await get_or_create_pool(it["word"], data_item)
-        if not pid or pid in seen:
-            continue
-        await apply_item_meta(pid, it)
-        seen.add(pid); pids.append(pid)
-        if not existed:
-            new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
-        if len(pids) >= n:
+    return await _persist_word_items(items, n)
+
+
+async def words_from_image(image_b64, mime="image/jpeg", hint="", limit=30):
+    """OCR через Gemini vision: вытащить норвежские слова с изображения. Возвращает ТОЛЬКО список слов
+    (без перевода) — дальше их обогащает обычный генератор. hint — необязательное уточнение от юзера."""
+    sys = ("Du er en OCR-assistent for norskelever. Finn ALLE norske ord og korte uttrykk på bildet. "
+           "Gi GRUNNFORM/oppslagsform når mulig, uten duplikater. Returner KUN ordene — ingen oversettelse, "
+           "ingen forklaring, ingen tall eller rene symboler. Hopp over ord som ikke er norske.")
+    extra = (hint or "").strip()
+    user = [{"type": "text", "text": extra or "Hent de norske ordene fra dette bildet."},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}]
+    try:
+        data = await ask_json(sys, user, WORDS_ONLY_SCHEMA, purpose="user", model=VISION_MODELS, label="OCR слов с фото")
+    except Exception as e:
+        errors.report(e, "words_from_image")
+        return []
+    raw = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    out, seen = [], set()
+    for w in raw:
+        w = w.strip() if isinstance(w, str) else ""
+        k = w.lower()
+        if w and k not in seen:
+            seen.add(k); out.append(w)
+        if len(out) >= limit:
             break
-    # вектора новым словам (как в ai_game_words) — чтобы сразу участвовали в подборе/похожих
-    if new_emb and llm.embed_enabled() and not runtime.PAUSED["embed"]:
-        vecs = await embed_texts([t for _, t in new_emb])
-        if vecs and len(vecs) == len(new_emb):
-            for (pid, _), vec in zip(new_emb, vecs):
-                await set_pool_embedding(pid, encode_emb(vec))
-                await mark_sem_embed(pid)
-    return pids
+    return out
+
+
+async def words_from_list(words, lang="ru"):
+    """«Обычный генератор» для ЯВНОГО списка слов: обогащаем (перевод/часть речи/уровень) и кладём в пул.
+    НЕ выдумывает новых слов — только то, что в списке (распознанное с фото). → список pool_id."""
+    words = [w for w in (words or []) if isinstance(w, str) and w.strip()][:20]
+    if not words:
+        return []
+    lang_name = LANG_NAMES.get(lang, lang)
+    lst = "; ".join(words)
+    prompt = (f"Вот ГОТОВЫЙ список норвежских слов (bokmål), распознанных с фото: {lst}. "
+              f"Для КАЖДОГО слова из списка дай перевод на язык: {lang_name}, часть речи и уровень CEFR, "
+              f"приведи к нормальной (словарной) форме. НЕ добавляй слов, которых нет в списке; "
+              f"нераспознаваемое/не-норвежское — пропусти.")
+    try:
+        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                              purpose="user", model=SET_GEN_MODELS, label="обогащение слов с фото")
+    except Exception as e:
+        errors.report(e, "words_from_list")
+        return []
+    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    return await _persist_word_items(items, len(words))
 
 
 async def autofill_loop():

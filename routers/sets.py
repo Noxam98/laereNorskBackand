@@ -115,6 +115,49 @@ async def sets_generate(set_id: int, body: dict, user=Depends(get_current_user))
     return {"words": words}
 
 
+def _parse_data_url(s):
+    """data:image/jpeg;base64,XXXX → (mime, b64). Принимаем и «голый» base64 без префикса."""
+    s = s or ""
+    if s.startswith("data:"):
+        head, _, b64 = s.partition(",")
+        mime = (head[5:].split(";")[0]) or "image/jpeg"
+        return mime, b64
+    return "image/jpeg", s
+
+
+@router.post("/sets/{set_id}/ocr")
+async def sets_ocr(set_id: int, body: dict, user=Depends(get_current_user)):
+    """Шаг 1 импорта с фото: распознать норвежские слова на изображении (Gemini vision).
+    Возвращает ТОЛЬКО список слов — пользователь правит/удаляет, затем шлёт на /import-words.
+    body: {image: data-URL|base64, hint?: уточнение промта}."""
+    mark_activity()
+    if (await get_set_words(user["id"], set_id)) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    image = (body or {}).get("image")
+    if not image:
+        raise HTTPException(status_code=400, detail="No image")
+    mime, b64 = _parse_data_url(image)
+    from autofill import words_from_image   # ленивый импорт — избегаем циклов на старте
+    return {"words": await words_from_image(b64, mime, (body or {}).get("hint") or "")}
+
+
+@router.post("/sets/{set_id}/import-words")
+async def sets_import_words(set_id: int, body: dict, user=Depends(get_current_user)):
+    """Шаг 2 импорта с фото: отредактированный список слов → обогащение обычным генератором → в набор.
+    body: {words: [str], lang?: язык переводов}."""
+    mark_activity()
+    if (await get_set_words(user["id"], set_id)) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    words = [w for w in ((body or {}).get("words") or []) if isinstance(w, str) and w.strip()]
+    if not words:
+        raise HTTPException(status_code=400, detail="No words")
+    from autofill import words_from_list   # ленивый импорт — избегаем циклов на старте
+    pids = await words_from_list(words, (body or {}).get("lang") or "ru")
+    if pids:
+        await add_words_to_set(user["id"], set_id, pids)
+    return {"words": await get_set_words(user["id"], set_id), "added": len(pids)}
+
+
 @router.post("/sets/{set_id}/reset")
 async def sets_reset(set_id: int, user=Depends(get_current_user)):
     """Сбросить рампу выученных слов набора (до звукового задания, не до карточки)."""
