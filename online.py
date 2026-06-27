@@ -7,7 +7,6 @@
 """
 import json
 import time
-import math
 import asyncio
 import random
 import jwt
@@ -17,19 +16,19 @@ from auth import SECRET_KEY, ALGORITHM
 from db import get_user, get_pool_duel_words, get_user_quiz_words, save_match
 from llm import ranked_pool
 from autofill import ai_game_words
+# Чистые правила игры (очки, нормализация ответа, кламп настроек, payload вопроса) — без сокетов.
+from online_logic import (
+    _clamp, _norm_settings, _q_payload, _q_correct, _q_keys, _gain, _norm_answer,
+    GAME_KEYS, QUESTION_TIME, MIN_PLAYERS, MAX_PLAYERS_CAP, COUNT_MIN, COUNT_MAX, QTIME_MIN, QTIME_MAX,
+)
 
 router = APIRouter()
 
-# --- Параметры (дефолты; часть берётся из настроек комнаты) ---
-QUESTION_TIME = 15      # дефолт сек на вопрос (если не задано в настройках комнаты)
+# --- Параметры (дефолты; часть берётся из настроек комнаты). Границы клампа — в online_logic. ---
 COUNTDOWN = 5           # сек обратного отсчёта перед стартом (тиканье на клиенте)
 REVEAL_PAUSE = 4        # сек показа таблицы между вопросами
 RACE_GRACE = 25         # сек «добивания» остальным после финиша лидера (гонка)
 RACE_MAX = 300          # предохранитель: жёсткий потолок длительности гонки
-MIN_PLAYERS = 2
-MAX_PLAYERS_CAP = 8
-COUNT_MIN, COUNT_MAX = 3, 20
-QTIME_MIN, QTIME_MAX = 5, 30   # границы длительности вопроса
 
 ANIMALS = ["fox", "hare", "reindeer", "wolf", "elk", "lynx"]  # бегуны гонки (выбор в лобби)
 
@@ -70,30 +69,6 @@ async def _auth(token):
 
 def _rid():
     return "".join(random.choices("abcdefghijkmnpqrstuvwxyz23456789", k=6))
-
-
-def _clamp(v, lo, hi, default):
-    try:
-        return max(lo, min(hi, int(v)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _norm_settings(s):
-    s = s or {}
-    return {
-        "game": s.get("game") if s.get("game") in GAMES else "quiz",
-        "answer": "choice" if s.get("answer") == "choice" else "type",  # гонка: печать / выбор из 4
-        "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
-        "source": s.get("source") if s.get("source") in ("pool", "dict", "ai") else "pool",  # pool / словари хоста / AI-подбор
-        "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
-        "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
-        "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
-        "count": _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
-        "qtime": _clamp(s.get("qtime"), QTIME_MIN, QTIME_MAX, QUESTION_TIME),
-        "maxPlayers": _clamp(s.get("maxPlayers"), MIN_PLAYERS, MAX_PLAYERS_CAP, 4),
-        "private": bool(s.get("private")),
-    }
 
 
 class Player:
@@ -267,32 +242,6 @@ async def _build_quiz(cand, langs, count, direction):
     return qs
 
 
-def _q_payload(q, i, total, lang, qtime):
-    if q["per_lang"]:   # no2int — показываем норвежское слово, варианты-переводы
-        return {"type": "question", "i": i, "total": total, "dir": "no2int",
-                "prompt": q["no"], "options": q["options"][lang], "keys": q["keys"][lang], "time": qtime}
-    return {"type": "question", "i": i, "total": total, "dir": "int2no",   # перевод → норв. слова
-            "prompt": q["prompt"][lang], "options": q["options"], "keys": q["keys"], "time": qtime}
-
-
-def _q_correct(q, lang):
-    return q["correct"][lang] if q["per_lang"] else q["correct"]
-
-
-def _q_keys(q, lang):
-    return q["keys"][lang] if q["per_lang"] else q["keys"]
-
-
-def _gain(elapsed, correct, streak):
-    """Очки за верный ответ: резкая зависимость от скорости (экспонента) + бонус за серию.
-    ~880 при мгновенном ответе, ~390 к 4 сек, ~190 к 8 сек; серия даёт до +250."""
-    if not correct:
-        return 0
-    speed = round(900 * math.exp(-elapsed / 3.5))
-    bonus = min(max(streak - 1, 0), 5) * 50
-    return 100 + speed + bonus
-
-
 async def run_quiz(room):
     room.state = "playing"
     for p in room.players:
@@ -374,17 +323,6 @@ async def _reset_to_lobby(room):
 # судья (проверяет ответы, чтобы их нельзя было подсмотреть в клиенте) и транслирует
 # позиции машин всем. Верно с первого раза → рывок вперёд; ошибка → «глохнет», слово
 # уходит в конец очереди. Победитель — первый, кто верно ответил все слова.
-
-def _norm_answer(s):
-    """Нормализация печатного ответа для сравнения: регистр, пробелы, артикли å/en/ei/et."""
-    s = (s or "").strip().lower()
-    s = " ".join(s.split())
-    for art in ("å ", "en ", "ei ", "et "):
-        if s.startswith(art):
-            s = s[len(art):]
-            break
-    return s
-
 
 async def _build_race(room, cand, langs):
     """Набор для гонки. В режиме «выбор» — те же вопросы, что у quiz (4 варианта).
@@ -552,7 +490,8 @@ async def run_race(room):
 
 
 # Реестр игр — добавлять новые типы сюда (ключ → корутина run(room)).
-GAMES = {"quiz": run_quiz, "race": run_race}
+GAMES = {"quiz": run_quiz, "race": run_race}   # тип игры → async-runner (диспетчер сокет-потока)
+assert set(GAMES) == set(GAME_KEYS), "GAMES (runner'ы) рассинхронились с GAME_KEYS (валидатор настроек)"
 
 
 # ----------------------------- AI-набор слов (готовится в лобби) -----------------------------
