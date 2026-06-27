@@ -707,6 +707,28 @@ async def mark_tr_tts_done(pool_id: int):
         await _release(db)
 
 
+async def yo_pending(limit: int = 40):
+    """Слова, чей русский перевод ещё не проверен на букву «ё» (yo_done = 0).
+    Возвращает [(id, data_dict)] — русские переводы берём из data.translate.ru."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, data FROM word_pool WHERE COALESCE(yo_done, 0) = 0 LIMIT ?", (limit,)
+        ) as cur:
+            return [(r["id"], json.loads(r["data"])) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def mark_yo_done(pool_id: int):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET yo_done = 1 WHERE id = ?", (pool_id,))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def get_pool_sample(limit: int = 120):
     """Случайная выборка норвежских слов из пула (исключения для генерации по теме)."""
     db = await _conn()

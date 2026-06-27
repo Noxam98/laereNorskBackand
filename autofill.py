@@ -13,6 +13,7 @@ from db import (
     get_or_create_pool, set_pool_meta, set_pool_description,
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
+    yo_pending, mark_yo_done,
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
     pos_uncategorized, set_pool_pos, get_pool_words_by_names,
@@ -402,6 +403,81 @@ async def translate_loop():
         except Exception as e:
             errors.report(e, "translate_loop")
         await asyncio.sleep(TRANSLATE_CHECK_SEC)
+
+
+# --- Бэкилл буквы «ё» в русских переводах (нужно для корректной озвучки) ---
+YO_BATCH = int(os.getenv("YO_BATCH", "30"))        # сколько слов пула проверяем за один проход
+YO_CHECK_SEC = int(os.getenv("YO_CHECK_SEC", "6"))
+_YO_SYS = (
+    "Ты — корректор русской буквы «ё». Дан список русских слов/фраз. Для КАЖДОГО верни написание с "
+    "буквой «ё» там, где она орфографически НУЖНА (мёд, ёлка, всё, её, объём, полёт, актёр, ёж, тётя, "
+    "лёд, своё, чёрный, идёт). Если «ё» не требуется — верни слово БЕЗ изменений. Меняй ТОЛЬКО е→ё там, "
+    "где это правильно; больше НИЧЕГО не трогай (регистр, порядок слов, пунктуацию, прочие буквы сохраняй). "
+    "Верни items: по объекту {src, fixed} на каждое входное слово."
+)
+_YO_SCHEMA = {"name": "yo", "schema": {"type": "object", "properties": {"items": {"type": "array", "items": {
+    "type": "object", "properties": {"src": {"type": "string"}, "fixed": {"type": "string"}},
+    "required": ["src", "fixed"]}}}, "required": ["items"]}}
+
+
+async def restore_yo(words):
+    """LLM-восстановление «ё» в списке русских строк. → {src: fixed}, только где реально изменилось
+    и отличие РОВНО е→ё (защита от посторонних «правок» модели)."""
+    if not words:
+        return {}
+    user = "Слова:\n" + "\n".join(f"- {w}" for w in words)
+    try:
+        data = await ask_json(_YO_SYS, user, _YO_SCHEMA, purpose="autofill", label=f"ё-фикс ({len(words)})")
+    except Exception as e:
+        errors.report(e, "restore_yo")
+        return {}
+    out = {}
+    for it in (data.get("items", []) if isinstance(data, dict) else []):
+        if not isinstance(it, dict):
+            continue
+        src, fixed = (it.get("src") or ""), (it.get("fixed") or "")
+        if src and fixed and fixed != src and fixed.replace("ё", "е").replace("Ё", "Е") == src:
+            out[src] = fixed
+    return out
+
+
+async def yo_fix_loop():
+    """Фоновый бэкилл «ё» в русских переводах: пачками берём непроверенные слова (yo_done=0),
+    восстанавливаем «ё» где нужно и через update_pool_translate обновляем текст (озвучка перевода
+    сбрасывается и регенерится сама). Идёт до конца один раз; новые слова уже получают «ё» из промпта."""
+    await asyncio.sleep(40)
+    while True:
+        try:
+            pend = await yo_pending(YO_BATCH)
+            if not pend:
+                await asyncio.sleep(300)   # всё проверено — ждём долго (фактически простой)
+                continue
+            # уникальные русские строки-кандидаты (без «е» буква «ё» точно не нужна — не шлём в LLM)
+            cand = {v for _pid, data in pend
+                    for v in ((data.get("translate") or {}).get("ru") or [])
+                    if isinstance(v, str) and ("е" in v or "Е" in v)}
+            fix = {}
+            if cand:
+                if not llm.text_available("autofill"):
+                    logger.info("yo_fix_loop: бюджет моделей/ключей исчерпан")
+                    await asyncio.sleep(300)
+                    continue
+                fix = await restore_yo(sorted(cand))
+            changed = 0
+            for pid, data in pend:
+                tr = data.get("translate") or {}
+                ru = tr.get("ru") or []
+                new_ru = [fix.get(v, v) for v in ru]
+                if new_ru != ru:
+                    await update_pool_translate(pid, {**tr, "ru": new_ru})
+                    changed += 1
+                await mark_yo_done(pid)
+            if changed:
+                logger.info(f"yo_fix: восстановлено «ё» у {changed}/{len(pend)} слов (озвучка перегенерится)")
+            await asyncio.sleep(YO_CHECK_SEC)
+        except Exception as e:
+            errors.report(e, "yo_fix_loop")
+            await asyncio.sleep(60)
 
 
 # --- Пере-эмбеддинг пула по смыслу (слово+переводы) батчами, с обновлением vec-индекса ---

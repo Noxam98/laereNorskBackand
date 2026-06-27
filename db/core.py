@@ -265,6 +265,8 @@ async def init_db():
             # 0 = админ ещё не просматривал слово вручную. Под будущий инструмент: пройтись по всем
             # словам и решить, предлагать ли их юзерам к учёбе (тогда выставлять admin_reviewed=1).
             "ALTER TABLE word_pool ADD COLUMN admin_reviewed INTEGER DEFAULT 0",
+            # 0 = русский перевод ещё не проверен на букву «ё» (фоновый бэкилл yo_fix_loop восстановит ё).
+            "ALTER TABLE word_pool ADD COLUMN yo_done INTEGER DEFAULT 0",
         ):
             try:
                 await db.execute(_ddl)

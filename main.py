@@ -14,6 +14,7 @@ from routers.learning import router as learning_router
 from routers.sets import router as sets_router
 from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
+    yo_fix_loop,
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
 )
 
@@ -96,6 +97,8 @@ async def startup():
             logger.info("dedup queue enabled: фоновое слияние слов-дублей пула")
         asyncio.create_task(freq_loop())
         logger.info("freq queue enabled: простановка частотности слов (Zipf)")
+        asyncio.create_task(yo_fix_loop())
+        logger.info("yo-fix queue enabled: бэкилл буквы «ё» в русских переводах + переозвучка")
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")
