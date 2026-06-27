@@ -1,0 +1,6 @@
+# Тестовые/дев-зависимости (в проде не нужны).
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   python -m pytest -q
+pytest>=8,<10
+pytest-asyncio>=1,<2
+coverage>=7
