@@ -18,11 +18,12 @@ def mock_ask(monkeypatch):
     """Подменить ask_json фиксированным ответом модели — в обоих модулях
     (batch-процессоры живут в autofill, генерация слов — в autofill_wordgen)."""
     import autofill_wordgen
+    import autofill_enrich
     def _set(resp):
         async def fake(system, user, schema, **kw):
             return resp
-        monkeypatch.setattr(autofill, "ask_json", fake)
-        monkeypatch.setattr(autofill_wordgen, "ask_json", fake)
+        for m in (autofill, autofill_wordgen, autofill_enrich):
+            monkeypatch.setattr(m, "ask_json", fake)
     return _set
 
 
