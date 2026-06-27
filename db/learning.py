@@ -553,6 +553,8 @@ async def get_due(user_id, limit=20):
 # ---------------- движок сессии (систему ведёт сервер, режим не выбирает игрок) ----------------
 
 WIP_LIMIT = 20   # лимит слов одновременно-в-работе (new+learning); новые не вводим сверх него
+NEW_PER_SESSION = 6   # потолок НОВЫХ слов (карточек-знакомств) за одну сессию — остальное добиваем
+                      # заданиями рампы. Состав растёт сам: 6 карт → 6+6 заданий → 6+12 → 2+18 (до size).
 
 
 async def _attach_choice_options(session, lang, n=3):
@@ -764,10 +766,14 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             await _release(dbc)
 
     session = []
+    new_added = 0                                            # сколько новых карточек уже взяли в эту сессию
+    comp = {"fresh": 0, "review": 0, "weak": 0, "progress": 0}   # фактический состав (для честной кнопки старта)
     for e, step in ordered:
-        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах.
-        # В дрилле по набору (scoped) лимит не действует — пользователь явно учит выбранные слова.
-        if attempts(e) == 0 and not scoped and (in_work >= WIP_LIMIT or gate_open):
+        is_new = attempts(e) == 0
+        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах,
+        # А ТАКЖЕ при достигнутом потолке новых карточек за сессию (NEW_PER_SESSION) — остаток сессии
+        # заполняем заданиями рампы по уже начатым словам. В дрилле по набору (scoped) лимит не действует.
+        if is_new and not scoped and (in_work >= WIP_LIMIT or gate_open or new_added >= NEW_PER_SESSION):
             continue
         cell, mode, direction = step
         pid = e["row"]["pool_id"]
@@ -792,12 +798,21 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 continue
             el["cloze"] = items[idx]
         session.append(el)
-        if attempts(e) == 0:
-            in_work += 1   # ввели новое — слот занят
+        if is_new:
+            in_work += 1       # ввели новое — слот занят
+            new_added += 1
+            comp["fresh"] += 1
+        elif e["row"].get("mastered") == 1:
+            comp["review"] += 1   # выученное на повторении
+        elif e["status"] == "weak":
+            comp["weak"] += 1
+        else:
+            comp["progress"] += 1  # начатое, ещё не выученное
         if len(session) >= size:
             break
     await _attach_choice_options(session, lang)
-    return {"words": session}
+    comp["total"] = len(session)
+    return {"words": session, "composition": comp}
 
 
 # ---------------- cloze для служебных слов (A1, Ф4) ----------------
