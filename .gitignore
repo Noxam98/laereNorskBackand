@@ -4,3 +4,7 @@ __pycache__/
 users.db
 app.log
 .env
+
+# покрытие тестов (локально)
+.coverage
+htmlcov/
