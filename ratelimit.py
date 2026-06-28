@@ -1,0 +1,53 @@
+"""Лёгкий in-memory rate-limit (приложение на ОДНОЙ машине Fly — состояние в памяти допустимо).
+Скользящее окно по ключу. Защищает дорогие LLM/TTS-эндпоинты от цикл-абьюза: исчерпания общей
+квоты Gemini (DoS для всех пользователей) и роста стоимости провайдера. Лимиты щедрые — нормальное
+использование их не задевает; настраиваются через окружение.
+"""
+import os
+import time
+from collections import defaultdict, deque
+from fastapi import Depends, HTTPException, Request
+
+from auth import get_current_user
+
+_hits = defaultdict(deque)   # ключ -> deque[timestamps]
+
+
+def _hit(key, max_n, window):
+    now = time.monotonic()
+    dq = _hits[key]
+    cut = now - window
+    while dq and dq[0] < cut:
+        dq.popleft()
+    if len(dq) >= max_n:
+        retry = max(1, int(dq[0] + window - now))
+        raise HTTPException(status_code=429, detail="Слишком много запросов, попробуйте чуть позже",
+                            headers={"Retry-After": str(retry)})
+    dq.append(now)
+
+
+def client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# Дорогие LLM-вызовы (генерация/описание/вопрос/правка/диф/OCR/импорт) — лимит НА ПОЛЬЗОВАТЕЛЯ.
+_LLM_MAX = int(os.getenv("RATE_LLM_MAX", "40"))
+_LLM_WINDOW = int(os.getenv("RATE_LLM_WINDOW", "600"))   # дефолт: 40 запросов / 10 минут
+
+
+async def llm_rate_limit(user=Depends(get_current_user)):
+    """Замена get_current_user для дорогих LLM-эндпоинтов: та же аутентификация + лимит на юзера."""
+    _hit(("llm", user["id"]), _LLM_MAX, _LLM_WINDOW)
+    return user
+
+
+# TTS — публичный эндпоинт, лимит ПО IP (щедрый: аудио кешируется клиентом, реальных синтезов мало).
+_TTS_MAX = int(os.getenv("RATE_TTS_MAX", "1200"))
+_TTS_WINDOW = int(os.getenv("RATE_TTS_WINDOW", "300"))   # дефолт: 1200 / 5 минут на IP
+
+
+def tts_rate_limit(request: Request):
+    _hit(("tts", client_ip(request)), _TTS_MAX, _TTS_WINDOW)

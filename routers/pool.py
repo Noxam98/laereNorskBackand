@@ -13,6 +13,7 @@ from db import (
     reported_words, reported_count, resolve_report,
 )
 from auth import get_current_user, get_admin_user
+from ratelimit import llm_rate_limit, tts_rate_limit
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled, embed_text
@@ -50,12 +51,15 @@ async def _tts_translation(text: str, lang: str):
 
 
 @router.get("/tts")
-async def tts(word: str, lang: str = None):
+async def tts(word: str, lang: str = None, _rl=Depends(tts_rate_limit)):
     """Аудио произношения. Без lang (или nb) — норвежское слово (кэш в пуле БД).
-    lang=ru/uk/en/pl/lt — озвучка перевода нужным голосом (кэш в Tigris). Публичный."""
+    lang=ru/uk/en/pl/lt — озвучка перевода нужным голосом (кэш в Tigris). Публичный
+    (лимит по IP + кап длины — защита от абьюза синтеза, см. ratelimit.tts_rate_limit)."""
     text = (word or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="word is required")
+    if len(text) > 80:   # слова/короткие фразы — не даём гонять синтез на больших текстах
+        raise HTTPException(status_code=400, detail="word too long")
 
     # ЛЮБОЙ сбой превращаем в HTTPException: он отдаётся НИЖЕ CORS-мидлвари и получает
     # Access-Control-Allow-Origin. Иначе необработанное исключение (сбой Tigris/БД/синтеза)
@@ -92,7 +96,7 @@ async def tts(word: str, lang: str = None):
 
 
 @router.post("/pool/{word}/revoice")
-async def pool_revoice(word: str, user=Depends(get_current_user)):
+async def pool_revoice(word: str, user=Depends(llm_rate_limit)):
     """Переозвучить норвежское слово — перегенерировать аудио и перезаписать кэш."""
     key = normalize_word(word)
     if not await get_pool_id(key):
@@ -240,7 +244,7 @@ async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(ge
 
 
 @router.post("/pool/generate")
-async def pool_generate(body: dict, user=Depends(get_current_user)):
+async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
     """Сгенерировать новое слово (LLM) и положить в пул — для слов, которых нет ни в пуле, ни
     в лексиконе. Если слово уже есть — просто вернуть его. Возвращает {word, pool_id, translate, generated}."""
     word = (body.get("word") or "").strip()
@@ -298,7 +302,7 @@ async def pool_description(word: str, model: str = None, user=Depends(get_curren
 
 
 @router.post("/pool/{word}/redescribe")
-async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_current_user)):
+async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(llm_rate_limit)):
     """Перегенерировать описание слова (при неверном) с учётом подсказки пользователя
     о правильном значении. Перезаписывает кэш описания в общем пуле."""
     pid = await get_pool_id(word)
@@ -319,7 +323,7 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(get_curr
 
 
 @router.post("/pool/{word}/ask")
-async def pool_ask(word: str, body: AskBody, user=Depends(get_current_user)):
+async def pool_ask(word: str, body: AskBody, user=Depends(llm_rate_limit)):
     """Свободный вопрос пользователя о слове — нейросеть отвечает с учётом части речи и
     переводов (контекст значения), кратко, на языке интерфейса."""
     pid = await get_pool_id(word)
@@ -346,7 +350,7 @@ async def pool_ask(word: str, body: AskBody, user=Depends(get_current_user)):
 
 
 @router.post("/pool/{word}/edit")
-async def pool_edit(word: str, body: PoolEditBody, user=Depends(get_current_user)):
+async def pool_edit(word: str, body: PoolEditBody, user=Depends(llm_rate_limit)):
     """Правка слова в общем пуле (норвежское слово + переводы) — меняется для всех.
     Сначала ревью нейросетью: применяем только при approved, иначе возвращаем причину."""
     pid = await get_pool_id(word)
@@ -491,7 +495,7 @@ async def _gen_diff(a, b, lang, hint=None):
 
 
 @router.get("/pool/diff")
-async def pool_diff(a: str, b: str, lang: str = "ru", user=Depends(get_current_user)):
+async def pool_diff(a: str, b: str, lang: str = "ru", user=Depends(llm_rate_limit)):
     """Разница между двумя норвежскими словами на языке пользователя (LLM, кэш по паре+языку)."""
     a = normalize_word(a)
     b = normalize_word(b)
@@ -509,7 +513,7 @@ async def pool_diff(a: str, b: str, lang: str = "ru", user=Depends(get_current_u
 
 
 @router.post("/pool/rediff")
-async def pool_rediff(body: RediffBody, user=Depends(get_current_user)):
+async def pool_rediff(body: RediffBody, user=Depends(llm_rate_limit)):
     """Перегенерировать разницу (при неверной) с учётом подсказки. Перезаписывает кэш."""
     a = normalize_word(body.a)
     b = normalize_word(body.b)

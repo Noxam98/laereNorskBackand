@@ -18,7 +18,16 @@ from models import (
 )
 from langs import LANG_SET
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
+# Fail-closed: при отсутствии/дефолтном SECRET_KEY генерируем СЛУЧАЙНЫЙ на этот запуск, а не
+# подписываем токены публично известным ключом (иначе любой мог бы подделать JWT на любой sub,
+# включая админа). На проде SECRET_KEY задан в окружении; рандом-фолбэк — страховка dev/теста.
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY or SECRET_KEY == "your_secret_key":
+    import secrets as _secrets
+    from config import logger as _logger
+    SECRET_KEY = _secrets.token_hex(32)
+    _logger.warning("SECRET_KEY не задан в окружении — сгенерирован случайный на этот запуск "
+                    "(токены не переживут рестарт). Для прода задай SECRET_KEY.")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))

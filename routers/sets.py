@@ -7,6 +7,7 @@
 CRUD — тонкие обёртки над db.dictionaries (логика жива с Фазы 1, в Фазе 2 убрали лишь роуты)."""
 from fastapi import APIRouter, Depends, HTTPException
 from auth import get_current_user
+from ratelimit import llm_rate_limit
 from activity import mark_activity
 from db import (
     list_user_sets, create_dictionary, rename_dictionary, delete_dictionary,
@@ -97,7 +98,7 @@ async def sets_words_remove(set_id: int, pool_id: int, user=Depends(get_current_
 
 
 @router.post("/sets/{set_id}/generate")
-async def sets_generate(set_id: int, body: dict, user=Depends(get_current_user)):
+async def sets_generate(set_id: int, body: dict, user=Depends(llm_rate_limit)):
     """Сгенерировать слова через ИИ по теме/уровню/количеству (0–20) и добавить в набор.
     Тема — ключ темы или свободный текст; level — A1..C2 (необяз.); lang — язык переводов."""
     mark_activity()
@@ -126,7 +127,7 @@ def _parse_data_url(s):
 
 
 @router.post("/sets/{set_id}/ocr")
-async def sets_ocr(set_id: int, body: dict, user=Depends(get_current_user)):
+async def sets_ocr(set_id: int, body: dict, user=Depends(llm_rate_limit)):
     """Шаг 1 импорта с фото: распознать норвежские слова на изображении (Gemini vision).
     Возвращает ТОЛЬКО список слов — пользователь правит/удаляет, затем шлёт на /import-words.
     body: {image: data-URL|base64, hint?: уточнение промта}."""
@@ -136,13 +137,15 @@ async def sets_ocr(set_id: int, body: dict, user=Depends(get_current_user)):
     image = (body or {}).get("image")
     if not image:
         raise HTTPException(status_code=400, detail="No image")
+    if not isinstance(image, str) or len(image) > 8_000_000:   # ~8 МБ base64 — не шлём в vision гигантские блобы
+        raise HTTPException(status_code=413, detail="Image too large")
     mime, b64 = _parse_data_url(image)
     from autofill import words_from_image   # ленивый импорт — избегаем циклов на старте
     return {"words": await words_from_image(b64, mime, (body or {}).get("hint") or "")}
 
 
 @router.post("/sets/{set_id}/import-words")
-async def sets_import_words(set_id: int, body: dict, user=Depends(get_current_user)):
+async def sets_import_words(set_id: int, body: dict, user=Depends(llm_rate_limit)):
     """Шаг 2 импорта с фото: отредактированный список слов → обогащение обычным генератором → в набор.
     body: {words: [str], lang?: язык переводов}."""
     mark_activity()

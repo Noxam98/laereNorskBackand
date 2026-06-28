@@ -11,6 +11,7 @@ from db import (
     set_pool_description, get_pool_ids, update_pool_translate, set_dictionary_studying,
 )
 from auth import get_current_user
+from ratelimit import llm_rate_limit
 from activity import mark_activity
 from llm import (
     generate_words, ensure_embeddings, persist_pool, ask_json, DESC_SCHEMA,
@@ -25,7 +26,7 @@ router = APIRouter()
 
 
 @router.post("/games/ai_words")
-async def games_ai_words(body: AiWordsBody, user=Depends(get_current_user)):
+async def games_ai_words(body: AiWordsBody, user=Depends(llm_rate_limit)):
     """AI-подбор слов для одиночной игры по уровню/теме (как в онлайне). Возвращает набор
     [{no, translate}] — слова попадают в общий пул и обогащаются фоном."""
     mark_activity()

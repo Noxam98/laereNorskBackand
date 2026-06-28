@@ -1,10 +1,13 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
+
+# Лимиты полей — defense-in-depth: не пускаем гигантский фритекст в LLM-промпты и огромные списки
+# в SQL/батчи. Значения щедрые (нормальный ввод не задевают), бьют только по абьюзу/ошибкам.
 
 
 class UserAuth(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=200)
 
 
 class Token(BaseModel):
@@ -14,36 +17,36 @@ class Token(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(max_length=4096)
 
 
 class GoogleAuth(BaseModel):
-    credential: str   # ID-token (JWT) от Google Identity Services
+    credential: str = Field(max_length=8192)   # ID-token (JWT) от Google Identity Services
 
 
 class PasswordBody(BaseModel):
-    password: str
+    password: str = Field(max_length=200)
 
 
 class NameBody(BaseModel):
-    name: str
+    name: str = Field(max_length=80)
 
 
 class AiWordsBody(BaseModel):
-    level: str = ""
-    topic: str = ""
-    count: int = 10
-    lang: str = "ru"
+    level: str = Field("", max_length=8)
+    topic: str = Field("", max_length=120)
+    count: int = Field(10, ge=1, le=50)
+    lang: str = Field("ru", max_length=8)
 
 
 class PoolEditBody(BaseModel):
     translate: dict = {}   # {no?, ru?, ukr?, en?, pl?, lt?: [варианты]}
-    lang: str = "ru"       # язык интерфейса — на нём вернуть причину ревью
-    hint: str = ""         # подсказка пользователя (напр. «это глагол, не существительное»)
+    lang: str = Field("ru", max_length=8)   # язык интерфейса — на нём вернуть причину ревью
+    hint: str = Field("", max_length=500)   # подсказка пользователя (напр. «это глагол, не существительное»)
 
 
 class DictCreate(BaseModel):
-    name: str
+    name: str = Field(max_length=80)
 
 
 class StudyingBody(BaseModel):
@@ -51,54 +54,54 @@ class StudyingBody(BaseModel):
 
 
 class AddWords(BaseModel):
-    prompt: str
-    model: Optional[str] = None
+    prompt: str = Field(max_length=500)
+    model: Optional[str] = Field(None, max_length=64)
 
 
 class ImportDict(BaseModel):
-    name: str
-    words: List[dict] = []
+    name: str = Field(max_length=80)
+    words: List[dict] = Field(default=[], max_length=500)
 
 
 class PoolAdd(BaseModel):
-    norwegian: str
+    norwegian: str = Field(max_length=80)
 
 
 class PoolToDict(BaseModel):
-    name: str
-    q: Optional[str] = None
-    topics: List[str] = []
-    level: Optional[str] = None
+    name: str = Field(max_length=80)
+    q: Optional[str] = Field(None, max_length=120)
+    topics: List[str] = Field(default=[], max_length=64)
+    level: Optional[str] = Field(None, max_length=8)
 
 
 class WordOverride(BaseModel):
     translate: Optional[dict] = None
-    part_of_speech: Optional[str] = None
+    part_of_speech: Optional[str] = Field(None, max_length=32)
 
 
 class ResultBody(BaseModel):
     correct: bool
-    mode: Optional[str] = None       # вид игры (choice/build/input/study) — кормит SRS «Учёбы»
+    mode: Optional[str] = Field(None, max_length=32)       # вид игры (choice/build/input/study) — кормит SRS «Учёбы»
     elapsed: Optional[float] = None  # время ответа, сек
-    direction: Optional[str] = None  # no2int | int2no — направление клетки рампы
+    direction: Optional[str] = Field(None, max_length=16)  # no2int | int2no — направление клетки рампы
 
 
 class MoveWords(BaseModel):
-    ids: List[int]
+    ids: List[int] = Field(max_length=2000)
     dict_id: int
 
 
 class RefineWords(BaseModel):
-    ids: List[int]
-    lang: str
+    ids: List[int] = Field(max_length=2000)
+    lang: str = Field(max_length=8)
 
 
 class CurrentDictBody(BaseModel):
-    name: str
+    name: str = Field(max_length=80)
 
 
 class ThemeBody(BaseModel):
-    theme: str
+    theme: str = Field(max_length=32)
 
 
 class GamePrefsBody(BaseModel):
@@ -109,16 +112,16 @@ class GamePrefsBody(BaseModel):
     choiceHintSeen: bool | None = None  # видел сноску «можно выбирать цифрами» в «Выборе» (ПК)
     leaderboardOptOut: bool | None = None  # не участвовать в рейтинге (скрыт от других)
     listenOff: bool | None = None  # задания «на слух» выключены для аккаунта (синк между устройствами)
-    lang: str | None = None  # язык интерфейса (синк между устройствами): ru|ukr|en|pl|lt
+    lang: str | None = Field(None, max_length=8)  # язык интерфейса (синк между устройствами): ru|ukr|en|pl|lt
 
 
 class RedescribeBody(BaseModel):
-    hint: str | None = None   # подсказка о правильном значении слова
+    hint: str | None = Field(None, max_length=500)   # подсказка о правильном значении слова
 
 
 class AskBody(BaseModel):
-    question: str = ""        # вопрос пользователя о слове
-    lang: str = "ru"          # язык ответа
+    question: str = Field("", max_length=500)        # вопрос пользователя о слове
+    lang: str = Field("ru", max_length=8)            # язык ответа
 
 
 # --- «Учёба» (интервальные повторения) ---
@@ -126,35 +129,35 @@ class LearningAnswer(BaseModel):
     pool_id: int
     correct: bool
     elapsed: float | None = None
-    mode: str | None = None        # choice | build | input | study | …
-    direction: str | None = None   # no2int | int2no — направление клетки рампы
+    mode: str | None = Field(None, max_length=32)        # choice | build | input | study | …
+    direction: str | None = Field(None, max_length=16)   # no2int | int2no — направление клетки рампы
 
 
 class PlacementBody(BaseModel):
-    lang: str = "ru"
-    answers: list = []        # [{no, level, answer}]
+    lang: str = Field("ru", max_length=8)
+    answers: list = Field(default=[], max_length=200)        # [{no, level, answer}]
 
 
 class LevelBody(BaseModel):
-    level: str                # самооценка уровня (A1..C2)
+    level: str = Field(max_length=8)                # самооценка уровня (A1..C2)
 
 
 class LearningStatusBody(BaseModel):
-    action: str = ""          # know | reset | unarchive
+    action: str = Field("", max_length=32)          # know | reset | unarchive
 
 
 class GateExamBody(BaseModel):
-    lang: str = "ru"
-    answers: list = []        # [{pool_id, answer}] — выбранный перевод для каждого вопроса
+    lang: str = Field("ru", max_length=8)
+    answers: list = Field(default=[], max_length=200)        # [{pool_id, answer}] — выбранный перевод для каждого вопроса
 
 
 class AuditBody(BaseModel):
-    lang: str = "ru"
-    answers: list = []        # [{pool_id, answer}] — выбранный перевод для каждого аудит-вопроса
+    lang: str = Field("ru", max_length=8)
+    answers: list = Field(default=[], max_length=200)        # [{pool_id, answer}] — выбранный перевод для каждого аудит-вопроса
 
 
 class RediffBody(BaseModel):
-    a: str
-    b: str
-    lang: str = "ru"
-    hint: str | None = None   # подсказка для перегенерации разницы
+    a: str = Field(max_length=80)
+    b: str = Field(max_length=80)
+    lang: str = Field("ru", max_length=8)
+    hint: str | None = Field(None, max_length=500)   # подсказка для перегенерации разницы

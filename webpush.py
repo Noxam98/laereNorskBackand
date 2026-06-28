@@ -70,6 +70,27 @@ async def _exec(sql, params=()):
         return rows
 
 
+# Доверенные хосты push-провайдеров. endpoint приходит от клиента, и бэкенд САМ шлёт на него POST
+# (фоновый воркер) — без проверки это SSRF (можно подсунуть internal-адрес). Принимаем только https
+# на известные сервисы пушей; всё прочее отвергаем (fail-closed; новый провайдер — добавить суффикс).
+_PUSH_HOST_SUFFIXES = (
+    ".googleapis.com",             # Chrome/Edge (FCM: fcm.googleapis.com)
+    ".push.services.mozilla.com",  # Firefox
+    ".notify.windows.com",         # Edge/Windows (WNS)
+    ".push.apple.com",             # Safari/Apple
+)
+
+
+def _valid_push_endpoint(endpoint: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(endpoint or "")
+    except Exception:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and any(host.endswith(s) for s in _PUSH_HOST_SUFFIXES)
+
+
 async def save_subscription(user_id, sub):
     info = sub.get("keys") or {}
     endpoint = sub.get("endpoint")
@@ -77,6 +98,8 @@ async def save_subscription(user_id, sub):
     auth = info.get("auth")
     if not (endpoint and p256dh and auth):
         raise ValueError("bad subscription")
+    if not _valid_push_endpoint(endpoint):   # SSRF-защита: только https на известные push-сервисы
+        raise ValueError("bad endpoint")
     now = datetime.utcnow().isoformat()
     # один и тот же endpoint может перепривязываться к юзеру — обновляем ключи/владельца
     await _exec(
@@ -88,8 +111,9 @@ async def save_subscription(user_id, sub):
     )
 
 
-async def delete_subscription(endpoint):
-    await _exec("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+async def delete_subscription(endpoint, user_id):
+    # owner-scoped: юзер удаляет ТОЛЬКО свою подписку (иначе по чужому endpoint можно отписать другого)
+    await _exec("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", (endpoint, user_id))
 
 
 # ---------- отправка (ленивый pywebpush) ----------
@@ -242,5 +266,5 @@ async def subscribe(body: dict, user=Depends(get_current_user)):
 async def unsubscribe(body: dict, user=Depends(get_current_user)):
     ep = body.get("endpoint")
     if ep:
-        await delete_subscription(ep)
+        await delete_subscription(ep, user["id"])
     return {"ok": True}

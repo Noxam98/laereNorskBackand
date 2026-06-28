@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import logger, CORS_ORIGINS
 from db import init_db, get_pool_embeddings_raw, set_pool_embedding
 from llm import decode_emb, encode_emb, text_enabled
-from auth import SECRET_KEY, router as auth_router
+from auth import router as auth_router
 from routers.words import router as words_router
 from routers.pool import router as pool_router
 from online import router as online_router
@@ -18,11 +18,28 @@ from autofill import (
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
 )
 
-app = FastAPI()
+# Swagger/OpenAPI скрываем в проде (ENABLE_DOCS=1 чтобы включить) — не светим карту эндпоинтов.
+_DOCS = os.getenv("ENABLE_DOCS", "0") == "1"
+app = FastAPI(docs_url="/docs" if _DOCS else None, redoc_url=None,
+              openapi_url="/openapi.json" if _DOCS else None)
 
-allow_origins = ["*"] if CORS_ORIGINS.strip() == "*" else [o.strip() for o in CORS_ORIGINS.split(",")]
-app.add_middleware(CORSMiddleware, allow_origins=allow_origins, allow_credentials=True,
+# CORS: НИКОГДА не пара wildcard+credentials (невалидно по спеку и опасно). Конкретный список
+# origin → с креденшелами; "*" → без них. Фронт ходит Bearer-токеном (не cookie) — креды не нужны.
+_wild = CORS_ORIGINS.strip() == "*"
+allow_origins = ["*"] if _wild else [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=allow_origins, allow_credentials=not _wild,
                    allow_methods=["*"], allow_headers=["*"])
+
+
+# Базовые security-заголовки на все ответы. TLS форсится на edge (fly.toml force_https).
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
 
 app.include_router(auth_router)
 app.include_router(words_router)
@@ -43,8 +60,6 @@ async def startup():
     await init_db()
     import runtime
     await runtime.load_persisted()  # восстановить паузы фоновых задач из БД
-    if SECRET_KEY == "your_secret_key":
-        logger.warning("SECRET_KEY не задан через окружение — используется значение по умолчанию.")
     import notify
     # миграция эмбеддингов: legacy JSON -> бинарь float16
     try:

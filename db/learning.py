@@ -3,9 +3,11 @@
 Статусы вычисляются на чтении из силы/попыток; archived — ручной флаг («я это знаю»)."""
 import asyncio
 import json
+import time
 import unicodedata
 from datetime import datetime, timedelta
 import fuzzy
+from config import logger
 from .core import _conn, _release, _now
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -632,6 +634,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     «Базы» и без лимита WIP/ворот на ввод новых (явная тренировка — даём учить что выбрано).
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
     scoped = set_id is not None
+    _t0 = time.monotonic(); _tm = {}   # [perf] тайминг фаз сборки сессии
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
         db = await _conn()
@@ -662,6 +665,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         return enriched, in_work, gate_open
 
     enriched, in_work, gate_open = await _load()
+    _tm["load"] = time.monotonic() - _t0
 
     # ГЕЙТ A1 (#1,#2): база контентных слов (learning/review/mastered, НЕ служебные). Пока её нет —
     # служебные слова не вводим и не досыпаем (есть из чего строить cloze только после базы).
@@ -689,6 +693,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются
         new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e))
         if new_avail == 0 and in_work < WIP_LIMIT:
+            _ts = time.monotonic()
             level = await estimate_level(user_id)
             res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level, allow_func=func_gate_ok)
             if res.get("added"):
@@ -696,6 +701,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 enriched, in_work, gate_open = await _load()
                 content_known = _content_known(enriched)
                 func_gate_ok = content_known >= FUNC_GATE
+            _tm["suggest"] = time.monotonic() - _ts
 
     # пулы по приоритету
     def attempts(e):
@@ -761,11 +767,13 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     cloze_pids = [e["row"]["pool_id"] for (e, step) in ordered if step[1] == "cloze"]
     cloze_map = {}
     if cloze_pids:
+        _tc = time.monotonic()
         dbc = await _conn()
         try:
             cloze_map = await get_cloze_map(dbc, user_id, cloze_pids)
         finally:
             await _release(dbc)
+        _tm["cloze"] = time.monotonic() - _tc
 
     session = []
     new_added = 0                                            # сколько новых карточек уже взяли в эту сессию
@@ -812,8 +820,14 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             comp["progress"] += 1  # начатое, ещё не выученное
         if len(session) >= size:
             break
+    _ta = time.monotonic()
     await _attach_choice_options(session, lang)
+    _tm["choice"] = time.monotonic() - _ta
     comp["total"] = len(session)
+    _tm["total"] = time.monotonic() - _t0
+    if _tm["total"] > 1.0:   # канарейка: логируем ТОЛЬКО медленную сборку (>1с) с разбивкой фаз
+        logger.warning("slow build_session uid=%s n=%d %s", user_id, len(session),
+                       " ".join(f"{k}={v * 1000:.0f}ms" for k, v in _tm.items()))
     return {"words": session, "composition": comp}
 
 
