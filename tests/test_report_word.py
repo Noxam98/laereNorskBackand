@@ -94,3 +94,29 @@ async def test_known_marks_mastered_not_archived(fresh_db):
     st = await learning_stats(uid)
     assert st["byStatus"].get("mastered", 0) >= 1
     assert st["byStatus"].get("archived", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_skip_word_removes_personally_without_moderation(fresh_db):
+    """«Не актуально» (skip): персональная свалка + отвязка от словарей, но БЕЗ модерации —
+    жалоба не заводится, слово остаётся в общей базе (в отличие от report)."""
+    from db import skip_word
+    uid, did = await pytest.seed_user()
+    pid, _ = await pytest.seed_word(did, "neaktuelt")
+    await _add_user_word(uid, pid)
+
+    r = await skip_word(pid, uid)
+    assert r["status"] == "skipped"
+    assert not await _has_user_word(uid, pid)                     # убрано из учёбы юзера
+    dbc = await _conn()
+    try:
+        async with dbc.execute("SELECT COUNT(*) c FROM user_word_skips WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            assert (await cur.fetchone())["c"] == 1               # в личной свалке (больше не предложат)
+        async with dbc.execute("SELECT COUNT(*) c FROM dict_words WHERE pool_id=? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id=?)", (pid, uid)) as cur:
+            assert (await cur.fetchone())["c"] == 0               # отвязано от словарей
+    finally:
+        await _release(dbc)
+    # НИКАКОЙ модерации: жалоб нет, слово на месте в общей базе
+    assert await reported_count() == 0
+    assert pid not in [w["pool_id"] for w in await reported_words()]
+    assert "neaktuelt" in [w["norwegian"] for w in await pool_by_freq(100)]

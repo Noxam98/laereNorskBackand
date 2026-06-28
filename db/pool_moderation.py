@@ -55,8 +55,36 @@ async def set_word_approval(pool_id: int, approved: int):
 
 
 # ---------------- Жалобы «не учить» (мусорные слова → модерация → убрать из учёбы / оставить) ----------------
+async def _personal_remove(db, pool_id: int, user_id: int):
+    """Убрать слово из учёбы ИМЕННО этого юзера (без влияния на общую базу/модерацию): вычистить из
+    его словарей (dict_words) и прогресса (user_words — удаляем, это не «выучено»), и занести в
+    user_word_skips, чтобы suggest_words больше НИКОГДА не предлагал это слово ЭТОМУ юзеру.
+    Общая часть для report_word («ошибка» + модерация) и skip_word («не актуально», тихо)."""
+    await db.execute(
+        "DELETE FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
+        (pool_id, user_id))
+    await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
+    await db.execute("INSERT OR IGNORE INTO user_word_skips (user_id, pool_id, created_at) VALUES (?,?,?)", (user_id, pool_id, _now()))
+
+
+async def skip_word(pool_id: int, user_id: int):
+    """«Не актуально»: убрать слово ТОЛЬКО из учёбы этого юзера, БЕЗ жалобы и модерации.
+    То же персональное удаление, что и report_word, но word_pool (reported/счётчики) не трогаем."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT 1 FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            if not await cur.fetchone():
+                return {"error": "not_found"}
+        await _personal_remove(db, pool_id, user_id)
+        await db.commit()
+        return {"ok": True, "pool_id": pool_id, "status": "skipped"}
+    finally:
+        await _release(db)
+
+
 async def report_word(pool_id: int, user_id: int):
-    """Пользователь жалуется «не учить». Убираем слово из ЕГО учёбы и решаем судьбу жалобы:
+    """«Ошибка в слове»: пожаловаться на мусорное/некорректное слово. Убираем его из учёбы юзера
+    (персонально, навсегда) и решаем судьбу жалобы:
       • learn_excluded=1     → уже убрано из учёбы для всех (status=excluded, тихо);
       • report_dismiss_left>0 → админ ранее решил «оставить» → гасим жалобу (−1, status=dismissed);
       • иначе                 → ставим в очередь админа (reported=1, report_count+1, status=queued)."""
@@ -68,15 +96,7 @@ async def report_word(pool_id: int, user_id: int):
             row = await cur.fetchone()
         if not row:
             return {"error": "not_found"}
-        # «Отправить на модерацию» = в персональную СВАЛКУ юзера: учить НЕ будет НАВСЕГДА, независимо
-        # от решения модератора. Убираем из его словарей (dict_words) и прогресса (user_words —
-        # удаляем, это мусор, не «выучено»), и заносим в user_word_skips, чтобы suggest_words больше
-        # никогда не предлагал это слово ЭТОМУ юзеру (даже если модератор слово оставит).
-        await db.execute(
-            "DELETE FROM dict_words WHERE pool_id = ? AND dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)",
-            (pool_id, user_id))
-        await db.execute("DELETE FROM user_words WHERE user_id = ? AND pool_id = ?", (user_id, pool_id))
-        await db.execute("INSERT OR IGNORE INTO user_word_skips (user_id, pool_id, created_at) VALUES (?,?,?)", (user_id, pool_id, _now()))
+        await _personal_remove(db, pool_id, user_id)
         if row["le"]:
             status = "excluded"
         elif row["dl"] > 0:

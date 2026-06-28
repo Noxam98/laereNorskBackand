@@ -1086,7 +1086,7 @@ async def search_pool(prefix: str, limit: int = 10, lang: str = None):
 # Модерация и жалобы «не учить» вынесены в db/pool_moderation.py (реэкспорт ниже).
 from .pool_moderation import (  # noqa: E402,F401
     pending_words, pending_count, set_word_approval,
-    report_word, reported_words, reported_count, resolve_report,
+    report_word, skip_word, reported_words, reported_count, resolve_report,
 )
 from .pool_freq import (  # noqa: E402,F401
     freq_band, pool_by_freq, pool_by_freq_topics, freq_pending, set_pool_freq, set_pool_freq_bulk,

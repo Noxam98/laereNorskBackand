@@ -12,7 +12,7 @@ from db import (
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
     learning_leaderboard,
-    report_word, pending_count, reported_count,
+    report_word, skip_word, pending_count, reported_count,
 )
 import asyncio
 from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody
@@ -103,6 +103,15 @@ async def learning_report_route(body: dict, user=Depends(get_current_user)):
                 pass
         asyncio.create_task(_notify_mods())
     return res
+
+
+@router.post("/learning/skip")
+async def learning_skip_route(body: dict, user=Depends(get_current_user)):
+    """«Не актуально»: убрать слово только из Учёбы пользователя, БЕЗ жалобы и модерации."""
+    pid = await _resolve_pool_id(body)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Word not in pool")
+    return await skip_word(pid, user["id"])
 
 
 @router.post("/learning/answer")
