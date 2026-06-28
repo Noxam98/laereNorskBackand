@@ -49,6 +49,26 @@ async def get_user_focus_topics(user_id: int):
         return []
 
 
+async def get_user_new_per_session(user_id: int, default: int = 6):
+    """Сколько НОВЫХ карточек-знакомств вводить за сессию (gamePrefs.newPerSession). Клампим 1..20.
+    Пусто/битое → default. Управляет порционностью знакомства со словами (настройка профиля)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await _release(db)
+    if not row or not row["game_prefs"]:
+        return default
+    try:
+        v = json.loads(row["game_prefs"]).get("newPerSession")
+        if isinstance(v, (int, float)):
+            return max(1, min(20, int(v)))
+    except Exception:
+        pass
+    return default
+
+
 async def set_user_game_prefs(user_id: int, prefs_json: str):
     db = await _conn()
     try:

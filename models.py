@@ -113,6 +113,7 @@ class GamePrefsBody(BaseModel):
     leaderboardOptOut: bool | None = None  # не участвовать в рейтинге (скрыт от других)
     listenOff: bool | None = None  # задания «на слух» выключены для аккаунта (синк между устройствами)
     lang: str | None = Field(None, max_length=8)  # язык интерфейса (синк между устройствами): ru|ukr|en|pl|lt
+    newPerSession: int | None = Field(None, ge=1, le=20)  # сколько НОВЫХ слов-карточек за сессию (порционность)
 
 
 class RedescribeBody(BaseModel):

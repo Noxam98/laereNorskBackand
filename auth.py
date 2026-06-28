@@ -308,6 +308,8 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["leaderboardOptOut"] = bool(body.leaderboardOptOut)
     if body.listenOff is not None:
         prefs["listenOff"] = bool(body.listenOff)
+    if body.newPerSession is not None:
+        prefs["newPerSession"] = max(1, min(20, int(body.newPerSession)))
     if body.lang in LANG_SET:
         prefs["lang"] = body.lang
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))

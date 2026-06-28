@@ -635,6 +635,8 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
     scoped = set_id is not None
     _t0 = time.monotonic(); _tm = {}   # [perf] тайминг фаз сборки сессии
+    from .users import get_user_new_per_session  # ленивый импорт — избегаем циклов
+    cap_new = await get_user_new_per_session(user_id, NEW_PER_SESSION)   # порция новых за сессию (настройка профиля)
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
         db = await _conn()
@@ -780,10 +782,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     comp = {"fresh": 0, "review": 0, "weak": 0, "progress": 0}   # фактический состав (для честной кнопки старта)
     for e, step in ordered:
         is_new = attempts(e) == 0
-        # лимит притока новых: новое слово (0 попыток) не вводим при заполненном WIP / открытых воротах,
-        # А ТАКЖЕ при достигнутом потолке новых карточек за сессию (NEW_PER_SESSION) — остаток сессии
-        # заполняем заданиями рампы по уже начатым словам. В дрилле по набору (scoped) лимит не действует.
-        if is_new and not scoped and (in_work >= WIP_LIMIT or gate_open or new_added >= NEW_PER_SESSION):
+        # Порционное знакомство: потолок НОВЫХ карточек за сессию (NEW_PER_SESSION) действует ВСЕГДА,
+        # в т.ч. в дрилле по набору (scoped) — иначе все новые слова набора валятся карточками сразу.
+        # Лимит WIP / ворота экзамена — только вне дрилла (явная тренировка их не ограничивает).
+        if is_new and (new_added >= cap_new or (not scoped and (in_work >= WIP_LIMIT or gate_open))):
             continue
         cell, mode, direction = step
         pid = e["row"]["pool_id"]

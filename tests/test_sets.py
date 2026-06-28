@@ -17,7 +17,7 @@ from db.dictionaries import (
     create_dictionary, delete_dictionary, list_user_sets, add_words_to_set,
     remove_word_from_set, sets_for_words, get_set_words, set_dictionary_studying,
 )
-from db.learning import _fetch_user_words, build_session, apply_result, WIP_LIMIT
+from db.learning import _fetch_user_words, build_session, apply_result, WIP_LIMIT, NEW_PER_SESSION
 from tests.conftest import seed_user, seed_word
 
 
@@ -152,16 +152,44 @@ async def test_scoped_drill_only_set_words_no_autofill(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_scoped_drill_bypasses_wip_limit(fresh_db):
-    """Явный дрилл не ограничен лимитом одновременной работы (WIP_LIMIT)."""
-    uid, _did = await seed_user()
+async def test_scoped_drill_portions_new_and_bypasses_wip(fresh_db):
+    """Дрилл по набору ПОРЦИОНИРУЕТ знакомство: не больше NEW_PER_SESSION новых карточек за сессию,
+    а не все слова набора сразу (баг «10 карточек подряд»). При этом WIP-лимит дрилл не ограничивает:
+    набор даёт новые карточки даже когда глобально слов-в-работе уже WIP_LIMIT (обычная сессия — нет)."""
+    uid, did = await seed_user()
+    # забиваем глобальный WIP: WIP_LIMIT слов «в работе» в дефолтном словаре
+    for i in range(WIP_LIMIT):
+        pid, _ = await seed_word(did, f"work{i}", f"раб{i}")
+        await apply_result(uid, pid, True, mode="choice", direction="no2int")
+
+    # набор из НЕ начатых слов, больше потолка
     sid = (await create_dictionary(uid, "Большой"))["id"]
-    n = WIP_LIMIT + 5
-    words = [await _add_pool_word(f"big{i}") for i in range(n)]
+    words = [await _add_pool_word(f"big{i}") for i in range(NEW_PER_SESSION + 5)]
+    await add_words_to_set(uid, sid, words)
+
+    # обычная сессия при полном WIP новых слов набора НЕ вводит
+    g = await build_session(uid, size=50, lang="ru")
+    assert not (set(words) & {e["pool_id"] for e in g["words"]})
+
+    # дрилл по набору: WIP игнорируется, но порция новых = ровно NEW_PER_SESSION (не все слова набора)
+    sess = await build_session(uid, size=50, lang="ru", set_id=sid)
+    fresh = [e for e in sess["words"] if e["pool_id"] in set(words)]
+    assert len(fresh) == NEW_PER_SESSION
+    assert all(e["step"] == "card" for e in fresh)
+
+
+@pytest.mark.asyncio
+async def test_new_per_session_setting_overrides_cap(fresh_db):
+    """Настройка профиля gamePrefs.newPerSession переопределяет потолок новых карточек за сессию."""
+    from db.users import set_user_game_prefs
+    uid, _did = await seed_user()
+    await set_user_game_prefs(uid, json.dumps({"newPerSession": 3}))
+    sid = (await create_dictionary(uid, "Набор"))["id"]
+    words = [await _add_pool_word(f"x{i}") for i in range(8)]
     await add_words_to_set(uid, sid, words)
     sess = await build_session(uid, size=50, lang="ru", set_id=sid)
-    # без лимита WIP в дрилл попадает больше, чем WIP_LIMIT новых карточек
-    assert len(sess["words"]) > WIP_LIMIT
+    fresh = [e for e in sess["words"] if e["step"] == "card"]
+    assert len(fresh) == 3   # потолок из настройки, не дефолтные 6
 
 
 # ---------------- (6) delete cleans membership, keeps SRS; not last dict ----------------
