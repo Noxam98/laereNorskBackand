@@ -822,6 +822,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             comp["progress"] += 1  # начатое, ещё не выученное
         if len(session) >= size:
             break
+    # карточки-знакомства (новые слова, step == "card") — в КОНЕЦ сессии: сначала упражнения по уже
+    # начатым словам, потом интро новых. sort стабилен → относительный порядок внутри групп сохранён.
+    session.sort(key=lambda el: el.get("step") == "card")
     _ta = time.monotonic()
     await _attach_choice_options(session, lang)
     _tm["choice"] = time.monotonic() - _ta

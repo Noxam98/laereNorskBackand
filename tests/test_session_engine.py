@@ -183,6 +183,22 @@ async def test_new_cards_capped_per_session(fresh_db):
     assert res["composition"]["fresh"] == len(fresh)
 
 
+async def test_intro_cards_go_last(fresh_db):
+    """Карточки-знакомства новых слов идут В КОНЦЕ сессии (сначала упражнения по начатым словам)."""
+    uid, did = await seed_user()
+    for i in range(3):                              # начатые слова → упражнения
+        pid, _ = await seed_word(did, f"started{i}", f"нач{i}")
+        await apply_result(uid, pid, True, mode="choice", direction="no2int")
+    for i in range(3):                              # новые слова → карточки-знакомства
+        await seed_word(did, f"fresh{i}", f"нов{i}")
+    res = await build_session(uid, size=20)
+    steps = [w["step"] for w in res["words"]]
+    cards = [i for i, s in enumerate(steps) if s == "card"]
+    non = [i for i, s in enumerate(steps) if s != "card"]
+    assert cards and non                            # в сессии есть и упражнения, и карточки
+    assert min(cards) > max(non)                    # все карточки — после всех упражнений
+
+
 async def test_session_returns_composition(fresh_db):
     """build_session отдаёт честный состав сессии: ключи на месте, total == числу слов."""
     uid, did = await seed_user()
