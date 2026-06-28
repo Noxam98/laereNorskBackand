@@ -186,23 +186,70 @@ async def words_from_image(image_b64, mime="image/jpeg", hint="", limit=30):
     return out
 
 
-async def words_from_list(words, lang="ru"):
+async def words_from_text(text, hint="", limit=50):
+    """Импорт слов из ПРОИЗВОЛЬНОГО текста (фото-аналог, но текстом): чат-логи с метками времени и
+    именами, списки через запятую/перенос, строки «norsk — перевод» (берём норвежскую сторону) и даже
+    список на другом языке без перевода (тогда переводим на норвежский). Возвращает ТОЛЬКО список
+    норвежских слов (без перевода) — дальше их обогащает words_from_list. hint — необязательное уточнение."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    text = text[:8000]   # длинные простыни в LLM не шлём
+    sys = (
+        "Du er en assistent for norskelever som rydder opp i en fritekstliste med gloser. "
+        "Brukeren limer inn vilkårlig tekst: chatt-logg med tidsstempler og navn, punktlister, "
+        "ord skilt med komma eller linjeskift, ofte i formatet «norsk ord — oversettelse». "
+        "Trekk ut KUN glosene som skal læres, etter disse reglene: "
+        "1) Ignorer tidsstempler som [28.06.2026 08:02], avsendernavn (Oksana:), nummerering, "
+        "punkttegn, lenker og rene symboler/tall. "
+        "2) For en linje «X — Y» (også X – Y, X: Y, X = Y) er X selve glosen og Y oversettelsen — behold KUN X. "
+        "3) Gi hvert ord/uttrykk på NORSK (bokmål) i grunnform/oppslagsform. Hvis glosen ikke er norsk "
+        "(f.eks. en ren liste på russisk uten norsk), oversett den til norsk. "
+        "4) Ingen duplikater, ingen oversettelse, ingen forklaring — bare de norske ordene."
+    )
+    extra = (hint or "").strip()
+    user = (f"{extra}\n\n" if extra else "") + f"Tekst:\n{text}"
+    try:
+        data = await ask_json(sys, user, WORDS_ONLY_SCHEMA, purpose="user", model=SET_GEN_MODELS, label="разбор слов из текста")
+    except Exception as e:
+        errors.report(e, "words_from_text")
+        return []
+    raw = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    out, seen = [], set()
+    for w in raw:
+        w = w.strip() if isinstance(w, str) else ""
+        k = w.lower()
+        if w and k not in seen:
+            seen.add(k); out.append(w)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def words_from_list(words, lang="ru", limit=50):
     """«Обычный генератор» для ЯВНОГО списка слов: обогащаем (перевод/часть речи/уровень) и кладём в пул.
-    НЕ выдумывает новых слов — только то, что в списке (распознанное с фото). → список pool_id."""
-    words = [w for w in (words or []) if isinstance(w, str) and w.strip()][:20]
+    НЕ выдумывает новых слов — только то, что в списке. Длинные списки (импорт текстом) обрабатываем
+    пачками по 20 — размер, под который настроены модель/схема. → список pool_id (без дублей)."""
+    words = [w for w in (words or []) if isinstance(w, str) and w.strip()][:limit]
     if not words:
         return []
     lang_name = LANG_NAMES.get(lang, lang)
-    lst = "; ".join(words)
-    prompt = (f"Вот ГОТОВЫЙ список норвежских слов (bokmål), распознанных с фото: {lst}. "
-              f"Для КАЖДОГО слова из списка дай перевод на язык: {lang_name}, часть речи и уровень CEFR, "
-              f"приведи к нормальной (словарной) форме. НЕ добавляй слов, которых нет в списке; "
-              f"нераспознаваемое/не-норвежское — пропусти.")
-    try:
-        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
-                              purpose="user", model=SET_GEN_MODELS, label="обогащение слов с фото")
-    except Exception as e:
-        errors.report(e, "words_from_list")
-        return []
-    items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    return await _persist_word_items(items, len(words))
+    pids, seen = [], set()
+    for i in range(0, len(words), 20):
+        chunk = words[i:i + 20]
+        lst = "; ".join(chunk)
+        prompt = (f"Вот ГОТОВЫЙ список норвежских слов (bokmål): {lst}. "
+                  f"Для КАЖДОГО слова из списка дай перевод на язык: {lang_name}, часть речи и уровень CEFR, "
+                  f"приведи к нормальной (словарной) форме. НЕ добавляй слов, которых нет в списке; "
+                  f"нераспознаваемое/не-норвежское — пропусти.")
+        try:
+            data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
+                                  purpose="user", model=SET_GEN_MODELS, label="обогащение списка слов")
+        except Exception as e:
+            errors.report(e, "words_from_list")
+            continue
+        items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        for pid in await _persist_word_items(items, len(chunk)):
+            if pid not in seen:
+                seen.add(pid); pids.append(pid)
+    return pids

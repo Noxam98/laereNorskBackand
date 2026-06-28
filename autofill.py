@@ -35,7 +35,7 @@ from autofill_enrich import (  # noqa: E402,F401 — реэкспорт для �
     classify_batch, describe_batch, translate_batch, forms_batch, _FORMS,
 )
 from autofill_wordgen import (  # noqa: E402,F401 — реэкспорт для воркеров/роутеров
-    ai_game_words, generate_set_words, words_from_image, words_from_list, restore_yo,
+    ai_game_words, generate_set_words, words_from_image, words_from_text, words_from_list, restore_yo,
     _persist_word_items, _embed_new,
 )
 

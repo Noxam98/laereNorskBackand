@@ -161,6 +161,24 @@ async def sets_import_words(set_id: int, body: dict, user=Depends(llm_rate_limit
     return {"words": await get_set_words(user["id"], set_id), "added": len(pids)}
 
 
+@router.post("/sets/{set_id}/parse-text")
+async def sets_parse_text(set_id: int, body: dict, user=Depends(llm_rate_limit)):
+    """Импорт из текста, шаг 1: вытащить норвежские слова из произвольного текста (чат-лог, список
+    через запятую/перенос, строки «norsk — перевод», даже на другом языке без перевода). Возвращает
+    ТОЛЬКО список слов — пользователь правит/удаляет, затем шлёт на /import-words (как с фото).
+    body: {text: str, hint?: уточнение промта}."""
+    mark_activity()
+    if (await get_set_words(user["id"], set_id)) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    text = (body or {}).get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="No text")
+    if len(text) > 20000:
+        raise HTTPException(status_code=413, detail="Text too large")
+    from autofill import words_from_text   # ленивый импорт — избегаем циклов на старте
+    return {"words": await words_from_text(text, (body or {}).get("hint") or "")}
+
+
 @router.post("/sets/{set_id}/reset")
 async def sets_reset(set_id: int, user=Depends(get_current_user)):
     """Сбросить рампу выученных слов набора (до звукового задания, не до карточки)."""
