@@ -41,7 +41,7 @@ async def test_set_status_known_and_reset(fresh_db):
     pid, _ = await seed_word(did, "hus", "дом")
     await set_status(uid, pid, "known")
     w = next(w for w in (await get_learning(uid))["words"] if w["pool_id"] == pid)
-    assert w["status"] == "mastered"
+    assert w["status"] == "known"        # «Уже знаю» → корзина «Знаю», НЕ «Выучено»
     await set_status(uid, pid, "reset")
     w = next(w for w in (await get_learning(uid))["words"] if w["pool_id"] == pid)
     assert w["status"] == "new"

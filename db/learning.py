@@ -207,6 +207,8 @@ def _review_step(row):
 
 def status_of(row, modes=None):
     """Статус слова из его состояния."""
+    if row.get("known"):
+        return "known"     # «Уже знаю»: знакомое — вне ротации, НЕ «Выучено», прогресс не двигает
     if row.get("archived"):
         return "archived"
     attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
@@ -224,7 +226,7 @@ def status_of(row, modes=None):
 
 def _is_due(row):
     due = row.get("due_at")
-    return bool(due) and due <= _now() and not row.get("archived")
+    return bool(due) and due <= _now() and not row.get("archived") and not row.get("known")
 
 
 def _display_status(row, st):
@@ -337,23 +339,22 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
 
 
 async def set_status(user_id: int, pool_id: int, action: str):
-    """action: know (в архив) | known (в Выучено) | reset (сброс) | unarchive (вернуть в ротацию)."""
+    """action: know (в архив) | known (в корзину «Знаю») | reset (сброс) | unarchive (вернуть в ротацию)."""
     db = await _conn()
     try:
         if action == "know":
             m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
             m["hist"] = "1" * CAPACITY
-            fields = "archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
+            fields = "known=0, archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
             args = (json.dumps(m, ensure_ascii=False), _due_str(120))
         elif action == "known":
-            # «Уже знаю» (из игры): слово сразу в ВЫУЧЕНО (mastered, НЕ архив) — считается выученным,
-            # больше не предлагается. Срок повтора далеко (без срочного «Повторения») — «может и нет».
-            m = {c: "1" for c in ALL_CELLS}
-            m["hist"] = "1" * CAPACITY
-            fields = "archived=0, strength=100, reps=MAX(reps,3), correct=MAX(correct,1), modes=?, due_at=?, mastered=1"
-            args = (json.dumps(m, ensure_ascii=False), _due_str(120))
+            # «Уже знаю»: знакомое слово → корзина «Знаю» (known=1), ВНЕ ротации. Это НЕ «Выучено»:
+            # mastered НЕ ставим и прогресс уровня НЕ двигаем (см. status_of → 'known'). Срок повтора
+            # убираем (не всплывёт). Историю попыток не трогаем — слово просто «отложено как знакомое».
+            fields = "known=1, mastered=0, archived=0, due_at=NULL"
+            args = ()
         elif action == "reset":
-            fields = ("archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
+            fields = ("known=0, archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
                       "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, mastered=0, "
                       "certified=0, was_certified=0, audit_due=NULL, audit_interval=0")
             args = ()
@@ -443,7 +444,7 @@ async def _fetch_user_words(db, user_id, set_id=None):
         SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
-               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered
+               uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered, uw.known
         FROM ({src_sql}) up
         JOIN word_pool wp ON wp.id = up.pool_id
         LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
@@ -748,7 +749,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             # не допускаем в сессии два одинаковых слова с одинаковой частью речи (омонимы с
             # РАЗНЫМ pos — можно, это разные слова; одинаковые (norwegian, pos) — нет)
             wp = (e["row"]["norwegian"], (e["data"] or {}).get("part_of_speech", "") or "")
-            if pid in seen or wp in seen_wp or e["status"] == "archived":
+            if pid in seen or wp in seen_wp or e["status"] in ("archived", "known"):
                 continue
             if not review and e["status"] == "mastered":   # mastered в обычные пулы не берём
                 continue

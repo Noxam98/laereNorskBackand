@@ -85,15 +85,22 @@ async def test_report_puts_word_in_personal_skip_and_unlinks(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_known_marks_mastered_not_archived(fresh_db):
-    """«Уже знаю» → в Выучено (mastered), НЕ в архив."""
+async def test_known_goes_to_known_bucket_not_progress(fresh_db):
+    """«Уже знаю» → корзина «Знаю» (status 'known'): НЕ в «Выучено», НЕ архив, прогресс уровня не двигает."""
     from db import learning_set_status, learning_stats
+    from db.learning import build_session
     uid, did = await pytest.seed_user()
     pid, _ = await pytest.seed_word(did, "kjentord")
+    before = await learning_stats(uid)
     await learning_set_status(uid, pid, "known")
     st = await learning_stats(uid)
-    assert st["byStatus"].get("mastered", 0) >= 1
-    assert st["byStatus"].get("archived", 0) == 0
+    assert st["byStatus"].get("known", 0) == 1          # в корзине «Знаю»
+    assert st["byStatus"].get("mastered", 0) == 0       # НЕ выучено
+    assert st["byStatus"].get("archived", 0) == 0       # и не архив
+    assert st["toNextLevel"] == before["toNextLevel"]   # прогресс уровня не сдвинулся
+    # знакомое слово больше не попадает в сессию
+    res = await build_session(uid, size=20)
+    assert all(w.get("pool_id") != pid for w in res["words"])
 
 
 @pytest.mark.asyncio

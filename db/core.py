@@ -453,6 +453,12 @@ async def init_db():
             await db.commit()   # закрыть транзакцию DML-бэкфилла (ниже PRAGMA WAL нельзя в транзакции)
         except Exception:
             pass
+        try:
+            # «Уже знаю»: знакомое слово — убрано из ротации, но это НЕ «Выучено»: не считается
+            # mastered и НЕ двигает прогресс уровня. Отдельная корзина «Знаю» (статус 'known').
+            await db.execute("ALTER TABLE user_words ADD COLUMN known INTEGER DEFAULT 0")
+        except Exception:
+            pass
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (
