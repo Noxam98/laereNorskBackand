@@ -30,7 +30,9 @@ if not SECRET_KEY or SECRET_KEY == "your_secret_key":
                     "(токены не переживут рестарт). Для прода задай SECRET_KEY.")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+# 7 дней (было 30): refresh ротируется на каждом /refresh (sliding) — активный юзер не разлогинится,
+# а окно при краже токена короче. Тюнится через env REFRESH_TOKEN_EXPIRE_DAYS.
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 # Google OAuth: Client ID веб-приложения (из Google Cloud Console). Пусто = вход через Google выключен.
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
