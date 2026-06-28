@@ -1112,9 +1112,47 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
             continue
         res = await add_word_to_dict(user_id, target_id, pid)
         if res.get("id") and not res.get("duplicate"):
-            added.append({"no": w["norwegian"], "translate": w.get("translate", {})})
+            added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
             have.add(pid)
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
+
+
+async def next_new_cards(user_id, n=5, exclude=None):
+    """Живая сессия: добор НОВЫХ карточек-знакомств по требованию (когда юзер убрал карточку кнопкой,
+    а не «принял» тыком). Переиспользует suggest_words (тот же подбор по уровню/частоте/фокусу,
+    исключая имеющиеся + свалку, кладёт в скрытый авто-словарь) и собирает card-элементы той же формы,
+    что build_session. exclude — pool_id, уже стоящие в очереди (страховка от дублей).
+    Возвращает {"cards": [...]} либо {"cards": [], "blocked": True}, если приток новых закрыт воротами."""
+    exclude = set(exclude or [])
+    n = max(1, min(int(n or 1), 20))
+    sugg = await suggest_words(user_id, count=n + len(exclude))
+    if sugg.get("blocked"):
+        return {"cards": [], "blocked": True}
+    pids = [w["pool_id"] for w in sugg.get("words", []) if w.get("pool_id") and w["pool_id"] not in exclude][:n]
+    if not pids:
+        return {"cards": []}
+    db = await _conn()
+    try:
+        q = "SELECT id pool_id, norwegian, data, forms FROM word_pool WHERE id IN (%s)" % ",".join("?" * len(pids))
+        async with db.execute(q, pids) as cur:
+            rows = {r["pool_id"]: r for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    cards = []
+    for pid in pids:                       # сохраняем порядок подбора (по частоте/фокусу)
+        r = rows.get(pid)
+        if not r:
+            continue
+        data = json.loads(r["data"]) if r["data"] else {}
+        cards.append({
+            "pool_id": pid, "no": r["norwegian"],
+            "translate": data.get("translate", {}),
+            "part_of_speech": data.get("part_of_speech", ""),
+            "gloss": data.get("gloss"), "example": data.get("example"),
+            "forms": (json.loads(r["forms"]) if r["forms"] else None),
+            "mode": "study", "direction": None, "step": "card", "repeat": False,
+        })
+    return {"cards": cards}
 
 
 # --- Реэкспорт вынесенных модулей (чтобы `from db.learning import …` и db/__init__ не менялись) ---

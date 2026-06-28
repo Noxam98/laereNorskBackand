@@ -8,7 +8,7 @@ from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
-    learning_session, learning_add, learning_remove, get_pool_id,
+    learning_session, learning_next_cards, learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
     learning_leaderboard,
@@ -45,6 +45,18 @@ async def learning_session_route(size: int = 20, lang: str = "ru", user=Depends(
     Для choice-элементов варианты ответа (options) кладём прямо в ответ (lang) —
     чтобы фронт не делал отдельных запросов за дистракторами во время сессии."""
     return await learning_session(user["id"], size=max(1, min(50, size)), lang=lang)
+
+
+@router.post("/learning/next-cards")
+async def learning_next_cards_route(body: dict, user=Depends(get_current_user)):
+    """Живая сессия: добор новых карточек-знакомств по требованию (когда юзер убрал карточку кнопкой).
+    body: { n?: int (1..20), exclude?: [pool_id, ...] }. Возвращает { cards: [...] } или { blocked }."""
+    n = body.get("n", 5)
+    exclude = body.get("exclude") or []
+    if not isinstance(exclude, list):
+        exclude = []
+    exclude = [int(x) for x in exclude[:200] if str(x).lstrip("-").isdigit()]
+    return await learning_next_cards(user["id"], n=n, exclude=exclude)
 
 
 @router.get("/learning/activity")
