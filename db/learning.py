@@ -61,7 +61,9 @@ COOLDOWN_MIN = 12  # «умная очередь»: только что пока
 FUNC_GATE = 20     # служебные слова не вводим новыми, пока контентных (learning+review+mastered) < этого
 
 # --- Класс «служебное слово» (A1): союз/предлог/местоимение/детерминатив + частица å + функц. наречия ---
-_FUNC_CORE_POS = {"konjunksjon", "subjunksjon", "preposisjon", "pronomen", "determinativ"}
+# normalize_pos сводит норв.↔англ. написания к канону (substantiv→noun, preposisjon→preposition…),
+# поэтому набор служебных — в каноничных англ. ключах (см. pos.FUNCTION_POS).
+from pos import normalize_pos, FUNCTION_POS as _FUNC_CORE_POS
 _FUNC_ADV_WL = {"ikke", "inn", "ut", "opp", "ned", "her", "der", "nå", "da", "også", "hjem",
                 "hit", "dit", "fram", "frem", "bort", "hjemme", "ute", "inne", "oppe", "nede",
                 "borte", "alltid", "aldri", "kanskje"}
@@ -73,7 +75,7 @@ def is_function_word(norwegian, data):
     no = (norwegian or "").strip().lower()
     if no == "å":
         return True
-    pos = ((data or {}).get("part_of_speech") or "").strip().lower()
+    pos = normalize_pos((data or {}).get("part_of_speech"))   # норв.↔англ. → канон
     if pos in _FUNC_CORE_POS:
         return True
     if pos == "adverb" and no in _FUNC_ADV_WL:
@@ -115,7 +117,7 @@ def required_cells(row):
         d = json.loads(d) if isinstance(d, str) else (d or {})
     except Exception:
         d = {}
-    if (d.get("part_of_speech") or "").strip().lower() == "phrase":
+    if normalize_pos(d.get("part_of_speech")) == "phrase":
         # рампа «фразы» (выбор → порядок слов) — ТОЛЬКО если есть игровые дистракторы (≥2).
         # Легаси/неполные phrase-записи без data.game падают на обычную рампу (как были) — чтобы
         # не сломать уже учащиеся слова шагом order, для которого нет фронт-игры.

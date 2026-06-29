@@ -8,6 +8,7 @@ from rapidfuzz.process import cdist as rf_cdist
 from rapidfuzz.distance import OSA
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 from langs import LANG_SET
+from pos import normalize_pos
 
 
 def _fold_no(s):
@@ -187,7 +188,9 @@ async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None,
     key = normalize_word(norwegian)
     if not key:
         return None
-    pos = ((data or {}).get("part_of_speech") or "")
+    pos = normalize_pos((data or {}).get("part_of_speech"))   # норв.↔англ. → канон (substantiv→noun…)
+    if data and data.get("part_of_speech") and data["part_of_speech"] != pos:
+        data = {**data, "part_of_speech": pos}                # храним каноничный POS и в data
     db = await _conn()
     try:
         async with db.execute("SELECT id FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ?", (key, pos)) as cur:

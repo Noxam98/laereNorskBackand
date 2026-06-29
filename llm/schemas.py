@@ -36,10 +36,8 @@ CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 # Названия языков перевода (ключ интерфейса → язык на русском для промпта) — из единого реестра.
 from langs import LANG_NAMES  # noqa: E402  (ре-экспорт: `from llm import LANG_NAMES` продолжает работать)
 
-# Канонические части речи (bokmål). Ключи — стабильные, англ.; UI-подписи во фронте.
-# Одно слово — ОДНА часть речи (омографы сводим к самому частотному значению).
-POS_KEYS = ["noun", "verb", "adjective", "adverb", "preposition",
-            "conjunction", "pronoun", "determiner", "numeral", "interjection", "phrase"]
+# Канонические части речи (англ. ключи) — единый источник в pos.py (+ normalize_pos для норв.↔англ.).
+from pos import POS_KEYS  # noqa: E402  (ре-экспорт: `from llm.schemas import POS_KEYS` продолжает работать)
 
 # Схемы для гарантированного формата ответа (structured output / JSON-schema).
 _STR_ARR = {"type": "array", "items": {"type": "string"}}
