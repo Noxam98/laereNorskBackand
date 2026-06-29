@@ -714,8 +714,11 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # всё равно не вводятся по лимиту). Сколько досыпать — до WIP_LIMIT по in_work.
     if not scoped and not gate_open:
         # залоченные пословным порогом новые служебные не считаем «доступными новыми» — иначе они
-        # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются
-        new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e))
+        # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются.
+        # Фразы тоже исключаем — у них свой ручеёк (suggest_phrases ниже), иначе они держали бы
+        # new_avail>0 и блокировали добор слов, когда свои слова у юзера кончились.
+        new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e)
+                        and (e["data"].get("part_of_speech") != "phrase"))
         if new_avail == 0 and in_work < WIP_LIMIT:
             _ts = time.monotonic()
             level = await estimate_level(user_id)
