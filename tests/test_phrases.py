@@ -159,6 +159,7 @@ async def test_build_session_injects_phrase_card(fresh_db):
     phr = [e for e in res["words"] if e.get("part_of_speech") == "phrase"]
     assert phr, "фраза не подмешалась в сессию"
     assert phr[0]["step"] == "card"        # вводится карточкой-знакомством
+    assert res["composition"]["phrases"] >= 1   # счётчик фраз для карточки старта
 
 
 async def _at_order(uid, pid):

@@ -860,7 +860,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
 
     session = []
     new_added = 0                                            # сколько новых карточек уже взяли в эту сессию
-    comp = {"fresh": 0, "review": 0, "weak": 0, "progress": 0}   # фактический состав (для честной кнопки старта)
+    comp = {"fresh": 0, "review": 0, "weak": 0, "progress": 0, "phrases": 0}   # фактический состав (для честной кнопки старта); phrases — устойчивые выражения в сессии
     for e, step in ordered:
         is_new = attempts(e) == 0
         # Порционное знакомство: потолок НОВЫХ карточек за сессию (NEW_PER_SESSION) действует ВСЕГДА,
@@ -902,6 +902,8 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 continue
             el["cloze"] = items[idx]
         session.append(el)
+        if data.get("part_of_speech") == "phrase":
+            comp["phrases"] += 1   # устойчивое выражение в сессии (доп. счётчик поверх fresh/progress)
         if is_new:
             in_work += 1       # ввели новое — слот занят
             new_added += 1
