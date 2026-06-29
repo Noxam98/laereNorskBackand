@@ -5,9 +5,24 @@ import json
 import pytest
 
 from db.core import _conn, _release, _now
-from db.learning import required_cells, PHRASE_CELLS, apply_result, build_session
+from db.learning import required_cells, PHRASE_CELLS, apply_result, build_session, suggest_phrases, PHRASE_BUFFER
 from llm.phrases import clean_phrase_item
 from tests.conftest import seed_user
+
+
+async def _seed_phrase_pool(no, distractors=("a", "b"), level="A1", game=True):
+    """Фраза только в общий пул (game-ready по умолчанию), без привязки к юзеру."""
+    db = await _conn()
+    try:
+        data = {"word": no, "part_of_speech": "phrase", "translate": {"no": [no], "ru": ["x"]}}
+        if game:
+            data["game"] = {"distractors": list(distractors)}
+        cur = await db.execute("INSERT INTO word_pool (norwegian,data,level,pos,created_at) VALUES (?,?,?,?,?)",
+                               (no, json.dumps(data, ensure_ascii=False), level, "phrase", _now()))
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await _release(db)
 
 
 async def _seed_phrase(dict_id, no="ta bussen", distractors=("toget", "bilen"), level="A1"):
@@ -96,3 +111,34 @@ async def test_build_session_emits_order_with_distractors(fresh_db):
     el = order[0]
     assert el["direction"] == "int2no" and el["step"] == "order_int2no"
     assert el["distractors"] == ["toget", "bilen", "sykkelen"]
+
+
+@pytest.mark.asyncio
+async def test_suggest_phrases_cumulative_level_and_gameready(fresh_db):
+    """Фразы подмешиваются КУМУЛЯТИВНО (level ≤ уровня юзера) и только game-ready (есть дистракторы)."""
+    uid, _ = await seed_user()
+    a1 = await _seed_phrase_pool("ta bussen", ["toget", "bilen"], "A1")
+    a2 = await _seed_phrase_pool("gi beskjed", ["ta", "si"], "A2")
+    b1 = await _seed_phrase_pool("ta vare på", ["hente", "gi"], "B1")       # выше уровня — не должна
+    nog = await _seed_phrase_pool("dukke opp", level="A1", game=False)       # без дистракторов — пропуск
+    res = await suggest_phrases(uid, count=10, level="A2")
+    assert res["added"] == 2                                                 # A1 + A2, без B1 и без no-game
+    db = await _conn()
+    try:
+        async with db.execute("SELECT pool_id FROM dict_words") as cur:
+            ids = {r["pool_id"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    assert a1 in ids and a2 in ids
+    assert b1 not in ids and nog not in ids
+
+
+@pytest.mark.asyncio
+async def test_build_session_injects_phrase_card(fresh_db):
+    """build_session сам подмешивает фразу-знакомство (карточку) из пула, даже без слов у юзера."""
+    uid, _ = await seed_user()
+    await _seed_phrase_pool("ta bussen", ["toget", "bilen"], "A1")
+    res = await build_session(uid, size=20, lang="ru")
+    phr = [e for e in res["words"] if e.get("part_of_speech") == "phrase"]
+    assert phr, "фраза не подмешалась в сессию"
+    assert phr[0]["step"] == "card"        # вводится карточкой-знакомством

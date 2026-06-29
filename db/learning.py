@@ -579,6 +579,8 @@ async def get_due(user_id, limit=20):
 WIP_LIMIT = 20   # лимит слов одновременно-в-работе (new+learning); новые не вводим сверх него
 NEW_PER_SESSION = 6   # потолок НОВЫХ слов (карточек-знакомств) за одну сессию — остальное добиваем
                       # заданиями рампы. Состав растёт сам: 6 карт → 6+6 заданий → 6+12 → 2+18 (до size).
+PHRASE_BUFFER = 2     # сколько НЕначатых устойчивых выражений держим доступными в Учёбе (тонкий ручеёк):
+                      # подмешиваются новыми карточками наравне со словами, делят cap_new (NEW_PER_SESSION).
 
 
 async def _attach_choice_options(session, lang, n=3):
@@ -724,6 +726,24 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 content_known = _content_known(enriched)
                 func_gate_ok = content_known >= FUNC_GATE
             _tm["suggest"] = time.monotonic() - _ts
+
+    # УСТОЙЧИВЫЕ ВЫРАЖЕНИЯ: тонкий ручеёк НЕЗАВИСИМО от слов — держим PHRASE_BUFFER неначатых фраз
+    # доступными (кумулятивно по уровню). Подмешиваются новыми карточками наравне со словами, делят
+    # cap_new. ВАЖНО: после авто-добора слов выше (иначе фразы в new_avail подавили бы тот добор).
+    if not scoped and not gate_open:
+        _tp = time.monotonic()
+        dbp = await _conn()
+        try:
+            supply = await _phrase_supply(dbp, user_id)
+        finally:
+            await _release(dbp)
+        if supply < PHRASE_BUFFER:
+            pres = await suggest_phrases(user_id, count=PHRASE_BUFFER - supply)
+            if pres.get("added"):
+                enriched, in_work, gate_open = await _load()
+                content_known = _content_known(enriched)
+                func_gate_ok = content_known >= FUNC_GATE
+        _tm["phrases"] = time.monotonic() - _tp
 
     # пулы по приоритету
     def attempts(e):
@@ -1138,6 +1158,67 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
             added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
             have.add(pid)
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
+
+
+async def _phrase_supply(db, user_id):
+    """Сколько у юзера ещё НЕ начатых устойчивых выражений в Учёбе (studying-словари, 0 попыток,
+    не архив/не «знакомые») — для троттлинга подмешивания фраз."""
+    async with db.execute(
+        """SELECT COUNT(*) c FROM dict_words dw
+           JOIN dictionaries d ON d.id = dw.dict_id AND d.user_id = ? AND COALESCE(d.studying,1) = 1
+           JOIN word_pool wp ON wp.id = dw.pool_id AND wp.pos = 'phrase'
+           LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
+           WHERE COALESCE(uw.correct,0) + COALESCE(uw.incorrect,0) = 0
+             AND COALESCE(uw.archived,0) = 0 AND COALESCE(uw.known,0) = 0""",
+        (user_id, user_id)) as cur:
+        return (await cur.fetchone())["c"]
+
+
+async def suggest_phrases(user_id, count=PHRASE_BUFFER, level=None):
+    """Подмешать НОВЫЕ устойчивые выражения (pos='phrase') в Учёбу — в СКРЫТЫЙ авто-словарь
+    (studying=1), как suggest_words. КУМУЛЯТИВНО по уровню: фразы ВСЕХ уровней ≤ уровня юзера
+    (это словосочетания, а не элементарные слова — младшие уместны и на старших уровнях). Только
+    game-ready (есть data.game.distractors ≥2 — иначе order-игра пустая), которых у юзера ещё нет.
+    Возвращает {added}. Приток закрыт воротами экзамена → ничего не добавляем."""
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
+    if await new_words_blocked(user_id):
+        return {"added": 0, "blocked": True}
+    lvl = level if level in LEVELS else await estimate_level(user_id)
+    allowed = LEVELS[:LEVELS.index(lvl) + 1] if lvl in LEVELS else LEVELS[:1]   # A1..lvl
+    target_id = await get_or_create_hidden_dict(user_id)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT DISTINCT pool_id FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)", (user_id,)) as cur:
+            have = {r["pool_id"] for r in await cur.fetchall()}
+        async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
+        marks = ",".join("?" for _ in allowed)
+        # 'A1'<'A2'<'B1'… лексикографически = по возрастанию CEFR → младшие фразы первыми (фундамент)
+        async with db.execute(
+            f"SELECT id, norwegian, data FROM word_pool "
+            f"WHERE pos='phrase' AND COALESCE(learn_excluded,0)=0 AND level IN ({marks}) "
+            f"ORDER BY level, id", allowed) as cur:
+            cands = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+    added = 0
+    for c in cands:
+        if added >= count:
+            break
+        pid = c["id"]
+        if pid in have:
+            continue
+        try:
+            g = ((json.loads(c["data"]) if c["data"] else {}).get("game") or {}).get("distractors") or []
+        except Exception:
+            g = []
+        if len(g) < 2:                    # без дистракторов order-игра пустая — пропускаем
+            continue
+        res = await add_word_to_dict(user_id, target_id, pid)
+        if res.get("id") and not res.get("duplicate"):
+            added += 1
+            have.add(pid)
+    return {"added": added}
 
 
 async def _own_new_card_rows(user_id, exclude):
