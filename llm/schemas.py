@@ -71,6 +71,36 @@ WORDS_SCHEMA = {
     },
 }
 
+# Устойчивые выражения (коллокации/фразовые глаголы/выражения) для рампы «фразы».
+# distractors — ЛИШНИЕ одно-словные кандидаты для игры «порядок слов» (подмешиваются к словам фразы).
+PHRASES_SCHEMA = {
+    "name": "phrases_response",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "phrases": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "phrase": {"type": "string", "description": "норвежская устойчивая фраза, нижний регистр, БЕЗ инфинитивного 'å', без финальной точки"},
+                        "translate": {
+                            "type": "object",
+                            "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
+                        },
+                        "subtype": {"type": "string", "enum": ["collocation", "phrasal_verb", "expression"]},
+                        "level": {"type": "string", "enum": CEFR_LEVELS},
+                        "example": {"type": "string", "description": "короткое предложение с фразой"},
+                        "distractors": {"type": "array", "items": {"type": "string", "description": "РОВНО одно норвежское слово, без пробелов"}},
+                    },
+                    "required": ["phrase", "translate", "subtype", "distractors"],
+                },
+            }
+        },
+        "required": ["phrases"],
+    },
+}
+
 DESC_SCHEMA = {
     "name": "description_response",
     "schema": {

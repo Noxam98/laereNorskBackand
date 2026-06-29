@@ -45,9 +45,14 @@ ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
 # (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
 CLOZE_ENABLED = os.getenv("CLOZE_ENABLED", "0") == "1"
 FUNC_CELLS_CHOICE = ["choice_int2no", "choice_no2int"]   # рампа служебных при выключенном cloze
-# build (собери из букв) осмыслен только в направлении родной→норв; cloze — индекс предложения
+# Рампа устойчивых выражений (pos='phrase'): карточка → выбор перевода (узнавание) → сборка
+# ПОРЯДКА слов (игра «order»: слова фразы + 2-3 дистрактора, собрать точную последовательность —
+# продукция). Без build-из-букв / input-с-клавиатуры / cloze.
+PHRASE_CELLS = ["choice_no2int", "order_int2no"]
+# build (собери из букв) осмыслен только в направлении родной→норв; cloze — индекс предложения;
+# order (порядок слов фразы) — только родная→норв (продукция последовательности)
 _DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": ("no2int", "int2no"),
-                "cloze": ("1", "2", "3")}
+                "cloze": ("1", "2", "3"), "order": ("int2no",)}
 # Прогресс — скользящее окно: новые попытки вытесняют старые (ёмкость). Сила слова считается
 # по последним CAPACITY попыткам, а не за всю историю — старые успехи «выпадают» со временем.
 CAPACITY = 8
@@ -110,6 +115,8 @@ def required_cells(row):
         d = json.loads(d) if isinstance(d, str) else (d or {})
     except Exception:
         d = {}
+    if (d.get("part_of_speech") or "").strip().lower() == "phrase":
+        return PHRASE_CELLS                                          # устойчивые выражения: выбор → порядок слов
     if is_function_word(row.get("norwegian"), d):
         return FUNC_CELLS if CLOZE_ENABLED else FUNC_CELLS_CHOICE   # cloze выкл → служебные «только выбор»
     return REQUIRED_CELLS
@@ -810,6 +817,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             # а не эвристика. Слова в первом прохождении рампы повтором НЕ считаются.
             "repeat": (e["row"].get("mastered") == 1),
         }
+        if mode == "order":
+            # игра «порядок слов»: лишние одно-словные дистракторы (фронт подмешивает к словам фразы)
+            el["distractors"] = (data.get("game") or {}).get("distractors") or []
         if mode == "cloze":
             items = cloze_map.get(pid)
             idx = (int(direction) - 1) if str(direction).isdigit() else 0
