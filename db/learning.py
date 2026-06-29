@@ -3,6 +3,7 @@
 Статусы вычисляются на чтении из силы/попыток; archived — ручной флаг («я это знаю»)."""
 import asyncio
 import json
+import os
 import time
 import unicodedata
 from datetime import datetime, timedelta
@@ -39,6 +40,11 @@ REQUIRED_CELLS = ["choice_int2no", "choice_no2int", "build_int2no", "input_int2n
 # Рампа служебных слов (A1): карточка → 3 разных cloze (направление = индекс предложения 1..3).
 FUNC_CELLS = ["cloze_1", "cloze_2", "cloze_3"]
 ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
+# Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
+# (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
+# (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
+CLOZE_ENABLED = os.getenv("CLOZE_ENABLED", "0") == "1"
+FUNC_CELLS_CHOICE = ["choice_int2no", "choice_no2int"]   # рампа служебных при выключенном cloze
 # build (собери из букв) осмыслен только в направлении родной→норв; cloze — индекс предложения
 _DIR_ALLOWED = {"choice": ("no2int", "int2no"), "build": ("int2no",), "input": ("no2int", "int2no"),
                 "cloze": ("1", "2", "3")}
@@ -104,7 +110,9 @@ def required_cells(row):
         d = json.loads(d) if isinstance(d, str) else (d or {})
     except Exception:
         d = {}
-    return FUNC_CELLS if is_function_word(row.get("norwegian"), d) else REQUIRED_CELLS
+    if is_function_word(row.get("norwegian"), d):
+        return FUNC_CELLS if CLOZE_ENABLED else FUNC_CELLS_CHOICE   # cloze выкл → служебные «только выбор»
+    return REQUIRED_CELLS
 
 
 def _is_mastered(row, modes):
