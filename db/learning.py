@@ -116,7 +116,11 @@ def required_cells(row):
     except Exception:
         d = {}
     if (d.get("part_of_speech") or "").strip().lower() == "phrase":
-        return PHRASE_CELLS                                          # устойчивые выражения: выбор → порядок слов
+        # рампа «фразы» (выбор → порядок слов) — ТОЛЬКО если есть игровые дистракторы (≥2).
+        # Легаси/неполные phrase-записи без data.game падают на обычную рампу (как были) — чтобы
+        # не сломать уже учащиеся слова шагом order, для которого нет фронт-игры.
+        if len(((d.get("game") or {}).get("distractors")) or []) >= 2:
+            return PHRASE_CELLS
     if is_function_word(row.get("norwegian"), d):
         return FUNC_CELLS if CLOZE_ENABLED else FUNC_CELLS_CHOICE   # cloze выкл → служебные «только выбор»
     return REQUIRED_CELLS

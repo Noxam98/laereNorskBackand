@@ -65,6 +65,16 @@ async def test_phrase_ramp_cells(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_phrase_without_distractors_falls_back_to_word_ramp(fresh_db):
+    """Гард: phrase-запись без game.distractors (легаси/неполная) НЕ уходит на order-рампу,
+    а остаётся на обычной рампе — чтобы не сломать уже учащиеся слова шагом без фронт-игры."""
+    from db.learning import REQUIRED_CELLS
+    row = {"norwegian": "dukke opp", "data": json.dumps({"part_of_speech": "phrase",
+           "translate": {"no": ["dukke opp"], "ru": ["появиться"]}})}
+    assert required_cells(row) == REQUIRED_CELLS
+
+
+@pytest.mark.asyncio
 async def test_phrase_masters_through_two_cells(fresh_db):
     uid, did = await seed_user()
     pid = await _seed_phrase(did)

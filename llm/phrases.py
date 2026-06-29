@@ -53,12 +53,12 @@ def clean_phrase_item(raw):
     if len(ds) < 2:
         return None
     tr = raw.get("translate") or {}
-    translate = {}
+    translate = {"no": [ph]}                 # как normalize_word_item для слов: no = сама фраза
     for k in ("ru", "ukr", "en", "pl", "lt"):
         vals = [s.strip() for s in (tr.get(k) or []) if isinstance(s, str) and s.strip()]
         if vals:
             translate[k] = vals
-    if not translate:
+    if len(translate) == 1:                  # кроме 'no' нет ни одного перевода — брак
         return None
     return {
         "word": ph,
