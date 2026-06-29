@@ -93,7 +93,7 @@ async def test_phrase_ramp_cells(fresh_db):
             row = dict(await cur.fetchone())
     finally:
         await _release(db)
-    assert required_cells(row) == PHRASE_CELLS == ["choice_no2int", "order_int2no"]
+    assert required_cells(row) == PHRASE_CELLS == ["choice_no2int", "order_int2no", "cells_int2no"]
 
 
 @pytest.mark.asyncio
@@ -107,14 +107,16 @@ async def test_phrase_without_distractors_falls_back_to_word_ramp(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_phrase_masters_through_two_cells(fresh_db):
+async def test_phrase_masters_through_three_cells(fresh_db):
     uid, did = await seed_user()
     pid = await _seed_phrase(did)
     await apply_result(uid, pid, True, mode="study", direction=None)          # карточка — не в зачёт
     r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
     assert r["mastered"] is False
     r = await apply_result(uid, pid, True, mode="order", direction="int2no")
-    assert r["mastered"] is True                                              # обе клетки рампы пройдены
+    assert r["mastered"] is False                                            # ещё клетка cells впереди
+    r = await apply_result(uid, pid, True, mode="cells", direction="int2no")
+    assert r["mastered"] is True                                             # все три клетки рампы пройдены
 
 
 @pytest.mark.asyncio
