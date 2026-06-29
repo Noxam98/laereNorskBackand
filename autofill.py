@@ -411,6 +411,18 @@ async def dedup_loop():
                 await asyncio.sleep(300)  # квота/ключи кончились
                 continue
             pid, no, data, emb = pend[0]
+            # Устойчивые выражения (pos='phrase') исключаем из дедупа: воркер заточен под СЛОВА
+            # (орфо-варианты/словоформы через same_word/inflected_form), а фразы — курируемый контент
+            # с дедупом ещё на генерации; семантический merge близких фраз↔фраз мог бы удалить
+            # легитимно разные коллокации. Pos-гард ниже защищает фразу↔слово, этот — фразу↔фразу.
+            try:
+                _pp = ((json.loads(data) if isinstance(data, str) else (data or {})) or {}).get("part_of_speech", "")
+            except Exception:
+                _pp = ""
+            if _pp == "phrase":
+                await mark_dedup(pid)
+                await asyncio.sleep(2)
+                continue
             neighbors = await nearest_other(pid, emb, 4)
             cand = [n for n in neighbors if (1.0 - n[3]) >= DEDUP_COS]  # distance → cos
             if not cand:
