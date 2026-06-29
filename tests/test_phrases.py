@@ -25,8 +25,25 @@ async def _seed_phrase_pool(no, distractors=("a", "b"), level="A1", game=True):
         await _release(db)
 
 
-async def _seed_phrase(dict_id, no="ta bussen", distractors=("toget", "bilen"), level="A1"):
-    """Запись пула pos='phrase' с game.distractors + привязка к словарю юзера."""
+async def _seed_word(no, level="A1", pos=""):
+    """Обычное слово в пул (для дистракторов: фильтр узнаваемости требует их наличия в Базе)."""
+    db = await _conn()
+    try:
+        cur = await db.execute("INSERT INTO word_pool (norwegian,data,level,pos,created_at) VALUES (?,?,?,?,?)",
+                               (no, json.dumps({"translate": {"no": [no]}}), level, pos, _now()))
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await _release(db)
+
+
+async def _seed_phrase(dict_id, no="ta bussen", distractors=("toget", "bilen"), level="A1", distr_level="A1", seed_distr=True):
+    """Запись пула pos='phrase' с game.distractors + привязка к словарю юзера. Дистракторы тоже
+    заводим в Базу с уровнем distr_level — иначе фильтр узнаваемости их отсеет (нет в Базе).
+    seed_distr=False — тест сам заведёт дистракторы (нужные уровни)."""
+    if seed_distr:
+        for d in distractors:
+            await _seed_word(d, level=distr_level)
     db = await _conn()
     try:
         data = json.dumps({
@@ -142,3 +159,45 @@ async def test_build_session_injects_phrase_card(fresh_db):
     phr = [e for e in res["words"] if e.get("part_of_speech") == "phrase"]
     assert phr, "фраза не подмешалась в сессию"
     assert phr[0]["step"] == "card"        # вводится карточкой-знакомством
+
+
+async def _at_order(uid, pid):
+    """Довести слово/фразу до шага order (пройти choice_no2int)."""
+    await apply_result(uid, pid, True, mode="choice", direction="no2int")
+
+
+@pytest.mark.asyncio
+async def test_order_distractors_filtered_by_user_level(fresh_db):
+    """В order-игре показываем только дистракторы уровня ≤ юзера: A1-юзеру C1-дистрактор отсеивается."""
+    uid, did = await seed_user()                       # свежий юзер → уровень A1
+    await _seed_word("toget", level="A1"); await _seed_word("bilen", level="A1")
+    await _seed_word("fjellet", level="C1")            # выше уровня → отсеется
+    pid = await _seed_phrase(did, "ta bussen", ["toget", "bilen", "fjellet"], seed_distr=False)
+    await _at_order(uid, pid)
+    res = await build_session(uid, size=20, lang="ru")
+    order = [e for e in res["words"] if e.get("mode") == "order" and e["pool_id"] == pid]
+    assert order, "order-элемент не появился (должно остаться 2 годных дистрактора)"
+    assert set(order[0]["distractors"]) == {"toget", "bilen"}   # C1 'fjellet' отфильтрован
+
+
+@pytest.mark.asyncio
+async def test_phrase_skipped_and_prereq_seeded_when_few_known(fresh_db):
+    """Если у фразы <2 узнаваемых дистракторов — фразу пропускаем, её невыученные дистракторы
+    досыпаем в учёбу (prereq-лексика)."""
+    uid, did = await seed_user()                       # уровень A1
+    await _seed_word("fjellet", level="C1"); await _seed_word("huset", level="C1")
+    pid = await _seed_phrase(did, "ta bussen", ["fjellet", "huset"], seed_distr=False)
+    await _at_order(uid, pid)
+    res = await build_session(uid, size=20, lang="ru")
+    order = [e for e in res["words"] if e.get("mode") == "order" and e["pool_id"] == pid]
+    assert not order, "фраза не должна показываться без узнаваемых дистракторов"
+    # дистракторы досыпаны в скрытый авто-словарь юзера
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT wp.norwegian FROM dict_words dw JOIN word_pool wp ON wp.id=dw.pool_id "
+            "JOIN dictionaries d ON d.id=dw.dict_id WHERE d.user_id=?", (uid,)) as cur:
+            owned = {r["norwegian"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    assert "fjellet" in owned and "huset" in owned     # prereq-лексика добавлена

@@ -71,6 +71,52 @@ def clean_phrase_item(raw):
     }
 
 
+def _zipf_to_cefr(z):
+    """Грубый провизорный уровень дистрактора по частоте (zipf) — пока classify-луп не уточнит."""
+    if z is None:
+        return None
+    if z >= 4.8: return "A1"
+    if z >= 4.2: return "A2"
+    if z >= 3.6: return "B1"
+    if z >= 3.0: return "B2"
+    return "C1"
+
+
+async def pool_back_distractors(items):
+    """Завести дистракторы фраз в Базу (если их там ещё нет) — с провизорным уровнем из частоты,
+    чтобы фильтр узнаваемости в сессии (build_session) работал сразу; classify/translate-лупы
+    дозаполнят позже. items — список phrase-items (с item['game']['distractors']) или строк.
+    Возвращает число заведённых. ВЫЗЫВАТЬ после генерации/persist новых фраз."""
+    from db import get_or_create_pool, get_pool_id, set_pool_meta
+    from db.core import _conn, _release
+    ds = set()
+    for it in items:
+        if isinstance(it, str):
+            ds.add(it.strip().lower())
+        elif isinstance(it, dict):
+            for d in ((it.get("game") or {}).get("distractors") or []):
+                ds.add((d or "").strip().lower())
+    ds.discard("")
+    added = 0
+    for d in sorted(ds):
+        if await get_pool_id(d):                 # уже в Базе (любой pos) — пропускаем
+            continue
+        db = await _conn()
+        try:
+            async with db.execute("SELECT zipf FROM nb_lexicon WHERE word = ? LIMIT 1", (d,)) as c:
+                r = await c.fetchone()
+                z = r["zipf"] if r else None
+        finally:
+            await _release(db)
+        pid = await get_or_create_pool(d, {"word": d, "part_of_speech": "", "translate": {"no": [d]}}, approved=1)
+        if pid:
+            lvl = _zipf_to_cefr(z)
+            if lvl:
+                await set_pool_meta(pid, level=lvl)
+            added += 1
+    return added
+
+
 async def generate_phrases(level, n=8, model=None):
     """~n устойчивых выражений уровня `level` → список валидных items (после отбраковки может быть
     < n). Дедуп против пула/повторов прогона — на стороне вызывающего."""
