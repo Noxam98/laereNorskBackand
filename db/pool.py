@@ -711,11 +711,34 @@ async def clear_nonformable_forms():
 
 
 async def set_pool_pos(pool_id: int, pos: str):
-    """Проставить/исправить часть речи в data.part_of_speech."""
+    """Проставить часть речи в data.part_of_speech И в колонке pos (каноничный POS — колонка
+    участвует в ключе (norwegian,pos) и в дедупе get_or_create_pool, иначе рассинхрон → дубли).
+    Если каноничная запись (norwegian, pos) уже существует — текущую (с пустым/иным pos) СЛИВАЕМ в неё."""
+    pos = normalize_pos(pos)
     db = await _conn()
     try:
-        await db.execute("UPDATE word_pool SET data = json_set(data, '$.part_of_speech', ?) WHERE id = ?",
-                         (pos, pool_id))
+        async with db.execute("SELECT norwegian, COALESCE(pos,'') p FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return
+        if row["p"] == pos:                              # колонка уже каноничная — синхроним только data
+            await db.execute("UPDATE word_pool SET data = json_set(data, '$.part_of_speech', ?) WHERE id = ?", (pos, pool_id))
+            await db.commit()
+            return
+        no = row["norwegian"]
+        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ? AND id <> ?",
+                              (no, pos, pool_id)) as cur:
+            other = await cur.fetchone()
+    finally:
+        await _release(db)
+    if other:                                            # каноничная запись уже есть → слить дубль в неё
+        from .pool_dedup import merge_pool_words
+        await merge_pool_words(other["id"], pool_id)
+        return
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET data = json_set(data, '$.part_of_speech', ?), pos = ? WHERE id = ?",
+                         (pos, pos, pool_id))
         await db.commit()
     finally:
         await _release(db)
