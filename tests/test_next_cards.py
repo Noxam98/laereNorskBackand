@@ -43,6 +43,20 @@ async def test_next_cards_returns_intro_card_elements(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_next_cards_offers_own_unstarted_first(fresh_db):
+    """Баг-фикс: добор отдаёт СОБСТВЕННЫЕ ещё не начатые слова юзера (которыми он уже владеет в
+    словаре), а не только новые из общего пула. Раньше при владении всем уровнем добор давал 0."""
+    from tests.conftest import seed_word
+    uid, did = await seed_user()
+    pids = [(await seed_word(did, f"eige{i}", f"св{i}"))[0] for i in range(4)]  # свои, в словаре, 0 попыток
+    res = await next_new_cards(uid, n=3, exclude=[])
+    got = [c["pool_id"] for c in res["cards"]]
+    assert len(got) == 3
+    assert set(got).issubset(set(pids))                # вернулись СВОИ слова, без обращения к пулу
+    assert all(c["step"] == "card" and c["mode"] == "study" for c in res["cards"])
+
+
+@pytest.mark.asyncio
 async def test_next_cards_exclude_skips_queued(fresh_db):
     """exclude (уже стоящие в очереди pool_id) не повторяются в доборе."""
     uid, _ = await seed_user()

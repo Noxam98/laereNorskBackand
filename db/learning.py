@@ -1126,35 +1126,48 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
 
 
-async def next_new_cards(user_id, n=5, exclude=None):
-    """Живая сессия: добор НОВЫХ карточек-знакомств по требованию (когда юзер убрал карточку кнопкой,
-    а не «принял» тыком). Переиспользует suggest_words (тот же подбор по уровню/частоте/фокусу,
-    исключая имеющиеся + свалку, кладёт в скрытый авто-словарь) и собирает card-элементы той же формы,
-    что build_session. exclude — pool_id, уже стоящие в очереди (страховка от дублей).
-    Возвращает {"cards": [...]} либо {"cards": [], "blocked": True}, если приток новых закрыт воротами."""
-    exclude = set(exclude or [])
-    n = max(1, min(int(n or 1), 20))
-    sugg = await suggest_words(user_id, count=n + len(exclude))
-    if sugg.get("blocked"):
-        return {"cards": [], "blocked": True}
-    pids = [w["pool_id"] for w in sugg.get("words", []) if w.get("pool_id") and w["pool_id"] not in exclude][:n]
-    if not pids:
-        return {"cards": []}
+async def _own_new_card_rows(user_id, exclude):
+    """СОБСТВЕННЫЕ ещё не начатые новые слова юзера (как их берёт build_session): из словарей «в
+    обучении», 0 попыток, не архив/не «знакомые». По частоте. exclude — pool_id уже в очереди."""
     db = await _conn()
     try:
-        q = "SELECT id pool_id, norwegian, data, forms FROM word_pool WHERE id IN (%s)" % ",".join("?" * len(pids))
-        async with db.execute(q, pids) as cur:
-            rows = {r["pool_id"]: r for r in await cur.fetchall()}
+        async with db.execute(
+            """SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.forms
+               FROM dict_words dw
+               JOIN dictionaries d ON d.id = dw.dict_id AND d.user_id = ? AND COALESCE(d.studying, 1) = 1
+               JOIN word_pool wp ON wp.id = dw.pool_id
+               LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
+               WHERE COALESCE(uw.correct,0) + COALESCE(uw.incorrect,0) = 0
+                 AND COALESCE(uw.archived,0) = 0 AND COALESCE(uw.known,0) = 0
+                 AND COALESCE(wp.learn_excluded,0) = 0
+               GROUP BY wp.id
+               ORDER BY wp.freq IS NULL, wp.freq DESC""", (user_id, user_id)) as cur:
+            return [r for r in await cur.fetchall() if r["pool_id"] not in exclude]
     finally:
         await _release(db)
+
+
+async def next_new_cards(user_id, n=5, exclude=None):
+    """Живая сессия: добор НОВЫХ карточек-знакомств по требованию (когда юзер убрал карточку кнопкой,
+    а не «принял» тыком). СНАЧАЛА отдаёт СОБСТВЕННЫЕ ещё не начатые новые слова юзера (их может быть
+    много — он ими владеет, просто не дошёл), и лишь если своих не хватило — досыпает из общего пула
+    через suggest_words. exclude — pool_id, уже стоящие в очереди. Карточки той же формы, что
+    build_session. {"cards": [...]} либо {"cards": [], "blocked": True}, если приток новых закрыт воротами."""
+    exclude = set(exclude or [])
+    n = max(1, min(int(n or 1), 20))
+    if await new_words_blocked(user_id):          # ворота экзамена / тормоз аудита — новые не вводим
+        return {"cards": [], "blocked": True}
+    rows = await _own_new_card_rows(user_id, exclude)
+    if len(rows) < n:                             # своих не хватило → досыпаем из пула и перечитываем
+        await suggest_words(user_id, count=(n - len(rows)) + len(exclude) + 4)
+        rows = await _own_new_card_rows(user_id, exclude)
+    if not rows:
+        return {"cards": []}
     cards = []
-    for pid in pids:                       # сохраняем порядок подбора (по частоте/фокусу)
-        r = rows.get(pid)
-        if not r:
-            continue
+    for r in rows[:n]:
         data = json.loads(r["data"]) if r["data"] else {}
         cards.append({
-            "pool_id": pid, "no": r["norwegian"],
+            "pool_id": r["pool_id"], "no": r["norwegian"],
             "translate": data.get("translate", {}),
             "part_of_speech": data.get("part_of_speech", ""),
             "gloss": data.get("gloss"), "example": data.get("example"),
