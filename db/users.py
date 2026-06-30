@@ -89,6 +89,32 @@ async def get_user_grammar(user_id: int, default: bool = True):
     return default
 
 
+_GRAMMAR_POS_KEYS = ("noun", "verb", "adjective", "pronoun")
+
+
+async def get_user_grammar_pos(user_id: int):
+    """Пер-POS тумблеры грамм-overlay (gamePrefs.grammarPos): какие части речи дриллить. Отсутствует/
+    битое → все включены. Группы: noun/verb/adjective/pronoun (pronoun = местоимения + притяжательные)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await _release(db)
+    out = {k: True for k in _GRAMMAR_POS_KEYS}
+    if not row or not row["game_prefs"]:
+        return out
+    try:
+        gp = json.loads(row["game_prefs"]).get("grammarPos")
+        if isinstance(gp, dict):
+            for k in _GRAMMAR_POS_KEYS:
+                if isinstance(gp.get(k), bool):
+                    out[k] = gp[k]
+    except Exception:
+        pass
+    return out
+
+
 async def set_user_game_prefs(user_id: int, prefs_json: str):
     db = await _conn()
     try:

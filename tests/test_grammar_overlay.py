@@ -268,3 +268,19 @@ async def test_overlay_surfaces_for_mastered_pronoun(fresh_db):
     grams = [w for w in res["words"] if w.get("grammar")]
     assert grams and grams[0]["pool_id"] == pid and grams[0]["step"] == "input_objcase"
     assert grams[0]["target"]["value"] == "meg"
+
+
+async def test_overlay_respects_per_pos_toggle(fresh_db):
+    """Пер-POS тумблер (gamePrefs.grammarPos): отключённая часть речи не даёт грамм-упражнений,
+    включённая — даёт. Здесь глаголы выключены, существительные — нет."""
+    uid, did = await seed_user()
+    pn, _ = await seed_word(did, "bok", "книга", pos="noun")
+    await _set_forms(pn, _BOK)
+    await _master(uid, pn)
+    pv, _ = await seed_word(did, "skrive", "писать", pos="verb")
+    await _set_forms(pv, _SKRIVE)
+    await _master(uid, pv)
+    await set_user_game_prefs(uid, json.dumps({"grammarPos": {"verb": False}}))
+    res = await build_session(uid, size=20)
+    grams = {w["pool_id"] for w in res["words"] if w.get("grammar")}
+    assert pn in grams and pv not in grams        # сущ. остаётся, глаг. отключён

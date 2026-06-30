@@ -312,6 +312,9 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["newPerSession"] = max(1, min(20, int(body.newPerSession)))
     if body.grammar is not None:
         prefs["grammar"] = bool(body.grammar)
+    if isinstance(body.grammarPos, dict):   # пер-POS тумблеры грамматики — только известные ключи, bool
+        prefs["grammarPos"] = {k: bool(v) for k, v in body.grammarPos.items()
+                               if k in ("noun", "verb", "adjective", "pronoun") and isinstance(v, bool)}
     if body.lang in LANG_SET:
         prefs["lang"] = body.lang
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))

@@ -86,6 +86,9 @@ _INPUT_FORM_CELLS = {
 }
 GRAMMAR_RATIO = 0.3   # доля грамм-упражнений от размера сессии: round(size*RATIO) (см. build_session, D4)
 _GENDERS = ("en", "ei", "et")
+# Группа пер-POS тумблера грамматики (gamePrefs.grammarPos): местоим.+притяж. — под одной группой.
+_GRAMMAR_GROUP = {"noun": "noun", "verb": "verb", "adjective": "adjective",
+                  "pronoun": "pronoun", "determiner": "pronoun"}
 # build (собери из букв) осмыслен только в направлении родной→норв; cloze — индекс предложения;
 # order (порядок слов) / cells (буквенные клетки фразы) — только родная→норв (продукция);
 # gender — выбор артикля сущ.; indefpl — ввод неопр. мн.ч. (грамм-overlay)
@@ -885,7 +888,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
     scoped = set_id is not None
     _t0 = time.monotonic(); _tm = {}   # [perf] тайминг фаз сборки сессии
-    from .users import get_user_new_per_session, get_user_grammar  # ленивый импорт — избегаем циклов
+    from .users import get_user_new_per_session, get_user_grammar, get_user_grammar_pos  # ленивый импорт
     cap_new = await get_user_new_per_session(user_id, NEW_PER_SESSION)   # порция новых за сессию (настройка профиля)
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
@@ -1089,6 +1092,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # отдельный слой ПОВЕРХ base-рампы: на «выучено»/CEFR не влияет (см. _grammar_cells/apply_result).
     # Резервируем под неё долю слотов (квоту), остаток сессии — обычный контент; total остаётся ≈size. ──
     grammar_on = await get_user_grammar(user_id)
+    grammar_pos = await get_user_grammar_pos(user_id) if grammar_on else {}   # пер-POS тумблеры
     grammar_quota = round(size * GRAMMAR_RATIO) if (grammar_on and not scoped and not gate_open) else 0
     grammar_picks = []
     if grammar_quota > 0:
@@ -1099,16 +1103,19 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         for e in enriched:
             if e["status"] != "mastered" or e["row"]["pool_id"] in ordered_pids:
                 continue
+            group = _GRAMMAR_GROUP.get(normalize_pos((e["data"] or {}).get("part_of_speech")))
+            if not group or not grammar_pos.get(group, True):
+                continue   # не грамм-формируемая часть речи ИЛИ отключена пер-POS тумблером настроек
             raw = e["row"].get("forms")
             if raw:                                   # сущ./глаг./прил.: формы из БД
                 try:
                     fdict = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
                     continue
-            else:                                     # форм в БД нет → служебное с курируемой парадигмой
-                _pos = normalize_pos((e["data"] or {}).get("part_of_speech"))
-                fdict = (PRONOUN_PARADIGM.get((e["row"]["norwegian"] or "").strip().lower())
-                         if _pos in ("pronoun", "determiner") else None)
+            elif group == "pronoun":                  # форм в БД нет → курируемая парадигма (местоим./притяж.)
+                fdict = PRONOUN_PARADIGM.get((e["row"]["norwegian"] or "").strip().lower())
+            else:
+                continue                              # формообразующее без форм в БД → пропускаем
             if not fdict:
                 continue
             pending = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
