@@ -8,7 +8,7 @@ from rapidfuzz.process import cdist as rf_cdist
 from rapidfuzz.distance import OSA
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
 from langs import LANG_SET
-from pos import normalize_pos
+from pos import normalize_pos, POS_KEYS
 
 
 def _fold_no(s):
@@ -514,6 +514,13 @@ async def get_pool_stats():
         async def one(sql):
             async with db.execute(sql) as cur:
                 return (await cur.fetchone())[0]
+        # покрытие форм по каждой formable-части речи (прогресс перегенерации)
+        forms_by_pos = {}
+        for p in FORMABLE_POS:
+            forms_by_pos[p] = {
+                "with": await one(f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_POS_COL}='{p}'"),
+                "total": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_POS_COL}='{p}'"),
+            }
         return {
             "total": await one("SELECT COUNT(*) FROM word_pool"),
             "embedding": await one("SELECT COUNT(*) FROM word_pool WHERE embedding IS NOT NULL"),
@@ -524,6 +531,11 @@ async def get_pool_stats():
             "forms": await one(f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_FORMABLE_SQL}"),
             # сколько слов вообще должны иметь формы (сущ./глаг./прил.) — знаменатель для прогресса
             "formable": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_FORMABLE_SQL}"),
+            "forms_by_pos": forms_by_pos,
+            # «застрявшие»: сущ. с формами, но БЕЗ рода (нет артикля en/ei/et) — анти-залип/качество
+            "noun_no_gender": await one(
+                f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_POS_COL}='noun' "
+                "AND COALESCE(json_extract(forms,'$.gender'),'')=''"),
         }
     finally:
         await _release(db)
@@ -710,6 +722,19 @@ async def clear_nonformable_forms():
         await _release(db)
 
 
+async def clear_all_forms():
+    """Занулить forms у ВСЕХ formable-слов (noun/verb/adjective) — разовый сброс для перегенерации
+    под новые/уточнённые промпты. Non-formable не трогаем (их чистит clear_nonformable_forms).
+    Фон (forms_loop через pos_missing_forms) перезаполнит. Возвращает кол-во занулённых."""
+    db = await _conn()
+    try:
+        cur = await db.execute(f"UPDATE word_pool SET forms = NULL WHERE forms IS NOT NULL AND {_FORMABLE_SQL}")
+        await db.commit()
+        return cur.rowcount or 0
+    finally:
+        await _release(db)
+
+
 async def set_pool_pos(pool_id: int, pos: str):
     """Проставить часть речи в data.part_of_speech И в колонке pos (каноничный POS — колонка
     участвует в ключе (norwegian,pos) и в дедупе get_or_create_pool, иначе рассинхрон → дубли).
@@ -745,16 +770,14 @@ async def set_pool_pos(pool_id: int, pos: str):
 
 
 async def pos_uncategorized(limit: int = 20):
-    """[(id, norwegian, data_dict)] — слова, у которых part_of_speech пустой или НЕ из таксономии
-    (т.е. показываются как «прочее»). Кандидаты на переразметку части речи."""
-    all_pats = [p for pats in _POS_LIKE.values() for p in pats]
-    not_cond = " AND ".join(
-        "lower(COALESCE(json_extract(data,'$.part_of_speech'),'')) NOT LIKE ?" for _ in all_pats)
+    """[(id, norwegian, data_dict)] — слова с пустой/неканоничной частью речи (колонка pos NOT IN
+    POS_KEYS) — «прочее», кандидаты на переразметку (pos_loop)."""
+    marks = ",".join("?" for _ in POS_KEYS)
     db = await _conn()
     try:
         async with db.execute(
-            f"SELECT id, norwegian, data FROM word_pool WHERE {not_cond} ORDER BY id LIMIT ?",
-            (*all_pats, limit),
+            f"SELECT id, norwegian, data FROM word_pool WHERE {_POS_COL} NOT IN ({marks}) ORDER BY id LIMIT ?",
+            (*[k.lower() for k in POS_KEYS], limit),
         ) as cur:
             return [(r["id"], r["norwegian"], json.loads(r["data"]) if r["data"] else {})
                     for r in await cur.fetchall()]
@@ -826,47 +849,23 @@ _MISSING_SQL = {
     "forms": "forms IS NULL",
 }
 
-# Категория части речи → подстроки в data.part_of_speech (значения разнятся: noun/substantiv/...).
-_POS_LIKE = {
-    "noun": ["%noun%", "%substantiv%", "%сущ%"],
-    "verb": ["%verb%", "%глаг%", "%дієсл%"],
-    "adjective": ["%adjective%", "%adjektiv%", "%adj%", "%прил%", "%прикм%"],
-    "adverb": ["%adverb%", "%нареч%", "%присл%"],
-    "preposition": ["%preposition%", "%preposisjon%", "%предлог%", "%прийм%"],
-    "conjunction": ["%conjunction%", "%konjunksjon%", "%союз%", "%сполуч%"],
-    "pronoun": ["%pronoun%", "%pronomen%", "%местоим%", "%займен%"],
-    "determiner": ["%determiner%", "%determinativ%", "%артикл%", "%определит%"],
-    "numeral": ["%numeral%", "%tallord%", "%числит%", "%числ%"],
-    "interjection": ["%interjection%", "%interjeksjon%", "%междомет%", "%виг%"],
-    "phrase": ["%phrase%", "%uttrykk%", "%фраз%", "%выраж%"],
-}
-
-
-_POS_COL = "lower(COALESCE(json_extract(data,'$.part_of_speech'),''))"
-# Исключения от коллизий подстрок: «pronoun» содержит «noun», «adverb» содержит «verb».
-# Без них фильтр noun/verb захватывал бы местоимения/наречия (и Gemini получал бы их формы).
-_POS_NOT = {"noun": ["%pronoun%", "%pronomen%"], "verb": ["%adverb%"]}
+# Часть речи берём из КАНОНИЧЕСКОЙ колонки pos (нормализована к англ.: substantiv→noun…),
+# точным равенством. Раньше фильтр шёл по json_extract(data.part_of_speech) через LIKE-подстроки,
+# из-за чего '%noun%' цеплял 'pronoun', а '%verb%' — 'adverb' (костыли _POS_NOT). Канон + '=' это
+# устраняет, и роутинг forms_loop по части речи становится точным.
+_POS_COL = "lower(COALESCE(pos,''))"
 
 
 def _pos_cond(category):
-    """(sql, params) для фильтра по части речи через json_extract(data.part_of_speech)."""
-    likes = _POS_LIKE.get(category)
-    if not likes:
+    """(sql, params) — точный фильтр по канон-части речи (колонка pos)."""
+    if not category:
         return None, []
-    sub = " OR ".join(f"{_POS_COL} LIKE ?" for _ in likes)
-    sql, params = f"({sub})", list(likes)
-    for nx in _POS_NOT.get(category, []):
-        sql += f" AND {_POS_COL} NOT LIKE ?"; params.append(nx)
-    return sql, params
+    return f"{_POS_COL} = ?", [category.lower()]
 
 
 def _pos_inline(category):
-    """Чистый SQL-фрагмент по части речи (константы, без плейсхолдеров) — для составных условий."""
-    likes = _POS_LIKE.get(category) or []
-    sql = "(" + " OR ".join(f"{_POS_COL} LIKE '{p}'" for p in likes) + ")"
-    for nx in _POS_NOT.get(category, []):
-        sql += f" AND {_POS_COL} NOT LIKE '{nx}'"
-    return f"({sql})"
+    """Чистый SQL-фрагмент по части речи (константа, без плейсхолдеров) — для составных условий."""
+    return f"({_POS_COL} = '{category.lower()}')"
 
 
 # Части речи, у которых вообще бывают грамматические формы (склонение/спряжение/степени).

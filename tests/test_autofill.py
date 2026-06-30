@@ -93,6 +93,15 @@ async def test_forms_batch(fresh_db, mock_ask):
     assert by["forms"] and by["forms"].get("pos") == "noun" and by["forms"].get("def_sg") == "boka"
 
 
+async def test_forms_batch_noun_without_gender_skipped(fresh_db, mock_ask):
+    """Анти-залип: noun без gender НЕ сохраняем (вернётся в очередь) — gender = источник артикля."""
+    pid = await _seed("bok", "книга")
+    mock_ask({"results": [{"word": "bok", "def_sg": "boka", "indef_pl": "bøker"}]})   # без gender
+    assert await autofill.forms_batch("noun", [(pid, "bok", {})]) == 0
+    by = await get_pool_by_id(pid)
+    assert not by["forms"]   # формы не сохранили → слово ещё «без форм», повторит на след. круге
+
+
 async def test_ai_game_words(fresh_db, mock_ask):
     mock_ask({"words": [{"word": "fisk", "translate": {"ru": ["рыба"]}, "part_of_speech": "noun", "level": "A1"}]})
     words = await autofill.ai_game_words("ru", "A1", "еда", 5)

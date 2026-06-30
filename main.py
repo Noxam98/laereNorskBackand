@@ -93,6 +93,18 @@ async def startup():
             logger.info("all word descriptions reset — will be regenerated with richer prompt")
     except Exception as e:
         logger.warning(f"desc reset: {e}")
+    # Разовый сброс ВСЕХ грамматических форм у formable-слов (noun/verb/adjective) — фон догенерит
+    # заново под уточнённые POS-промпты (gender enum/required, чистые формы). Гард по версии; идёт
+    # ДО старта forms_loop (ниже). Non-formable не трогаем (их чистит clear_nonformable_forms выше).
+    try:
+        from db import get_setting, set_setting, clear_all_forms
+        FORMS_RESET_VER = "v3_per_pos"
+        if await get_setting("forms_reset") != FORMS_RESET_VER:
+            n = await clear_all_forms()
+            await set_setting("forms_reset", FORMS_RESET_VER)
+            logger.info(f"all grammatical forms reset ({n}) — will be regenerated per-POS")
+    except Exception as e:
+        logger.warning(f"forms reset: {e}")
     if text_enabled():
         if AUTOFILL_ENABLED:
             asyncio.create_task(autofill_loop())

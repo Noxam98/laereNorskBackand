@@ -150,8 +150,9 @@ _FORMS = {
     "noun": dict(
         schema=NOUN_FORMS_SCHEMA, fields=["gender", "def_sg", "indef_pl", "def_pl"],
         sys=("Ты — эксперт по существительным норвежского (bokmål). Для каждого слова дай ТОЧНЫЕ "
-             "формы (включая нерегулярные): gender (en/ei/et; женский род давай 'ei'), def_sg "
-             "(опр. ед.), indef_pl (неопр. мн.), def_pl (опр. мн.). Поле word — ровно как на входе.")),
+             "формы (включая нерегулярные). gender — ОБЯЗАТЕЛЬНО один из en/ei/et, НИКОГДА не пусто "
+             "(женский род давай 'ei'; примеры: en gutt, ei jente, et hus). def_sg (опр. ед.), "
+             "indef_pl (неопр. мн.), def_pl (опр. мн.). Поле word — ровно как на входе.")),
     "verb": dict(
         schema=VERB_FORMS_SCHEMA, fields=["present", "past", "perfect"],
         sys=("Ты — эксперт по глаголам норвежского (bokmål). Для каждого инфинитива дай ТОЧНЫЕ "
@@ -189,6 +190,11 @@ async def forms_batch(category, rows):
         seen.add(pid)
         forms = {f: r[f].strip() for f in cfg["fields"]
                  if isinstance(r.get(f), str) and r[f].strip() and r[f].strip().lower() not in ("-", "null")}
+        # Анти-залип: noun без gender НЕ сохраняем (gender = источник артикля en/ei/et). Слово
+        # вернётся в очередь pos_missing_forms и попробует снова. enum+required в схеме делают
+        # пропуск редким; иначе после массового вайпа сущ. навсегда осталось бы без артикля.
+        if category == "noun" and not forms.get("gender"):
+            continue
         # сохраняем даже пустые формы (только pos) — чтобы слово считалось «обработанным» и не зациклилось
         await set_pool_forms(pid, {"pos": category, **forms})
         done += 1

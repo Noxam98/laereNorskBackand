@@ -94,6 +94,23 @@ async def test_meta_forms_pos(fresh_db):
     await P.clear_all_descriptions()
 
 
+async def test_clear_all_forms_and_exact_pos_filter(fresh_db):
+    """clear_all_forms зануляет только formable; POS-фильтр точный по канон-колонке (pronoun ≠ noun)."""
+    n = await _seed("hund", "собака", pos="noun")
+    v = await _seed("snakke", "говорить", pos="verb")
+    pr = await _seed("jeg", "я", pos="pronoun")          # 'pronoun' содержит подстроку 'noun'
+    await P.set_pool_forms(n, {"pos": "noun", "gender": "en", "def_sg": "hunden"})
+    await P.set_pool_forms(v, {"pos": "verb", "past": "snakket"})
+    # точный фильтр: noun-очередь НЕ цепляет местоимение (раньше LIKE '%noun%' мог)
+    miss_noun = [r[0] for r in await P.pos_missing_forms("noun", 50)]
+    assert pr not in miss_noun and n not in miss_noun    # pronoun не formable; у hund формы есть
+    # clear_all_forms: formable занулены, non-formable (pronoun) не трогаем
+    cleared = await P.clear_all_forms()
+    assert cleared == 2
+    assert (await P.get_pool_by_id(n))["forms"] is None and (await P.get_pool_by_id(v))["forms"] is None
+    assert n in [r[0] for r in await P.pos_missing_forms("noun", 50)]   # снова «без форм»
+
+
 async def test_dedup(fresh_db):
     w = await _seed("by", "город")
     loser = await _seed("byen", "город (опр.)")

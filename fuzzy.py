@@ -77,14 +77,19 @@ def phrase_close(a, b):
     return True
 
 
+# Служебные ключи forms — НЕ поверхностные формы слова (pos = метка части речи; gender = артикль).
+# Держать в синхроне с фронтом (src/components/ui/pos.js FORMS_META_KEYS) и со схемами форм.
+FORMS_META_KEYS = ("pos", "gender")
+
+
 def word_forms(norwegian, forms):
     """Все поверхностные формы слова для приёма ответа: лемма + словоформы из колонки forms
     (сущ.: def_sg/indef_pl/def_pl; глаг.: present/past/perfect; прил.: neuter/plural/...).
-    Исключаем служебные ключи pos/gender. Уникальные, с сохранением порядка."""
+    Исключаем служебные ключи (FORMS_META_KEYS). Уникальные, с сохранением порядка."""
     out = [norwegian] if norwegian else []
     if isinstance(forms, dict):
         for k, v in forms.items():
-            if k in ("pos", "gender"):
+            if k in FORMS_META_KEYS:
                 continue
             if isinstance(v, str) and v.strip():
                 out.append(v.strip())

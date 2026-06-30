@@ -261,8 +261,11 @@ def _forms_schema(name, fields):
     }}}, "required": ["results"]}}
 
 
-# Существительное: род + склонение.
+# Существительное: род + склонение. gender — строго en/ei/et (enum), т.к. это источник артикля
+# на карточке: модель не должна вернуть мусор/пусто (иначе у сущ. навсегда нет артикля).
 NOUN_FORMS_SCHEMA = _forms_schema("noun_forms", ["gender", "def_sg", "indef_pl", "def_pl"])
+NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["properties"]["gender"]["enum"] = ["en", "ei", "et"]
+NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["required"] = ["word", "gender"]  # форсим род
 # Глагол: спряжение (инфинитив = само слово).
 VERB_FORMS_SCHEMA = _forms_schema("verb_forms", ["present", "past", "perfect"])
 # Прилагательное: степени + согласование.
