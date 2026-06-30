@@ -138,6 +138,22 @@ async def test_gate_fail_demotes_double(fresh_db):
     assert status_of(row, modes) != "mastered"
 
 
+async def test_gate_no_pass_by_repeating_one_card(fresh_db):
+    """Анти-чит: повтор верного ответа ОДНОЙ карточки ×(PASS+10) НЕ сдаёт ворота — дедуп по
+    pool_id засчитывает её один раз. Раньше correct_n копился по числу присланных ответов →
+    37 копий ≥ PASS сертифицировали всю пачку (50–100 слов) без реального знания."""
+    uid, did = await seed_user()
+    pack = await _seed_mastered_pack(uid, did, PACK_FIRST)
+    pid, no, ru = pack[0]
+    answers = [{"pool_id": pid, "answer": ru} for _ in range(PASS + 10)]
+    res = await grade_gate_exam(uid, answers, lang="ru")
+    assert res["passed"] is False               # одна верная карточка ≠ PASS
+    assert res["demoted"] == 0                   # промахов не было (та же верная), демоутить нечего
+    assert await _certified_count(uid) == 0      # пачка НЕ сертифицирована
+    st = await gate_status(uid)
+    assert st["pack"] == PACK_FIRST and st["open"] is True   # ворота как были — не обмануты
+
+
 async def test_suggest_blocked_when_gate_open(fresh_db):
     uid, did = await seed_user()
     await _seed_mastered_pack(uid, did, PACK_FIRST)

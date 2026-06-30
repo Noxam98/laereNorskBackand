@@ -250,11 +250,13 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
         # сверка ответов — нечётко, по любой «своей» форме слова (перевод/норв./словоформы)
         correct_n = 0
         missed_pids = []
-        for a in (answers or []):
+        seen = set()   # дедуп по pool_id: одна карточка засчитывается ОДИН раз. Иначе повтор верного
+        for a in (answers or []):   # ответа ×PASS подделывал бы сдачу ворот (сертификацию всей пачки 50–100 слов)
             pid = a.get("pool_id")
             r = by_pid.get(pid)
-            if not r:
+            if not r or pid in seen:
                 continue
+            seen.add(pid)
             if _exam_answer_ok(r, lang, a.get("answer"), known):
                 correct_n += 1
             else:
@@ -333,10 +335,13 @@ async def grade_audit(user_id, answers, lang="ru"):
         by_pid = {r["pool_id"]: r for r in rows if _is_certified(r)}
         known = await _known_vocab(db)
         checked = refreshed = forgot = 0
+        seen = set()   # дедуп по pool_id: дубль не накручивает checked/refreshed и не разбавляет долю forgot
         for a in (answers or []):
-            r = by_pid.get(a.get("pool_id"))
-            if not r:
+            pid = a.get("pool_id")
+            r = by_pid.get(pid)
+            if not r or pid in seen:
                 continue
+            seen.add(pid)
             checked += 1
             ok = _exam_answer_ok(r, lang, a.get("answer"), known)
             if ok:
