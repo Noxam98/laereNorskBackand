@@ -114,6 +114,7 @@ class GamePrefsBody(BaseModel):
     listenOff: bool | None = None  # задания «на слух» выключены для аккаунта (синк между устройствами)
     lang: str | None = Field(None, max_length=8)  # язык интерфейса (синк между устройствами): ru|ukr|en|pl|lt
     newPerSession: int | None = Field(None, ge=1, le=20)  # сколько НОВЫХ слов-карточек за сессию (порционность)
+    grammar: bool | None = None   # грамм-overlay (★): род/формы поверх выученных слов — вкл/выкл
 
 
 class RedescribeBody(BaseModel):

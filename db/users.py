@@ -69,6 +69,26 @@ async def get_user_new_per_session(user_id: int, default: int = 6):
     return default
 
 
+async def get_user_grammar(user_id: int, default: bool = True):
+    """Включён ли грамм-overlay (gamePrefs.grammar) — род/формы поверх выученных слов. Дефолт — вкл.
+    Пусто/битое → default. Тумблер профиля; не влияет на base-рампу и «выучено»/CEFR."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await _release(db)
+    if not row or not row["game_prefs"]:
+        return default
+    try:
+        v = json.loads(row["game_prefs"]).get("grammar")
+        if isinstance(v, bool):
+            return v
+    except Exception:
+        pass
+    return default
+
+
 async def set_user_game_prefs(user_id: int, prefs_json: str):
     db = await _conn()
     try:
