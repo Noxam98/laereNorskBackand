@@ -238,6 +238,14 @@ async def admin_stats(user=Depends(get_admin_user)):
     }
 
 
+@router.get("/admin/homograph")
+async def admin_homograph(user=Depends(get_admin_user)):
+    """Сводка воркера-омонимов + история разбиений. Read-only: только чтение settings,
+    без скана пула и без LLM — на загрузке админки ничего не делится."""
+    from homograph_split import homograph_summary
+    return await homograph_summary()
+
+
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(get_current_user)):
     return {"results": await search_pool(q, limit, lang)}
