@@ -8,7 +8,8 @@ from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status,
     learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
-    learning_session, learning_next_cards, learning_add, learning_remove, get_pool_id,
+    learning_session, learning_next_cards, learning_listen_session, learning_listen_status,
+    learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
     learning_audit, learning_audit_grade,
     learning_leaderboard,
@@ -45,6 +46,19 @@ async def learning_session_route(size: int = 20, lang: str = "ru", user=Depends(
     Для choice-элементов варианты ответа (options) кладём прямо в ответ (lang) —
     чтобы фронт не делал отдельных запросов за дистракторами во время сессии."""
     return await learning_session(user["id"], size=max(1, min(50, size)), lang=lang)
+
+
+@router.get("/learning/listen/status")
+async def learning_listen_status_route(user=Depends(get_current_user)):
+    """Сколько слов «ждёт слух» + порог партии + готова ли слуховая сессия. Для карточки на Учёбе."""
+    return await learning_listen_status(user["id"])
+
+
+@router.get("/learning/listen")
+async def learning_listen_route(size: int = 20, lang: str = "ru", user=Depends(get_current_user)):
+    """Слуховая партия: аудио-подтверждение (choice_no2int) слов, прошедших текстовую рампу.
+    Сдача закрывает 4-ю клетку → слово полностью выучено. Только при включённых аудиозаданиях."""
+    return await learning_listen_session(user["id"], size=max(1, min(50, size)), lang=lang)
 
 
 @router.post("/learning/next-cards")

@@ -35,8 +35,14 @@ _FAST_SEC = 3.0   # быстрый верный ответ → слово «лё
 # study (карточки) — пассивный шаг 0, в зачёт не идёт.
 # Каждая клетка хранит признак прохождения: '1' — пройдена, '' — не пройдена/сброшена ошибкой.
 # Порядок = порядок прохождения (_next_step берёт первую непройденную). Аудио-вопрос (choice_no2int,
-# «на слух») идёт ВТОРЫМ — сначала выбор норв. слова по переводу (choice_int2no), потом на слух.
+# «на слух») стоит ВТОРЫМ. Поведение зависит от настройки аудиозаданий (gamePrefs.audio):
+#   audio ВКЛ  — _next_step ПРОПУСКАЕТ choice_no2int (текстовые ступени идут вперёд), а аудио-клетка
+#                откладывается в отдельную слуховую партию (build_listen_session): слово «выучено»
+#                только после сдачи на слух;
+#   audio ВЫКЛ — choice_no2int идёт штатно на 2-м месте как ТЕКСТ (норв.→выбор перевода), слуховой
+#                сессии нет, слово выучивается полностью текстом.
 REQUIRED_CELLS = ["choice_int2no", "choice_no2int", "build_int2no", "input_int2no"]
+_AUDIO_CELL = "choice_no2int"   # аудио-подтверждение: при audio ВКЛ откладывается в слуховую сессию
 # Рампа служебных слов (A1): карточка → 3 разных cloze (направление = индекс предложения 1..3).
 FUNC_CELLS = ["cloze_1", "cloze_2", "cloze_3"]
 ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
@@ -404,17 +410,23 @@ def _mastered_by_modes(modes):
     return all((modes or {}).get(c, "") == "1" for c in REQUIRED_CELLS)
 
 
-def _next_step(row, modes):
+def _next_step(row, modes, audio_on=False):
     """Следующая невыполненная ступень рампы для слова → (step, mode, direction).
     Совсем новое (0 попыток) → пассивная карточка 'card' (study, без направления).
     Иначе — первая клетка REQUIRED_CELLS со значением != '1', из имени выводим mode/direction.
-    Если все клетки пройдены (mastered) — возвращаем None."""
+    audio_on=True → у КОНТЕНТНЫХ слов аудио-клетку (choice_no2int) ПРОПУСКАЕМ (откладываем в слуховую
+    сессию): когда остаётся только она — возвращаем None (слово «ждёт слух», не идёт в дневную сессию).
+    Фразы/служебные не трогаем — у них choice_no2int это текстовый выбор / свой путь. mastered → None."""
     attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
     if attempts == 0:
         return ("card", "study", None)
     if _is_mastered(row, modes):   # в т.ч. grandfathered служебные (не гоняем по cloze повторно)
         return None
-    for cell in required_cells(row):
+    cells = required_cells(row)
+    content = cells is REQUIRED_CELLS   # аудио откладываем только у контентных слов
+    for cell in cells:
+        if audio_on and content and cell == _AUDIO_CELL:
+            continue
         if (modes or {}).get(cell, "") != "1":
             mode, direction = cell.split("_", 1)
             return (cell, mode, direction)
@@ -422,10 +434,12 @@ def _next_step(row, modes):
 
 
 def _review_step(row):
-    """Шаг ПОВТОРА выученного слова, ставшего due: последняя ступень рампы (продукция).
-    Для контентных это input_int2no (ввод с клавиатуры). Верный ответ → интервал растёт
-    (слово остаётся mastered); неверный → apply_result сбросит input+build → откат в рампу."""
-    last = required_cells(row)[-1]
+    """Шаг ПОВТОРА выученного слова, ставшего due: последняя ПРОДУКТИВНАЯ ступень (не аудио).
+    Для контентных это input_int2no (ввод с клавиатуры) — аудио-клетку из повтора исключаем, чтобы
+    повтор был текстовым. Верный ответ → интервал растёт (слово остаётся mastered); неверный →
+    apply_result сбросит input+build → откат в рампу."""
+    cells = [c for c in required_cells(row) if c != _AUDIO_CELL] or required_cells(row)
+    last = cells[-1]
     mode, direction = last.split("_", 1)
     return (last, mode, direction)
 
@@ -533,9 +547,12 @@ async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float
                     modes[cell] = "1"              # верно → ступень пройдена
                 else:
                     modes[cell] = ""               # ошибка → текущая ступень сброшена
-                    i = cells.index(cell)
-                    if i > 0:                      # ОТКАТ на одну ступень назад (не ниже первой клетки —
-                        modes[cells[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
+                    # аудио-подтверждение (choice_no2int, слуховая сессия) при ошибке НЕ откатывает
+                    # текстовые ступени — слово остаётся «ждёт слух», повторит в след. слуховой партии
+                    if cell != _AUDIO_CELL:
+                        i = cells.index(cell)
+                        if i > 0:                  # ОТКАТ на одну ступень назад (не ниже первой клетки —
+                            modes[cells[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
         strength = _strength_from(modes["hist"])
         if correct:
             fast = elapsed is not None and elapsed <= _FAST_SEC
@@ -888,8 +905,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
     scoped = set_id is not None
     _t0 = time.monotonic(); _tm = {}   # [perf] тайминг фаз сборки сессии
-    from .users import get_user_new_per_session, get_user_grammar, get_user_grammar_pos  # ленивый импорт
+    from .users import get_user_new_per_session, get_user_grammar, get_user_grammar_pos, get_user_audio  # ленивый импорт
     cap_new = await get_user_new_per_session(user_id, NEW_PER_SESSION)   # порция новых за сессию (настройка профиля)
+    audio_on, _listen_pack = await get_user_audio(user_id)   # аудио ВКЛ → choice_no2int откладываем в слуховую сессию
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
         db = await _conn()
@@ -1029,7 +1047,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
             if attempts(e) == 0 and _func_locked(e):
                 continue
-            step = _review_step(e["row"]) if review else _next_step(e["row"], e["modes"])
+            step = _review_step(e["row"]) if review else _next_step(e["row"], e["modes"], audio_on)
             if not step:
                 continue
             seen.add(pid)
@@ -1218,6 +1236,76 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         logger.warning("slow build_session uid=%s n=%d %s", user_id, len(session),
                        " ".join(f"{k}={v * 1000:.0f}ms" for k, v in _tm.items()))
     return {"words": session, "composition": comp}
+
+
+# ---------------- слуховая сессия (аудио-подтверждение выученного текстом) ----------------
+def _is_audio_pending(row, modes, data):
+    """Слово прошло ТЕКСТОВУЮ рампу, но не аудио → «ждёт слух». Контентное (REQUIRED_CELLS), все
+    текстовые клетки == '1', а choice_no2int ещё не пройдена. Только при включённых аудиозаданиях это
+    состояние вообще возникает (иначе choice_no2int идёт в дневной рампе текстом)."""
+    if required_cells({"norwegian": row.get("norwegian"), "data": data}) is not REQUIRED_CELLS:
+        return False   # фразы/служебные не «ждут слух» — у них choice_no2int это текстовый выбор / свой путь
+    m = modes or {}
+    return m.get(_AUDIO_CELL, "") != "1" and all(
+        m.get(c, "") == "1" for c in REQUIRED_CELLS if c != _AUDIO_CELL)
+
+
+async def _audio_pending_rows(user_id):
+    """[(row, data, modes)] слов, ждущих слух (см. _is_audio_pending)."""
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+    finally:
+        await _release(db)
+    out = []
+    for r in rows:
+        try:
+            modes = json.loads(r.get("modes") or "{}")
+        except Exception:
+            modes = {}
+        try:
+            data = json.loads(r["data"]) if r.get("data") else {}
+        except Exception:
+            data = {}
+        if _is_audio_pending(r, modes, data):
+            out.append((r, data, modes))
+    return out
+
+
+async def listen_status(user_id):
+    """Сколько слов «ждёт слух» + порог партии + готова ли слуховая сессия (pending >= порог).
+    Аудиозадания выключены → audio False (откладывать нечего, choice_no2int идёт в дневной рампе)."""
+    from .users import get_user_audio
+    audio_on, pack = await get_user_audio(user_id)
+    if not audio_on:
+        return {"pending": 0, "pack": pack, "ready": False, "audio": False}
+    rows = await _audio_pending_rows(user_id)
+    return {"pending": len(rows), "pack": pack, "ready": len(rows) >= pack, "audio": True}
+
+
+async def build_listen_session(user_id, size=20, lang="ru"):
+    """Слуховая партия: аудио-подтверждение (choice_no2int) слов, прошедших текстовую рампу. Сдача →
+    слово полностью выучено (apply_result закрывает 4-ю клетку). Ошибка слух НЕ откатывает текстовые
+    ступени. Только при включённых аудиозаданиях. Дольше всех ждущие — первыми. {words, composition}."""
+    from .users import get_user_audio
+    audio_on, _pack = await get_user_audio(user_id)
+    if not audio_on:
+        return {"words": [], "composition": {"listen": 0, "total": 0}}
+    pending = await _audio_pending_rows(user_id)
+    pending.sort(key=lambda rdm: rdm[0].get("last_seen") or "")   # дольше всех не виделись — первыми
+    session = []
+    for r, data, _modes in pending[:size]:
+        session.append({
+            "pool_id": r["pool_id"], "no": r["norwegian"],
+            "translate": data.get("translate", {}),
+            "part_of_speech": data.get("part_of_speech", ""),
+            "forms": (json.loads(r["forms"]) if r.get("forms") else None),
+            "mode": "choice", "direction": "no2int", "step": _AUDIO_CELL,
+            "listen": True,   # фронт: проигрывать аудио, текст скрыт (слуховое узнавание)
+            "repeat": (r.get("mastered") == 1),
+        })
+    await _attach_choice_options(session, lang)
+    return {"words": session, "composition": {"listen": len(session), "total": len(session)}}
 
 
 # ---------------- cloze для служебных слов (A1, Ф4) ----------------

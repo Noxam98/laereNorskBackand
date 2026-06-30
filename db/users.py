@@ -115,6 +115,33 @@ async def get_user_grammar_pos(user_id: int):
     return out
 
 
+async def get_user_audio(user_id: int):
+    """Аудиозадания (слуховые сессии): (включены?, порог партии 5..20). gamePrefs.audio (дефолт — вкл;
+    бэк-совместимость: старый listenOff=true → выкл) + gamePrefs.listenPack (клампим 5..20, дефолт 10).
+    audio ВКЛ → choice_no2int откладывается в слуховую сессию; ВЫКЛ → идёт в дневной рампе текстом."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    finally:
+        await _release(db)
+    audio_on, pack = True, 10
+    if row and row["game_prefs"]:
+        try:
+            gp = json.loads(row["game_prefs"])
+            v = gp.get("audio")
+            if isinstance(v, bool):
+                audio_on = v
+            elif gp.get("listenOff") is True:   # старый тумблер «на слух выключен» → аудио выкл
+                audio_on = False
+            p = gp.get("listenPack")
+            if isinstance(p, (int, float)):
+                pack = max(5, min(20, int(p)))
+        except Exception:
+            pass
+    return audio_on, pack
+
+
 async def set_user_game_prefs(user_id: int, prefs_json: str):
     db = await _conn()
     try:

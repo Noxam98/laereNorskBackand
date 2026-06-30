@@ -315,6 +315,10 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
     if isinstance(body.grammarPos, dict):   # пер-POS тумблеры грамматики — только известные ключи, bool
         prefs["grammarPos"] = {k: bool(v) for k, v in body.grammarPos.items()
                                if k in ("noun", "verb", "adjective", "pronoun") and isinstance(v, bool)}
+    if body.audio is not None:
+        prefs["audio"] = bool(body.audio)
+    if body.listenPack is not None:
+        prefs["listenPack"] = max(5, min(20, int(body.listenPack)))
     if body.lang in LANG_SET:
         prefs["lang"] = body.lang
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))

@@ -49,6 +49,7 @@ from .learning import (
     build_placement as learning_placement, grade_placement as learning_grade, get_activity as learning_activity,
     set_start_level as learning_set_level, seed_starter as learning_seed_starter,
     build_session as learning_session, next_new_cards as learning_next_cards,
+    build_listen_session as learning_listen_session, listen_status as learning_listen_status,
     learning_add, learning_remove,
     gate_status as learning_gate_status, new_words_blocked as learning_new_blocked,
     build_gate_exam as learning_gate_exam, grade_gate_exam as learning_gate_grade,
