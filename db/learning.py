@@ -59,6 +59,16 @@ NOUN_GRAMMAR_CELLS = ["choice_gender", "input_indefpl"]
 VERB_GRAMMAR_CELLS = ["input_past", "input_perfect", "input_present"]
 # ADJECTIVE-срез: согласование/степени, когда факт ≠ предсказанию правила (или супплетив).
 ADJ_GRAMMAR_CELLS = ["input_neuter", "input_comparative", "input_superlative", "input_pluraladj"]
+# PRONOUN/DETERMINER-срез (КУРИРУЕМЫЙ закрытый класс — не выводится правилом, нет в forms_loop):
+# падеж личных местоимений (субъект→объект) + согласование притяжательных. Формы сидятся в
+# word_pool.forms на старте (seed_pronoun_forms), дальше — обычный overlay.
+PRONOUN_GRAMMAR_CELLS = ["input_objcase", "input_possneut", "input_posspl"]
+PRONOUN_PARADIGM = {
+    "jeg": {"obj": "meg"}, "du": {"obj": "deg"}, "han": {"obj": "ham"},
+    "hun": {"obj": "henne"}, "vi": {"obj": "oss"}, "de": {"obj": "dem"},
+    "min": {"neuter": "mitt", "plural": "mine"}, "din": {"neuter": "ditt", "plural": "dine"},
+    "sin": {"neuter": "sitt", "plural": "sine"}, "vår": {"neuter": "vårt", "plural": "våre"},
+}
 # Таблица input-клеток форм: cell → (поле forms с верным ответом, ключ подписи формы для FormPrompt).
 # Все они mode=input, direction = cell.split('_',1)[1] (см. _grammar_element / _DIR_ALLOWED).
 _INPUT_FORM_CELLS = {
@@ -70,6 +80,9 @@ _INPUT_FORM_CELLS = {
     "input_comparative": ("comparative", "comparative"),   # прил.: сравнит.
     "input_superlative": ("superlative", "superlative"),   # прил.: превосх.
     "input_pluraladj":   ("plural",      "plural_adj"),     # прил.: мн./опр. форма
+    "input_objcase":     ("obj",         "objcase"),       # местоим.: объектный падеж (jeg→meg)
+    "input_possneut":    ("neuter",      "poss_neuter"),    # притяж.: ср. род (min→mitt)
+    "input_posspl":      ("plural",      "poss_plural"),    # притяж.: мн. (min→mine)
 }
 GRAMMAR_RATIO = 0.3   # доля грамм-упражнений от размера сессии: round(size*RATIO) (см. build_session, D4)
 _GENDERS = ("en", "ei", "et")
@@ -79,7 +92,8 @@ _GENDERS = ("en", "ei", "et")
 _DIR_ALLOWED = {"choice": ("no2int", "int2no", "gender"), "build": ("int2no",),
                 "input": ("no2int", "int2no", "indefpl",                          # сущ.
                           "present", "past", "perfect",                           # глаг.
-                          "neuter", "comparative", "superlative", "pluraladj"),    # прил.
+                          "neuter", "comparative", "superlative", "pluraladj",     # прил.
+                          "objcase", "possneut", "posspl"),                        # местоим./притяж.
                 "cloze": ("1", "2", "3"), "order": ("int2no",), "cells": ("int2no",)}
 # Прогресс — скользящее окно: новые попытки вытесняют старые (ёмкость). Сила слова считается
 # по последним CAPACITY попыткам, а не за всю историю — старые успехи «выпадают» со временем.
@@ -254,6 +268,20 @@ def _adj_grammar_cells(lemma, f):
     return out
 
 
+def _pronoun_grammar_cells(no, f):
+    """Местоимение/притяж. (курируемая парадигма в forms): объектный падеж (jeg→meg, если ≠ субъекту)
+    + согласование притяжательных (ср.род mitt, мн. mine). Закрытый класс — без морфологии-правил."""
+    out = []
+    obj = (f.get("obj") or "").strip()
+    if obj and _nfc_low(obj) != _nfc_low(no):
+        out.append("input_objcase")
+    if (f.get("neuter") or "").strip():
+        out.append("input_possneut")
+    if (f.get("plural") or "").strip():
+        out.append("input_posspl")
+    return out
+
+
 def _grammar_cells(norwegian, data, forms):
     """Грамм-клетки (overlay-тир ★) слова — по части речи + наличию форм. НЕ влияют на base-рампу,
     «выучено» и CEFR (отдельный слой, см. apply_result). Проверяем форму ТОЛЬКО когда она нерегулярна
@@ -265,20 +293,24 @@ def _grammar_cells(norwegian, data, forms):
     except Exception:
         d = {}
     pos = normalize_pos(d.get("part_of_speech"))
-    if pos not in ("noun", "verb", "adjective"):
+    if pos not in ("noun", "verb", "adjective", "pronoun", "determiner"):
         return []
     try:
         f = json.loads(forms) if isinstance(forms, str) else (forms or {})
     except Exception:
         f = {}
+    no = norwegian or ""
+    if not f and pos in ("pronoun", "determiner"):
+        f = PRONOUN_PARADIGM.get(no.strip().lower())   # курируемая парадигма (форм нет в БД / forms_loop)
     if not f:
         return []
-    no = norwegian or ""
     if pos == "noun":
         return _noun_grammar_cells(no, f)
     if pos == "verb":
         return _verb_grammar_cells(no, f)
-    return _adj_grammar_cells(no, f)
+    if pos == "adjective":
+        return _adj_grammar_cells(no, f)
+    return _pronoun_grammar_cells(no, f)   # pronoun / determiner — курируемая парадигма (seed_pronoun_forms)
 
 
 def _grammar_element(row, cell, forms, data):
@@ -298,7 +330,7 @@ def _grammar_element(row, cell, forms, data):
                 "prompt": {"kind": "lemma+formLabel", "formLabel": "gender", "lemma": no},
                 "options": [{"w": a, "alt": None} for a in _GENDERS],   # порядок перемешает фронт
                 "distractors": [a for a in _GENDERS if a != g]}
-    if cell in _INPUT_FORM_CELLS:   # все input-формы (сущ./глаг./прил.): ввод нерегулярной формы
+    if cell in _INPUT_FORM_CELLS:   # все input-формы (сущ./глаг./прил./местоим.): ввод формы
         field, label = _INPUT_FORM_CELLS[cell]
         return {**base, "mode": "input", "direction": cell.split("_", 1)[1],
                 "target": {"field": field, "value": (forms.get(field) or "").strip()},
@@ -1065,14 +1097,19 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         ordered_pids = {e["row"]["pool_id"] for e, _ in ordered}
         g_cands = []
         for e in enriched:
-            if e["status"] != "mastered" or not e["row"].get("forms"):
+            if e["status"] != "mastered" or e["row"]["pool_id"] in ordered_pids:
                 continue
-            if e["row"]["pool_id"] in ordered_pids:
-                continue
-            try:
-                fdict = (json.loads(e["row"]["forms"]) if isinstance(e["row"]["forms"], str)
-                         else e["row"]["forms"])
-            except Exception:
+            raw = e["row"].get("forms")
+            if raw:                                   # сущ./глаг./прил.: формы из БД
+                try:
+                    fdict = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    continue
+            else:                                     # форм в БД нет → служебное с курируемой парадигмой
+                _pos = normalize_pos((e["data"] or {}).get("part_of_speech"))
+                fdict = (PRONOUN_PARADIGM.get((e["row"]["norwegian"] or "").strip().lower())
+                         if _pos in ("pronoun", "determiner") else None)
+            if not fdict:
                 continue
             pending = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
                        if e["modes"].get(c) != "1"]

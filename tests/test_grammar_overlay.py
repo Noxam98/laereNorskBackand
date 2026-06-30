@@ -238,3 +238,33 @@ async def test_overlay_surfaces_for_mastered_verb(fresh_db):
     grams = [w for w in res["words"] if w.get("grammar")]
     assert grams and grams[0]["pool_id"] == pid
     assert grams[0]["step"] in ("input_past", "input_perfect", "input_present")
+
+
+# ── PRONOUN/DETERMINER-срез: курируемая парадигма (форм НЕТ в БД, берём из PRONOUN_PARADIGM) ───
+_DATA_PRON = json.dumps({"part_of_speech": "pronoun", "translate": {"ru": ["x"]}})
+_DATA_DET = json.dumps({"part_of_speech": "determiner", "translate": {"ru": ["x"]}})
+
+
+def test_grammar_cells_pronoun_objcase():
+    # личное местоимение: объектный падеж (jeg→meg, han→ham), forms=None → курируемая парадигма
+    assert _grammar_cells("jeg", _DATA_PRON, None) == ["input_objcase"]
+    assert _grammar_cells("han", _DATA_PRON, None) == ["input_objcase"]
+
+
+def test_grammar_cells_possessive_agreement():
+    assert _grammar_cells("min", _DATA_DET, None) == ["input_possneut", "input_posspl"]
+
+
+def test_grammar_cells_pronoun_not_in_paradigm_empty():
+    assert _grammar_cells("det", _DATA_PRON, None) == []     # obj=det совпадает → дриллить нечего
+    assert _grammar_cells("xyz", _DATA_PRON, None) == []     # не в парадигме
+
+
+async def test_overlay_surfaces_for_mastered_pronoun(fresh_db):
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "jeg", "я", pos="pronoun")
+    await _master(uid, pid)                       # форм в БД НЕ ставим — берётся из парадигмы
+    res = await build_session(uid, size=20)
+    grams = [w for w in res["words"] if w.get("grammar")]
+    assert grams and grams[0]["pool_id"] == pid and grams[0]["step"] == "input_objcase"
+    assert grams[0]["target"]["value"] == "meg"
