@@ -122,6 +122,9 @@ async def startup():
         if DEDUP_ENABLED:
             asyncio.create_task(dedup_loop())
             logger.info("dedup queue enabled: фоновое слияние слов-дублей пула")
+        from homograph_split import homograph_loop
+        asyncio.create_task(homograph_loop())
+        logger.info("homograph queue enabled: разбиение омонимов на per-pos записи")
         asyncio.create_task(freq_loop())
         logger.info("freq queue enabled: простановка частотности слов (Zipf)")
         asyncio.create_task(yo_fix_loop())

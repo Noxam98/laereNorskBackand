@@ -5,9 +5,12 @@
 значения СВОЕЙ части речи, остальные части речи → отдельные записи-омонимы (norwegian, pos).
 dry_run=True — только план, БД не трогаем (после прошлого инцидента — сперва смотрим, потом применяем).
 """
+import asyncio
 import json
+import logging
 
 import errors
+import runtime
 from llm import ask_json
 from db.core import _conn, _release, normalize_word
 from db.pool import get_or_create_pool, update_pool_translate, get_pool_by_id
@@ -124,3 +127,31 @@ async def homograph_batch(n=30):
     done |= {c["id"] for c in todo}
     await set_setting("homograph_done", json.dumps(sorted(done)))
     return len(todo), len(plan), plan
+
+
+logger = logging.getLogger("learnnorsk")
+HOMOGRAPH_BATCH = 20
+HOMOGRAPH_SEC = 12   # пауза между батчами — пейсинг LLM/квоты (429 ротация ключей — внутри клиента)
+
+
+async def homograph_loop():
+    """Фоновый воркер: идёт по пулу пачками (homograph_batch), делит подтверждённые омонимы сущ./
+    глаг./прил. на per-pos записи; пейсит под квоту. Пауза — runtime.PAUSED['homograph'] (админка).
+    Когда все кандидаты пройдены (homograph_done) — спит долго (новые слова появляются редко)."""
+    await asyncio.sleep(30)
+    while True:
+        if runtime.PAUSED.get("homograph"):
+            await asyncio.sleep(30)
+            continue
+        try:
+            seen, split, _ = await homograph_batch(HOMOGRAPH_BATCH)
+        except Exception as e:
+            errors.report(e, "homograph_loop")
+            await asyncio.sleep(60)
+            continue
+        if seen == 0:
+            await asyncio.sleep(600)
+            continue
+        if split:
+            logger.info(f"homograph: +{split} разбито (из {seen})")
+        await asyncio.sleep(HOMOGRAPH_SEC)
