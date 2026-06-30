@@ -67,21 +67,19 @@ def _buckets(item):
     return b
 
 
-async def split_homographs(dry_run=True, limit=None, batch=15):
-    """План разбиения омонимов (и применить при dry_run=False).
-    Делим запись ТОЛЬКО если LLM нашёл ≥2 части речи И у исходного pos есть значения. Возвращает
-    [{id, word, pos, keep_ru, others:{pos:[ru]}}]."""
-    cands = await _candidates(limit)
-    by_key = {normalize_word(c["no"]): c for c in cands}
+async def _process(rows, apply, batch=15):
+    """LLM-классификация rows по части речи → план разбиения; применить при apply=True.
+    Делим запись ТОЛЬКО если LLM нашёл ≥2 части речи И у исходного pos есть значения."""
+    by_key = {normalize_word(c["no"]): c for c in rows}
     plan = []
-    for i in range(0, len(cands), batch):
-        chunk = cands[i:i + batch]
+    for i in range(0, len(rows), batch):
+        chunk = rows[i:i + batch]
         user = "Слова:\n" + "\n".join(f"- {c['no']}: {', '.join(c['ru'])}" for c in chunk)
         try:
             res = await ask_json(_SYS, user, _SCHEMA, purpose="autofill",
                                  label=f"омонимы ({len(chunk)})", temperature=0)
         except Exception as e:
-            errors.report(e, "split_homographs")
+            errors.report(e, "homograph")
             continue
         for item in (res or {}).get("results", []):
             c = by_key.get(normalize_word(item.get("word") or ""))
@@ -92,7 +90,7 @@ async def split_homographs(dry_run=True, limit=None, batch=15):
                 continue   # одна часть речи (или у исходного pos нет значений) — не делим
             plan.append({"id": c["id"], "word": c["no"], "pos": c["pos"],
                          "keep_ru": b[c["pos"]], "others": {k: v for k, v in b.items() if k != c["pos"]}})
-    if not dry_run:
+    if apply:
         for p in plan:
             row = await get_pool_by_id(p["id"])
             data = (row or {}).get("data") or {}
@@ -105,3 +103,24 @@ async def split_homographs(dry_run=True, limit=None, batch=15):
                 await get_or_create_pool(p["word"], {"word": p["word"], "part_of_speech": opos,
                                                      "translate": {"ru": oru}})
     return plan
+
+
+async def split_homographs(dry_run=True, limit=None):
+    """Топ-`limit` кандидатов (по частоте): план (dry) или применить."""
+    return await _process(await _candidates(limit), apply=not dry_run)
+
+
+async def homograph_batch(n=30):
+    """Обработать СЛЕДУЮЩИЕ n непроверенных кандидатов (трекинг обработанных id в setting
+    homograph_done), разбить подтверждённые омонимы, пометить пройденными. Для ручного прогона
+    пачками. Возвращает (взято, разбито, plan)."""
+    from db import get_setting, set_setting
+    raw = await get_setting("homograph_done")
+    done = set(json.loads(raw)) if raw else set()
+    todo = [c for c in await _candidates(None) if c["id"] not in done][:n]
+    if not todo:
+        return 0, 0, []
+    plan = await _process(todo, apply=True)
+    done |= {c["id"] for c in todo}
+    await set_setting("homograph_done", json.dumps(sorted(done)))
+    return len(todo), len(plan), plan
