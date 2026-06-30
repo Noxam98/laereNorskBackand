@@ -19,17 +19,20 @@ _SYS = (
     "русский инфинитив), adjective (прил.), adverb (наречие). НИЧЕГО не выдумывай и не добавляй — только "
     "разложи ДАННЫЕ значения по корзинам. Если все значения одной части речи — клади все в одну корзину."
 )
+_STR_ARR = {"type": "array", "items": {"type": "string"}}
 _SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["results"],
-    "properties": {"results": {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["word"],
-        "properties": {
-            "word": {"type": "string"},
-            "noun": {"type": "array", "items": {"type": "string"}},
-            "verb": {"type": "array", "items": {"type": "string"}},
-            "adjective": {"type": "array", "items": {"type": "string"}},
-            "adverb": {"type": "array", "items": {"type": "string"}},
-        }}}}}
+    "name": "homograph_split",
+    "schema": {
+        "type": "object",
+        "properties": {"results": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"word": {"type": "string"}, "noun": _STR_ARR, "verb": _STR_ARR,
+                           "adjective": _STR_ARR, "adverb": _STR_ARR},
+            "required": ["word"],
+        }}},
+        "required": ["results"],
+    },
+}
 
 
 async def _candidates(limit):
