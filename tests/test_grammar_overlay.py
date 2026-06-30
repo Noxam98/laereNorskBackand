@@ -181,3 +181,60 @@ async def test_grammar_answer_does_not_touch_base_srs(fresh_db):
 
     await apply_result(uid, pid, True, mode="input", direction="indefpl")    # ВЕРНЫЙ ввод мн.ч.
     assert await _srs_row(uid, pid) == before, "верный грамм-ответ изменил base-SRS выученного слова"
+
+
+# ── VERB-срез: ввод нерегулярных форм (членство в слабых классах, НЕ «≠ канону») ──────────────
+_DATA_VERB = json.dumps({"part_of_speech": "verb", "translate": {"ru": ["x"]}})
+_SKRIVE = {"pos": "verb", "present": "skriver", "past": "skrev", "perfect": "har skrevet"}   # сильный
+_LAGE = {"pos": "verb", "present": "lager", "past": "laget", "perfect": "har laget"}         # слабый двухклассовый
+_SNAKKE = {"pos": "verb", "present": "snakker", "past": "snakket", "perfect": "har snakket"}  # регуляр
+
+
+def test_grammar_cells_verb_strong():
+    # сильный: претерит skrev и причастие skrevet НЕ выводятся слабым правилом → дриллим оба
+    assert _grammar_cells("skrive", _DATA_VERB, _SKRIVE) == ["input_past", "input_perfect"]
+
+
+def test_grammar_cells_verb_weak_dualclass_empty():
+    # слабый двухклассовый (lage→laget валидно) — НЕ дриллим: членство в слабых классах, не «≠ канону»
+    assert _grammar_cells("lage", _DATA_VERB, _LAGE) == []
+    assert _grammar_cells("snakke", _DATA_VERB, _SNAKKE) == []
+
+
+# ── ADJECTIVE-срез: согласование/степени, когда факт ≠ правилу (или супплетив) ────────────────
+_DATA_ADJ = json.dumps({"part_of_speech": "adjective", "translate": {"ru": ["x"]}})
+_GOD = {"pos": "adjective", "neuter": "godt", "plural": "gode", "comparative": "bedre", "superlative": "best"}
+_FIN = {"pos": "adjective", "neuter": "fint", "plural": "fine", "comparative": "finere", "superlative": "finest"}
+
+
+def test_grammar_cells_adj_suppletive_degrees():
+    # god→bedre→best: степени супплетивны → дриллим; ср.род/мн. регулярны → нет
+    assert _grammar_cells("god", _DATA_ADJ, _GOD) == ["input_comparative", "input_superlative"]
+
+
+def test_grammar_cells_adj_regular_empty():
+    assert _grammar_cells("fin", _DATA_ADJ, _FIN) == []
+
+
+def test_grammar_element_input_form_shape():
+    # любая input-форма: mode input, direction = суффикс клетки, target из forms, строгая сверка; pos параметризован
+    el = _grammar_element({"pool_id": 9, "norwegian": "skrive", "mastered": 1}, "input_past", _SKRIVE,
+                          {"part_of_speech": "verb"})
+    assert el["mode"] == "input" and el["direction"] == "past" and el["grammar"] is True
+    assert el["part_of_speech"] == "verb"                 # pos НЕ захардкожен noun
+    assert el["target"] == {"field": "past", "value": "skrev"}
+    assert el["prompt"]["formLabel"] == "past" and el["scoring"] == {"typoForgive": False}
+    ela = _grammar_element({"pool_id": 9, "norwegian": "god", "mastered": 1}, "input_superlative", _GOD,
+                           {"part_of_speech": "adjective"})
+    assert ela["direction"] == "superlative" and ela["target"]["value"] == "best"
+
+
+async def test_overlay_surfaces_for_mastered_verb(fresh_db):
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "skrive", "писать", pos="verb")
+    await _set_forms(pid, _SKRIVE)
+    await _master(uid, pid)
+    res = await build_session(uid, size=20)
+    grams = [w for w in res["words"] if w.get("grammar")]
+    assert grams and grams[0]["pool_id"] == pid
+    assert grams[0]["step"] in ("input_past", "input_perfect", "input_present")
