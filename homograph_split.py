@@ -1,0 +1,100 @@
+"""LLM-классификация омонимов (сущ./глаг./прил.) в пуле и разбиение на per-pos записи.
+
+Эвристика по русским окончаниям НЕ работает (быть/мочь короткие; «прочность»/-ость — ложняк),
+поэтому части речи определяет LLM: каждый русский перевод → к своей части речи. Запись оставляет
+значения СВОЕЙ части речи, остальные части речи → отдельные записи-омонимы (norwegian, pos).
+dry_run=True — только план, БД не трогаем (после прошлого инцидента — сперва смотрим, потом применяем).
+"""
+import json
+
+import errors
+from llm import ask_json
+from db.core import _conn, _release, normalize_word
+from db.pool import get_or_create_pool, update_pool_translate, get_pool_by_id
+
+_POS = ("noun", "verb", "adjective", "adverb")
+_SYS = (
+    "Ты лексикограф норвежского (bokmål). На входе норвежское слово и его русские переводы вперемешку. "
+    "Распредели КАЖДЫЙ русский перевод по части речи, которую он выражает: noun (сущ.), verb (глагол — "
+    "русский инфинитив), adjective (прил.), adverb (наречие). НИЧЕГО не выдумывай и не добавляй — только "
+    "разложи ДАННЫЕ значения по корзинам. Если все значения одной части речи — клади все в одну корзину."
+)
+_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["results"],
+    "properties": {"results": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["word"],
+        "properties": {
+            "word": {"type": "string"},
+            "noun": {"type": "array", "items": {"type": "string"}},
+            "verb": {"type": "array", "items": {"type": "string"}},
+            "adjective": {"type": "array", "items": {"type": "string"}},
+            "adverb": {"type": "array", "items": {"type": "string"}},
+        }}}}}
+
+
+async def _candidates(limit):
+    """Записи (сущ./глаг./прил.) с ≥2 рус. переводами — потенциальные омонимы. Частотные первыми."""
+    db = await _conn()
+    try:
+        out = []
+        async with db.execute(
+            "SELECT id, norwegian, data, freq, COALESCE(pos,'') p FROM word_pool "
+            "WHERE lower(COALESCE(pos,'')) IN ('noun','verb','adjective')") as cur:
+            for r in await cur.fetchall():
+                d = json.loads(r["data"]) if r["data"] else {}
+                ru = [x.strip() for x in (d.get("translate", {}).get("ru") or []) if x and x.strip()]
+                if len(ru) >= 2:
+                    out.append({"id": r["id"], "no": r["norwegian"], "pos": r["p"], "ru": ru, "freq": r["freq"] or 0})
+        out.sort(key=lambda c: -c["freq"])
+        return out[:limit] if limit else out
+    finally:
+        await _release(db)
+
+
+def _buckets(item):
+    b = {}
+    for k in _POS:
+        v = [x.strip() for x in (item.get(k) or []) if isinstance(x, str) and x.strip()]
+        if v:
+            b[k] = v
+    return b
+
+
+async def split_homographs(dry_run=True, limit=None, batch=15):
+    """План разбиения омонимов (и применить при dry_run=False).
+    Делим запись ТОЛЬКО если LLM нашёл ≥2 части речи И у исходного pos есть значения. Возвращает
+    [{id, word, pos, keep_ru, others:{pos:[ru]}}]."""
+    cands = await _candidates(limit)
+    by_key = {normalize_word(c["no"]): c for c in cands}
+    plan = []
+    for i in range(0, len(cands), batch):
+        chunk = cands[i:i + batch]
+        user = "Слова:\n" + "\n".join(f"- {c['no']}: {', '.join(c['ru'])}" for c in chunk)
+        try:
+            res = await ask_json(_SYS, user, _SCHEMA, purpose="autofill",
+                                 label=f"омонимы ({len(chunk)})", temperature=0)
+        except Exception as e:
+            errors.report(e, "split_homographs")
+            continue
+        for item in (res or {}).get("results", []):
+            c = by_key.get(normalize_word(item.get("word") or ""))
+            if not c:
+                continue
+            b = _buckets(item)
+            if c["pos"] not in b or len(b) < 2:
+                continue   # одна часть речи (или у исходного pos нет значений) — не делим
+            plan.append({"id": c["id"], "word": c["no"], "pos": c["pos"],
+                         "keep_ru": b[c["pos"]], "others": {k: v for k, v in b.items() if k != c["pos"]}})
+    if not dry_run:
+        for p in plan:
+            row = await get_pool_by_id(p["id"])
+            data = (row or {}).get("data") or {}
+            if isinstance(data, str):
+                data = json.loads(data)
+            tr = dict((data or {}).get("translate", {}))
+            tr["ru"] = p["keep_ru"]
+            await update_pool_translate(p["id"], tr)   # оригинал: оставить значения своей части речи
+            for opos, oru in p["others"].items():       # прочие части речи → отдельные записи-омонимы
+                await get_or_create_pool(p["word"], {"word": p["word"], "part_of_speech": opos,
+                                                     "translate": {"ru": oru}})
+    return plan
