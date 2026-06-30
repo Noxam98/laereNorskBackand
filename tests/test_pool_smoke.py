@@ -94,6 +94,22 @@ async def test_meta_forms_pos(fresh_db):
     await P.clear_all_descriptions()
 
 
+async def test_lemma_redirect_form_to_lemma(fresh_db):
+    """Новое слово-ФОРМА привязывается к существующей лемме (по колонке forms), дубль НЕ создаётся;
+    юзер всё равно получает слово — лемму из базы. Незнакомое слово создаётся как новое."""
+    lemma = await _seed("dag", "день", pos="noun")
+    await P.set_pool_forms(lemma, {"pos": "noun", "gender": "en", "def_sg": "dagen",
+                                   "indef_pl": "dager", "def_pl": "dagene"})
+    got = await P.get_or_create_pool("dager", {  # форма «dager» → редирект на лемму dag
+        "word": "dager", "translate": {"ru": ["дни"]}, "part_of_speech": "noun"})
+    assert got == lemma
+    other = await _seed("katt", "кошка", pos="noun")   # незнакомое слово — новая запись
+    assert other != lemma
+    asverb = await P.get_or_create_pool("dager", {     # pos-несовместимость: глагол не редиректится на сущ.
+        "word": "dager", "translate": {"ru": ["х"]}, "part_of_speech": "verb"})
+    assert asverb != lemma
+
+
 async def test_clear_all_forms_and_exact_pos_filter(fresh_db):
     """clear_all_forms зануляет только formable; POS-фильтр точный по канон-колонке (pronoun ≠ noun)."""
     n = await _seed("hund", "собака", pos="noun")

@@ -180,6 +180,34 @@ async def fuzzy_pool_ids(db, query, limit=10):
     return await asyncio.to_thread(_fuzzy_scan, qn, _FUZZY_IDX["flat"], limit)
 
 
+async def _lemma_redirect(db, key, pos):
+    """Если новое слово `key` (нормализованное) — ФОРМА уже существующей леммы (значится в её колонке
+    forms), вернуть id этой леммы: привязываем юзера к лемме, а дубль-форму не создаём. Только при
+    ОДНОЗНАЧНОМ совпадении (ровно одна подходящая лемма) и совместимом pos — иначе None (создаём как
+    обычно). LIKE — грубый префильтр, дальше точная сверка по распарсенным формам (исключаем подстроки)."""
+    cands = []
+    async with db.execute(
+        "SELECT id, norwegian, forms, COALESCE(pos,'') p FROM word_pool WHERE forms LIKE ?",
+        (f"%{key}%",)) as cur:
+        rows = await cur.fetchall()
+    for r in rows:
+        try:
+            f = json.loads(r["forms"]) if r["forms"] else {}
+        except Exception:
+            continue
+        vals = set()
+        for k2, v in f.items():
+            if k2 in ("pos", "gender") or not isinstance(v, str):
+                continue
+            for part in v.replace("har ", "").replace("er ", "").split("/"):
+                vals.add(part.strip().lower())
+        if key in vals and (r["norwegian"] or "").strip().lower() != key:
+            if pos and r["p"] and r["p"] != pos:   # часть речи несовместима — не редиректим
+                continue
+            cands.append(r["id"])
+    return cands[0] if len(cands) == 1 else None
+
+
 async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None, approved: int = 1):
     """Вернуть id записи пула для (норвежское слово + часть речи), создав её при необходимости.
     Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи.
@@ -197,6 +225,11 @@ async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None,
             row = await cur.fetchone()
             if row:
                 return row["id"]
+        # новое слово: если это ФОРМА существующей леммы (dager→dag, gir→gi) — привязываем к лемме,
+        # дубль-форму не создаём (юзер всё равно получает слово — лемму из базы)
+        lemma_id = await _lemma_redirect(db, key, pos)
+        if lemma_id:
+            return lemma_id
         # частотность проставляем СРАЗУ при создании — из корпус-лексикона (нет в нём → 0.0)
         cur = await db.execute(
             "INSERT INTO word_pool (norwegian, data, created_at, pos, created_by, approved, freq) "
