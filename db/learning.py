@@ -1094,7 +1094,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             continue
         cell, mode, direction = step
         pid = e["row"]["pool_id"]
-        data = json.loads(e["row"]["data"]) if e["row"].get("data") else {}
+        data = e["data"] or {}   # уже распарсено в _load — не парсим data повторно на каждый элемент
         el = {
             "pool_id": pid, "no": e["row"]["norwegian"],
             "translate": data.get("translate", {}),

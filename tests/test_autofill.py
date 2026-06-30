@@ -94,12 +94,28 @@ async def test_forms_batch(fresh_db, mock_ask):
 
 
 async def test_forms_batch_noun_without_gender_skipped(fresh_db, mock_ask):
-    """Анти-залип: noun без gender НЕ сохраняем (вернётся в очередь) — gender = источник артикля."""
+    """Анти-залип: noun без gender первые попытки НЕ сохраняем (вернётся в очередь, ждём род)."""
+    import autofill_enrich
+    autofill_enrich._NOUN_NOGENDER_TRIES.clear()   # счётчик процесса — изолируем тест
     pid = await _seed("bok", "книга")
     mock_ask({"results": [{"word": "bok", "def_sg": "boka", "indef_pl": "bøker"}]})   # без gender
     assert await autofill.forms_batch("noun", [(pid, "bok", {})]) == 0
     by = await get_pool_by_id(pid)
     assert not by["forms"]   # формы не сохранили → слово ещё «без форм», повторит на след. круге
+
+
+async def test_forms_batch_noun_nogender_saved_after_cap(fresh_db, mock_ask):
+    """После CAP промахов рода слово СОХРАНЯЕТСЯ без gender — выходит из очереди, не сливает квоту вечно."""
+    import autofill_enrich
+    autofill_enrich._NOUN_NOGENDER_TRIES.clear()
+    cap = autofill_enrich._NOUN_NOGENDER_CAP
+    pid = await _seed("bok", "книга")
+    mock_ask({"results": [{"word": "bok", "def_sg": "boka", "indef_pl": "bøker"}]})   # без gender, каждый раз
+    for _ in range(cap - 1):                         # первые CAP-1 — ретраи (skip)
+        assert await autofill.forms_batch("noun", [(pid, "bok", {})]) == 0
+    assert await autofill.forms_batch("noun", [(pid, "bok", {})]) == 1   # CAP-я — сдаёмся, сохраняем
+    by = await get_pool_by_id(pid)
+    assert by["forms"] and by["forms"].get("pos") == "noun" and not by["forms"].get("gender")
 
 
 async def test_ai_game_words(fresh_db, mock_ask):

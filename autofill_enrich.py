@@ -164,6 +164,15 @@ _FORMS = {
              "(включая нерегулярные степени): comparative, superlative, neuter (средний род -t), "
              "plural (мн./опр. -e). Поле word — ровно как на входе.")),
 }
+# Анти-залип noun-без-gender: счётчик промахов рода по pid (в памяти процесса). gender — источник
+# артикля (en/ei/et), поэтому ретраим, надеясь, что модель его вернёт; но после CAP промахов сдаёмся
+# и сохраняем слово без рода — чтобы оно вышло из очереди pos_missing_forms и не сливало квоту Gemini
+# вечными перезапросами (хвост misclassified-слов, которым род не присвоить). Раз сохранили — слово
+# больше не в очереди, так что рестарт процесса (сброс счётчика) повторно его не тянет.
+_NOUN_NOGENDER_TRIES = {}
+_NOUN_NOGENDER_CAP = 3
+
+
 async def forms_batch(category, rows):
     """rows: [(pid, norwegian, data)]. Генерит грамм. формы пачкой (temperature=0) и сохраняет.
     Сопоставление по ВХОДНОМУ слову (как в describe) — модель могла переписать. Возвращает кол-во."""
@@ -190,11 +199,15 @@ async def forms_batch(category, rows):
         seen.add(pid)
         forms = {f: r[f].strip() for f in cfg["fields"]
                  if isinstance(r.get(f), str) and r[f].strip() and r[f].strip().lower() not in ("-", "null")}
-        # Анти-залип: noun без gender НЕ сохраняем (gender = источник артикля en/ei/et). Слово
-        # вернётся в очередь pos_missing_forms и попробует снова. enum+required в схеме делают
-        # пропуск редким; иначе после массового вайпа сущ. навсегда осталось бы без артикля.
+        # Анти-залип noun без gender: ретраим ОГРАНИЧЕННО (gender = источник артикля en/ei/et —
+        # ждём, что модель вернёт его на след. круге; enum+required в схеме делают промах редким).
+        # После CAP промахов сдаёмся и сохраняем без рода, иначе misclassified-слово сливало бы квоту
+        # вечно (см. константы выше).
         if category == "noun" and not forms.get("gender"):
-            continue
+            if _NOUN_NOGENDER_TRIES.get(pid, 0) + 1 < _NOUN_NOGENDER_CAP:
+                _NOUN_NOGENDER_TRIES[pid] = _NOUN_NOGENDER_TRIES.get(pid, 0) + 1
+                continue
+        _NOUN_NOGENDER_TRIES.pop(pid, None)   # успех или сдача — счётчик больше не нужен
         # сохраняем даже пустые формы (только pos) — чтобы слово считалось «обработанным» и не зациклилось
         await set_pool_forms(pid, {"pos": category, **forms})
         done += 1
