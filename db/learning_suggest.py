@@ -1,0 +1,250 @@
+"""Подсказки/статистика «Учёбы»: сводка прогресса, рабочий уровень, докидывание новых слов/фраз,
+добор карточек-знакомств. Вынесено из learning.py.
+
+Публичное: learning_stats (роутер/__init__), suggest_words/next_new_cards (роутер), suggest_phrases/
+_phrase_supply/estimate_level (зовёт build_session) — реэкспортируются обратно в learning ПОСЛЕДНИМИ
+(после exams/placement, т.к. зависят от них). Сами функции — тонкая надстройка над ядром learning."""
+import json
+
+from .core import _conn, _release, _now
+from .learning import (
+    LEVELS, LEVEL_TARGETS, _LEVEL_ORDER, PACK, PACK_FIRST, PHRASE_BUFFER, AUDIT_CAP,
+    _fetch_user_words, _activity_metrics, _shape, is_function_word,
+)
+from .exams import _audit_throttled, new_words_blocked
+from .placement import get_start_level
+
+
+async def learning_stats(user_id):
+    db = await _conn()
+    try:
+        rows = await _fetch_user_words(db, user_id)
+        activity = await _activity_metrics(db, user_id)
+        throttled = await _audit_throttled(db, user_id)
+    finally:
+        await _release(db)
+    items = [_shape(r) for r in rows]
+    by_status = {}
+    by_level = {lv: {"total": 0, "mastered": 0, "target": LEVEL_TARGETS[lv], "done": False} for lv in LEVELS}
+    due_count = 0
+    for w in items:
+        by_status[w["dstatus"]] = by_status.get(w["dstatus"], 0) + 1   # счётчики по ОТОБРАЖАЕМОМУ статусу
+        # «к повторению» = только то, что РЕАЛЬНО попадёт в задание: сертифицированные слова
+        # повторяются отдельным аудитом (по audit_due), их due_at — вестигиальный (остаётся старым
+        # после сертификации) и не должен надувать счётчик «повторить» на карточке (фантомные due).
+        if w["due"] and not w["certified"]:
+            due_count += 1
+        lv = w["level"] if w["level"] in by_level else None
+        if lv:
+            by_level[lv]["total"] += 1
+            if w["status"] in ("mastered", "archived"):
+                by_level[lv]["mastered"] += 1
+    for lv in LEVELS:
+        by_level[lv]["done"] = by_level[lv]["mastered"] >= by_level[lv]["target"]
+    # текущий уровень = первый незакрытый по цели, но не ниже уровня из входного теста
+    computed = next((lv for lv in LEVELS if not by_level[lv]["done"]), "C2")
+    start = await get_start_level(user_id)
+    current = computed
+    if start and _LEVEL_ORDER.get(start, 0) > _LEVEL_ORDER.get(computed, 0):
+        current = start
+    cur = by_level[current]
+    to_next = max(0, cur["target"] - cur["mastered"])
+    # ретеншн = доля выученных среди (выучено+слабых); «выучено за неделю» — по last_seen
+    from datetime import datetime, timedelta
+    # «выучено» для ретеншна = mastered + repeat (повтор — это тоже выученное, просто подошёл срок) + архив
+    mastered_n = (by_status.get("mastered", 0) + by_status.get("repeat", 0) + by_status.get("archived", 0))
+    weak_n = by_status.get("weak", 0)
+    retention = round(100 * mastered_n / (mastered_n + weak_n)) if (mastered_n + weak_n) else None
+    week_cut = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    mastered_week = sum(1 for w in items if w["status"] in ("mastered", "archived") and (w.get("last_seen") or "") >= week_cut)
+    # ворота зачётного экзамена: размер несданной пачки и порог
+    pack_n = sum(1 for w in items if w["status"] == "mastered" and not w["certified"])
+    had_cert = any(w["certified"] for w in items)
+    threshold = PACK if had_cert else PACK_FIRST
+    gate = {"pack": pack_n, "threshold": threshold, "open": pack_n >= threshold,
+            "toExam": max(0, threshold - pack_n)}
+    # аудит забывания: сколько сертифицированных слов уже пора проверить (audit_due <= now)
+    now_iso = _now()
+    audit_due_n = sum(1 for w in items if w["certified"] and w["audit_due"] and w["audit_due"] <= now_iso)
+    # throttled — активен ли мягкий тормоз новых после аудита (>THROTTLE забытого); newBlocked — закрыт ли приток новых вообще
+    audit = {"due": audit_due_n, "cap": AUDIT_CAP, "open": audit_due_n > 0, "throttled": throttled}
+    return {"total": len(items), "due": due_count, "byStatus": by_status, "byLevel": by_level,
+            "currentLevel": current, "toNextLevel": to_next, "startLevel": start, "placed": bool(start),
+            "streak": activity["streak"], "today": activity["today"], "accuracy": activity["accuracy"],
+            "retention": retention, "masteredWeek": mastered_week, "gate": gate, "audit": audit}
+
+
+async def estimate_level(user_id):
+    """Рабочий уровень для подсказок — текущий уровень по целям (первый незакрытый)."""
+    return (await learning_stats(user_id))["currentLevel"]
+
+
+async def suggest_words(user_id, count=10, level=None, allow_func=True):
+    """«Докинуть слов»: добавить НОВЫЕ слова пула по уровню пользователя, которых у него ещё нет,
+    в СКРЫТЫЙ авто-словарь (hidden=1, studying=1) — чтобы не засорять личные словари, но они
+    были видны в Учёбе. Возвращает добавленные. Импорт здесь, чтобы избежать циклов.
+    Гейт ворот: пока несданная пачка открыта на экзамен — приток новых слов закрыт."""
+    from .pool import pool_by_freq, pool_by_freq_topics
+    from .users import get_user_focus_topics
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
+    if await new_words_blocked(user_id):
+        return {"added": 0, "words": [], "level": None, "blocked": True}
+    lvl = level if level in LEVELS else await estimate_level(user_id)
+    # целевой — скрытый авто-словарь (получить-или-создать)
+    target_id = await get_or_create_hidden_dict(user_id)
+    db = await _conn()
+    try:
+        # уже имеющиеся слова — по ВСЕМ словарям пользователя (чтобы не дублировать существующие)
+        async with db.execute("SELECT DISTINCT pool_id FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)", (user_id,)) as cur:
+            have = {r["pool_id"] for r in await cur.fetchall()}
+        # персональная свалка «не учить» — НИКОГДА не предлагать этому юзеру (даже если модератор оставил)
+        async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    # кандидаты по уровню, по ЧАСТОТНОСТИ. ВАЖНО: окно расширяем за все уже имеющиеся слова —
+    # иначе у юзера с большим словарём топ-N по частоте уже целиком его, новых не находится и пул
+    # кажется «исчерпанным» (сессии тают до 1–3 слов, перестают смешиваться).
+    window = len(have) + max(count * 6, 60)
+    cand = await pool_by_freq(window, lvl)
+    # Фокус на темах: ~1 из 3 кандидатов — из выбранных тем (по частоте), пока тема-слова не кончатся.
+    # Пусто → cand без изменений (поведение ровно как раньше). Дедуп — общим циклом ниже (have).
+    focus = await get_user_focus_topics(user_id)
+    if focus:
+        topic_cand = await pool_by_freq_topics(window, lvl, focus)
+        if topic_cand:
+            merged, ti, ni = [], 0, 0
+            while ti < len(topic_cand) or ni < len(cand):
+                if ti < len(topic_cand):
+                    merged.append(topic_cand[ti]); ti += 1
+                for _ in range(2):
+                    if ni < len(cand):
+                        merged.append(cand[ni]); ni += 1
+            cand = merged
+    added = []
+    for w in cand:
+        if len(added) >= count:
+            break
+        pid = w["pool_id"]
+        if not pid or pid in have:
+            continue
+        # гейт A1: пока нет базы контентных — служебные не досыпаем (иначе «новый пул» забьётся ими)
+        if not allow_func and is_function_word(w["norwegian"], {"part_of_speech": w.get("part_of_speech")}):
+            continue
+        res = await add_word_to_dict(user_id, target_id, pid)
+        if res.get("id") and not res.get("duplicate"):
+            added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
+            have.add(pid)
+    return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
+
+
+async def _phrase_supply(db, user_id):
+    """Сколько у юзера ещё НЕ начатых устойчивых выражений в Учёбе (studying-словари, 0 попыток,
+    не архив/не «знакомые») — для троттлинга подмешивания фраз."""
+    async with db.execute(
+        """SELECT COUNT(*) c FROM dict_words dw
+           JOIN dictionaries d ON d.id = dw.dict_id AND d.user_id = ? AND COALESCE(d.studying,1) = 1
+           JOIN word_pool wp ON wp.id = dw.pool_id AND wp.pos = 'phrase'
+           LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
+           WHERE COALESCE(uw.correct,0) + COALESCE(uw.incorrect,0) = 0
+             AND COALESCE(uw.archived,0) = 0 AND COALESCE(uw.known,0) = 0""",
+        (user_id, user_id)) as cur:
+        return (await cur.fetchone())["c"]
+
+
+async def suggest_phrases(user_id, count=PHRASE_BUFFER, level=None):
+    """Подмешать НОВЫЕ устойчивые выражения (pos='phrase') в Учёбу — в СКРЫТЫЙ авто-словарь
+    (studying=1), как suggest_words. КУМУЛЯТИВНО по уровню: фразы ВСЕХ уровней ≤ уровня юзера
+    (это словосочетания, а не элементарные слова — младшие уместны и на старших уровнях). Только
+    game-ready (есть data.game.distractors ≥2 — иначе order-игра пустая), которых у юзера ещё нет.
+    Возвращает {added}. Приток закрыт воротами экзамена → ничего не добавляем."""
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
+    if await new_words_blocked(user_id):
+        return {"added": 0, "blocked": True}
+    lvl = level if level in LEVELS else await estimate_level(user_id)
+    allowed = LEVELS[:LEVELS.index(lvl) + 1] if lvl in LEVELS else LEVELS[:1]   # A1..lvl
+    target_id = await get_or_create_hidden_dict(user_id)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT DISTINCT pool_id FROM dict_words WHERE dict_id IN (SELECT id FROM dictionaries WHERE user_id = ?)", (user_id,)) as cur:
+            have = {r["pool_id"] for r in await cur.fetchall()}
+        async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
+        marks = ",".join("?" for _ in allowed)
+        # 'A1'<'A2'<'B1'… лексикографически = по возрастанию CEFR → младшие фразы первыми (фундамент)
+        async with db.execute(
+            f"SELECT id, norwegian, data FROM word_pool "
+            f"WHERE pos='phrase' AND COALESCE(learn_excluded,0)=0 AND level IN ({marks}) "
+            f"ORDER BY level, id", allowed) as cur:
+            cands = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+    added = 0
+    for c in cands:
+        if added >= count:
+            break
+        pid = c["id"]
+        if pid in have:
+            continue
+        try:
+            g = ((json.loads(c["data"]) if c["data"] else {}).get("game") or {}).get("distractors") or []
+        except Exception:
+            g = []
+        if len(g) < 2:                    # без дистракторов order-игра пустая — пропускаем
+            continue
+        res = await add_word_to_dict(user_id, target_id, pid)
+        if res.get("id") and not res.get("duplicate"):
+            added += 1
+            have.add(pid)
+    return {"added": added}
+
+
+async def _own_new_card_rows(user_id, exclude):
+    """СОБСТВЕННЫЕ ещё не начатые новые слова юзера (как их берёт build_session): из словарей «в
+    обучении», 0 попыток, не архив/не «знакомые». По частоте. exclude — pool_id уже в очереди."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            """SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.forms
+               FROM dict_words dw
+               JOIN dictionaries d ON d.id = dw.dict_id AND d.user_id = ? AND COALESCE(d.studying, 1) = 1
+               JOIN word_pool wp ON wp.id = dw.pool_id
+               LEFT JOIN user_words uw ON uw.user_id = ? AND uw.pool_id = wp.id
+               WHERE COALESCE(uw.correct,0) + COALESCE(uw.incorrect,0) = 0
+                 AND COALESCE(uw.archived,0) = 0 AND COALESCE(uw.known,0) = 0
+                 AND COALESCE(wp.learn_excluded,0) = 0
+               GROUP BY wp.id
+               ORDER BY wp.freq IS NULL, wp.freq DESC""", (user_id, user_id)) as cur:
+            return [r for r in await cur.fetchall() if r["pool_id"] not in exclude]
+    finally:
+        await _release(db)
+
+
+async def next_new_cards(user_id, n=5, exclude=None):
+    """Живая сессия: добор НОВЫХ карточек-знакомств по требованию (когда юзер убрал карточку кнопкой,
+    а не «принял» тыком). СНАЧАЛА отдаёт СОБСТВЕННЫЕ ещё не начатые новые слова юзера (их может быть
+    много — он ими владеет, просто не дошёл), и лишь если своих не хватило — досыпает из общего пула
+    через suggest_words. exclude — pool_id, уже стоящие в очереди. Карточки той же формы, что
+    build_session. {"cards": [...]} либо {"cards": [], "blocked": True}, если приток новых закрыт воротами."""
+    exclude = set(exclude or [])
+    n = max(1, min(int(n or 1), 20))
+    if await new_words_blocked(user_id):          # ворота экзамена / тормоз аудита — новые не вводим
+        return {"cards": [], "blocked": True}
+    rows = await _own_new_card_rows(user_id, exclude)
+    if len(rows) < n:                             # своих не хватило → досыпаем из пула и перечитываем
+        await suggest_words(user_id, count=(n - len(rows)) + len(exclude) + 4)
+        rows = await _own_new_card_rows(user_id, exclude)
+    if not rows:
+        return {"cards": []}
+    cards = []
+    for r in rows[:n]:
+        data = json.loads(r["data"]) if r["data"] else {}
+        cards.append({
+            "pool_id": r["pool_id"], "no": r["norwegian"],
+            "translate": data.get("translate", {}),
+            "part_of_speech": data.get("part_of_speech", ""),
+            "gloss": data.get("gloss"), "example": data.get("example"),
+            "forms": (json.loads(r["forms"]) if r["forms"] else None),
+            "mode": "study", "direction": None, "step": "card", "repeat": False,
+        })
+    return {"cards": cards}

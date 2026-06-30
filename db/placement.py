@@ -3,7 +3,7 @@
 (движок-ядро остаётся там); реэкспортируется через learning.py и db.
 """
 from .core import _conn, _release
-from .learning import LEVELS, PLACEMENT_INPUT_LEVELS, _fold_loose, suggest_words
+from .learning import LEVELS, PLACEMENT_INPUT_LEVELS, _fold_loose
 
 # Калибровка входного теста — консервативная (тест НЕ должен завышать уровень):
 PLACEMENT_PASS = 0.8     # порог сдачи уровня: >= 80% верных
@@ -156,5 +156,6 @@ async def seed_starter(user_id, level, target=STARTER_GOAL):
     need = target - have
     if need <= 0:
         return {"seeded": 0, "had": have}
+    from .learning import suggest_words   # ленивый: suggest_words вынесен в learning_suggest (грузится позже placement)
     res = await suggest_words(user_id, count=need, level=level)
     return {"seeded": res.get("added", 0), "had": have}
