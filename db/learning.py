@@ -839,18 +839,15 @@ async def _attach_choice_options(session, lang, n=3):
     choice = [e for e in session if e.get("mode") == "choice" and not e.get("grammar")]
     if not choice:
         return
-    from llm import ranked_pool  # ленивый импорт — избегаем цикла импортов на старте
-    # эмбеддинги нужных слов — одним запросом
+    import embcache
+    from db import get_pool_words_by_ids
     pids = [e["pool_id"] for e in choice]
-    emb = {}
-    db = await _conn()
-    try:
-        marks = ",".join("?" for _ in pids)
-        async with db.execute(f"SELECT id, embedding FROM word_pool WHERE id IN ({marks})", pids) as cur:
-            for r in await cur.fetchall():
-                emb[r["id"]] = r["embedding"]
-    finally:
-        await _release(db)
+    # ── Дистракторы из РЕЗИДЕНТНОГО кеша эмбеддингов (RAM): один matvec на все choice-слова +
+    # один батч-запрос за словами-соседями. Без sqlite-KNN. Всегда свежо (матрица — текущая),
+    # новое слово сразу кандидат для всех; на перезапуске кеш встаёт из БД.
+    nbr_map = await embcache.candidates_for(pids, 45)
+    all_nb = {i for pid in pids for i in (nbr_map.get(pid) or [])}
+    words = await get_pool_words_by_ids(list(all_nb)) if all_nb else {}
 
     def answer_of(d, no, direction):
         # до ДВУХ вариантов ответа: (основной, второй|None)
@@ -872,7 +869,8 @@ async def _attach_choice_options(session, lang, n=3):
         own = ({(no or "").strip().lower()} | {x.strip().lower() for x in (tr_all.get("no") or []) if x}) \
             if direction == "int2no" else set(target_mean)
         own.discard("")
-        ordered = await ranked_pool(emb.get(e["pool_id"]), no, 40) if emb.get(e["pool_id"]) else []
+        nb_ids = nbr_map.get(e["pool_id"]) or []   # уже по убыванию близости (matvec в RAM)
+        ordered = [words[i] for i in nb_ids if i in words]
         out, seen = [], set(own)
         for c in ordered:
             cd = c.get("data") or {}

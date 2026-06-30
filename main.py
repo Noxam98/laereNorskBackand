@@ -129,6 +129,14 @@ async def startup():
         logger.info("freq queue enabled: простановка частотности слов (Zipf)")
         asyncio.create_task(yo_fix_loop())
         logger.info("yo-fix queue enabled: бэкилл буквы «ё» в русских переводах + переозвучка")
+    # Резидентный кеш эмбеддингов в RAM — дистракторы сессии считаем matvec'ом, без sqlite-KNN.
+    # Источник правды — БД (/data); на старте кеш встаёт из неё, в рантайме синкается set_pool_embedding.
+    try:
+        import embcache
+        await embcache.ensure_loaded()
+        logger.info(f"emb cache loaded: {embcache.cache_stats()}")
+    except Exception as e:
+        logger.warning(f"emb cache load failed: {e}")
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")

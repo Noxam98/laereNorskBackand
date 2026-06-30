@@ -40,7 +40,12 @@ async def set_pool_embedding(pool_id: int, data):
         await db.commit()
     finally:
         await _release(db)
-    await vec_upsert(pool_id, data)  # держим ANN-индекс в синхроне
+    await vec_upsert(pool_id, data)  # держим sqlite-vec индекс в синхроне (поиск по Базе)
+    try:                             # держим резидентный кеш эмбеддингов свежим (дистракторы сессии)
+        import embcache
+        embcache.update_vec(pool_id, data)
+    except Exception:
+        pass
 
 
 async def get_pool_embeddings_raw():

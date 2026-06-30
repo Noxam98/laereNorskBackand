@@ -29,6 +29,7 @@ from .pool import (
     sem_embed_pending, mark_sem_embed, get_pool_sample, get_pool_letter, get_pool_duel_words, get_pool_words_by_names,
     set_pool_meta, pool_missing_meta, pool_missing_description, clear_all_descriptions, get_pool_topics_counts, get_pool_level_counts, get_pool_facets, get_pool_meta,
     get_pool_candidates, set_pool_description, delete_pool_word,
+    get_pool_words_by_ids, load_pool_embeddings,
     get_pool_list, get_pool_ids, search_pool, get_pool_stats,
     pending_words, pending_count, set_word_approval,
     report_word, skip_word, reported_words, reported_count, resolve_report,

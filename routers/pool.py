@@ -246,6 +246,13 @@ async def admin_homograph(user=Depends(get_admin_user)):
     return await homograph_summary()
 
 
+@router.get("/admin/neighbors")
+async def admin_neighbors(user=Depends(get_admin_user)):
+    """Статус резидентного кеша эмбеддингов (дистракторы): сколько векторов в RAM, размерность, МБ."""
+    import embcache
+    return embcache.cache_stats()
+
+
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(get_current_user)):
     return {"results": await search_pool(q, limit, lang)}

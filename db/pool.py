@@ -723,6 +723,35 @@ async def get_pool_candidates():
     return out
 
 
+# --- Поддержка резидентного кеша эмбеддингов (embcache): дистракторы без живого KNN ---
+async def get_pool_words_by_ids(ids):
+    """{id: {norwegian, data(dict)}} по списку id — батч-загрузка слов-соседей для дистракторов."""
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    db = await _conn()
+    try:
+        async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", list(ids)) as cur:
+            return {r["id"]: {"norwegian": r["norwegian"],
+                              "data": json.loads(r["data"]) if r["data"] else {}}
+                    for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+
+
+async def load_pool_embeddings():
+    """(ids[list[int]], raw_embeddings[list[bytes]]) всех слов с эмбеддингом — вход для embcache."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT id, embedding FROM word_pool WHERE embedding IS NOT NULL") as cur:
+            ids, embs = [], []
+            for r in await cur.fetchall():
+                ids.append(r["id"]); embs.append(r["embedding"])
+            return ids, embs
+    finally:
+        await _release(db)
+
+
 async def set_pool_description(pool_id: int, description: dict):
     db = await _conn()
     try:
