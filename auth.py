@@ -322,6 +322,8 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
         prefs["audio"] = bool(body.audio)
     if body.listenPack is not None:
         prefs["listenPack"] = max(5, min(20, int(body.listenPack)))
+    if body.studyOnboarded is not None:
+        prefs["studyOnboarded"] = bool(body.studyOnboarded)
     if body.lang in LANG_SET:
         prefs["lang"] = body.lang
     await set_user_game_prefs(user["id"], json.dumps(prefs, ensure_ascii=False))

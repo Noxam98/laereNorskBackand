@@ -118,6 +118,7 @@ class GamePrefsBody(BaseModel):
     grammarPos: dict | None = None   # пер-POS тумблеры грамматики: {noun,verb,adjective,pronoun: bool}
     audio: bool | None = None   # аудиозадания: ВКЛ → choice_no2int в отдельную слуховую сессию; ВЫКЛ → текстом в рампе
     listenPack: int | None = Field(None, ge=5, le=20)   # порог слуховой партии (сколько «ждёт слух» собрать)
+    studyOnboarded: bool | None = None   # приветственное окно Учёбы пройдено (показывать однократно)
 
 
 class RedescribeBody(BaseModel):
