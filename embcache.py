@@ -79,6 +79,22 @@ def update_vec(pool_id, raw):
             _rowof[int(pool_id)] = _M.shape[0] - 1
 
 
+def remove_vec(pool_id):
+    """Убрать вектор слова из кеша при merge/delete — иначе мёртвая строка живёт в _M до рестарта и
+    может всплыть stale-соседом. Редкая операция → перестройка (np.delete) допустима. No-op, если
+    кеша нет или слова в нём нет. Вызывается поздним импортом (без цикла)."""
+    global _M, _ids, _rowof
+    if not _ready:
+        return
+    with _lock:
+        row = _rowof.get(int(pool_id))
+        if row is None:
+            return
+        _M = np.delete(_M, row, axis=0)
+        _ids = np.delete(_ids, row)
+        _rowof = {int(pid): i for i, pid in enumerate(_ids)}
+
+
 def _nearest(M, ids, rowof, pool_ids, k):
     """CPU-часть (в потоке): {pool_id: [neighbor_id,...]} по убыванию близости, исключая себя."""
     present = [(p, rowof[p]) for p in pool_ids if p in rowof]

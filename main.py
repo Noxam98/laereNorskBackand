@@ -39,6 +39,8 @@ async def _security_headers(request, call_next):
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    # JSON-API ничего не рендерит — запрещаем всё (никаких скриптов/фреймов из ответов бэка).
+    resp.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
     return resp
 
 app.include_router(auth_router)

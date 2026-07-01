@@ -332,8 +332,19 @@ def _display_status(row, st):
 
 # ---------------- запись результата ответа (SRS) ----------------
 
+_APPLY_LOCK = asyncio.Lock()   # сериализует read-modify-write одного ответа (двойной тап/ретрай/base×grammar)
+
+
 async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
                        mode: str = None, direction: str = None):
+    """Обёртка под локом: иначе два почти-одновременных ответа читают одну старую строку и второй
+    commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock достаточно."""
+    async with _APPLY_LOCK:
+        return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction)
+
+
+async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
+                              mode: str = None, direction: str = None):
     """Обновить состояние слова после ответа (создаёт строку при первом ответе).
     mode — тип игры (choice/build/input/study/…), direction — направление ('no2int'|'int2no').
     Клетка рампы = f'{mode}_{direction}': верный ответ → '1', ошибка → '' (сброс этой клетки).

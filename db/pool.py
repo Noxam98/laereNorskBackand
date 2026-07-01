@@ -886,6 +886,12 @@ async def delete_pool_word(norwegian: str):
         await _release(db)
     await vec_delete(pid)  # убрать из ANN-индекса
     _invalidate_candidates()  # слово больше не должно всплывать в «похожих»
+    if pid:
+        try:                          # убрать из резидентного кеша эмбеддингов (дистракторы)
+            import embcache
+            embcache.remove_vec(pid)
+        except Exception:
+            pass
 
 
 # (основной_ключ, добор|None). Направление — к основному ключу, добор всегда ASC.

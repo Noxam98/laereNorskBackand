@@ -88,9 +88,14 @@ async def merge_pool_words(winner_id: int, loser_id: int):
             pass
         await db.execute("DELETE FROM word_pool WHERE id = ?", (loser_id,))
         await db.commit()
-        return True
     finally:
         await _release(db)
+    try:                              # убрать loser из резидентного кеша эмбеддингов (дистракторы)
+        import embcache
+        embcache.remove_vec(loser_id)
+    except Exception:
+        pass
+    return True
 
 
 async def dedup_progress():

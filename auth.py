@@ -220,7 +220,10 @@ async def save_game_mode(body: dict, user=Depends(get_current_user)):
 @router.post("/me/online_prefs")
 async def save_online_prefs(body: dict, user=Depends(get_current_user)):
     """Запомнить последние настройки онлайн-комнаты (чтобы не настраивать каждый раз)."""
-    await set_online_prefs(user["id"], json.dumps(body or {}, ensure_ascii=False))
+    payload = json.dumps(body or {}, ensure_ascii=False)
+    if len(payload) > 4096:                      # кап: не даём писать произвольно большой JSON
+        raise HTTPException(status_code=413, detail="online_prefs too large")
+    await set_online_prefs(user["id"], payload)
     return {"ok": True}
 
 

@@ -86,6 +86,10 @@ async def sets_words_add(set_id: int, body: dict, user=Depends(get_current_user)
             pid = await get_pool_id(word) if word else None
         if pid:
             pool_ids = [pid]
+    try:                              # нечисловой pool_id в теле → 422, а не 500 глубже в SQL
+        pool_ids = [int(p) for p in pool_ids]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="invalid pool_id")
     if not pool_ids:
         raise HTTPException(status_code=400, detail="No words")
     return _bad(await add_words_to_set(user["id"], set_id, pool_ids))

@@ -1,17 +1,19 @@
-uvicorn[standard]~=0.34.0
-fastapi[standard]
-pydantic~=2.10.6
-pyjwt
-google-auth
+# Пины на текущие рабочие версии (воспроизводимость сборки Fly, supply-chain). Обновлять осознанно.
+# Полноценный lock (uv/pip-tools) — следующий шаг; тут запинены прямые критичные зависимости.
+uvicorn[standard]==0.34.3
+fastapi[standard]==0.137.0
+pydantic==2.10.6
+PyJWT==2.13.0
+google-auth==2.55.0
 requests
-bcrypt
-aiosqlite
+bcrypt==5.0.0
+aiosqlite==0.22.1
 python-multipart
-openai
-edge-tts
-numpy
+openai==2.41.1
+edge-tts==7.2.8
+numpy==2.4.6
 rapidfuzz
-sqlite-vec
-boto3
+sqlite-vec==0.1.9
+boto3==1.43.34
 pywebpush
 tzdata

@@ -8,3 +8,9 @@ app.log
 # покрытие тестов (локально)
 .coverage
 htmlcov/
+
+# Рабочие заметки/дампы ревью и планов (scratch) — не для репозитория
+REVIEW_a1_*
+PLAN_a1_*
+audit-findings.json
+verb-adj-grammar-spec.json

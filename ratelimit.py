@@ -27,6 +27,11 @@ def _hit(key, max_n, window):
 
 
 def client_ip(request: Request) -> str:
+    # Fly-Client-IP выставляет доверенный edge Fly; X-Forwarded-For клиент может подделать (обход
+    # лимита по IP спуфингом заголовка) — потому доверенный заголовок в приоритете.
+    fly = request.headers.get("fly-client-ip")
+    if fly:
+        return fly.strip()
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()

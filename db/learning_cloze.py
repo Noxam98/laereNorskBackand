@@ -67,7 +67,23 @@ def _blank_example(sentence, target):
     return pat.sub("___", s, count=1) if pat.search(s) else None
 
 
+_CLOZE_INFLIGHT = set()   # (user_id, pool_id) уже генерятся — не плодим дубль-LLM из горячего пути
+
+
 async def generate_cloze(user_id, pool_id):
+    """In-flight дедуп: сборка сессии делает fire-and-forget create_task(generate_cloze); без дедупа
+    два параллельных билда запускают дубль-LLM + полный скан пула на miss для одной пары."""
+    key = (user_id, pool_id)
+    if key in _CLOZE_INFLIGHT:
+        return None
+    _CLOZE_INFLIGHT.add(key)
+    try:
+        return await _generate_cloze(user_id, pool_id)
+    finally:
+        _CLOZE_INFLIGHT.discard(key)
+
+
+async def _generate_cloze(user_id, pool_id):
     """Сгенерировать и закэшировать CLOZE_N cloze-предложений для служебного слова. 1-е — ЯКОРЬ из
     выверенного example.no (гарантированно осмысленное), остальные — динамика 3.5-flash из ВЫУЧЕННЫХ
     слов юзера (по убыванию частотности). Лениво/в фоне. Перебор всех ключей-аккаунтов на 429."""
