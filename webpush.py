@@ -116,6 +116,11 @@ async def delete_subscription(endpoint, user_id):
     await _exec("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?", (endpoint, user_id))
 
 
+async def delete_subscription_by_endpoint(endpoint):
+    # воркерная чистка мёртвого endpoint (push вернул 404/410 Gone): владелец неважен — он мёртв для всех
+    await _exec("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+
+
 # ---------- отправка (ленивый pywebpush) ----------
 def _send_sync(endpoint, p256dh, auth, payload):
     """Блокирующая отправка одного пуша. Возвращает (ok, gone). gone=True → подписку удалить."""
@@ -194,7 +199,7 @@ async def notify_moderators(pending_count):
         for r in rows:
             ok, gone = await _send(r["endpoint"], r["p256dh"], r["auth"], payload)
             if gone:
-                await delete_subscription(r["endpoint"])
+                await delete_subscription_by_endpoint(r["endpoint"])
             elif ok:
                 sent = True
         if sent:
@@ -232,7 +237,7 @@ async def reminder_loop():
             for r in rows:
                 ok, gone = await _send(r["endpoint"], r["p256dh"], r["auth"], REMINDER)
                 if gone:
-                    await delete_subscription(r["endpoint"])
+                    await delete_subscription_by_endpoint(r["endpoint"])
                 elif ok:
                     await _exec("UPDATE push_subscriptions SET last_reminded_at = ? WHERE id = ?", (now, r["sid"]))
             if rows:

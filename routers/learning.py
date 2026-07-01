@@ -26,7 +26,7 @@ async def learning_list(status: str = None, level: str = None, topic: str = None
                         sort: str = "strength", order: str = "asc", limit: int = 200, offset: int = 0,
                         user=Depends(get_current_user)):
     return await learning_get(user["id"], status=status, level=level, topic=topic, q=q,
-                              sort=sort, order=order, limit=limit, offset=offset)
+                              sort=sort, order=order, limit=max(1, min(500, limit)), offset=max(0, offset))
 
 
 @router.get("/learning/stats")
@@ -88,7 +88,10 @@ async def learning_leaderboard_route(period: str = "week", limit: int = 50, user
 async def _resolve_pool_id(body: dict):
     pid = body.get("pool_id")
     if pid:
-        return int(pid)
+        try:
+            return int(pid)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="invalid pool_id")
     word = (body.get("word") or body.get("norwegian") or "").strip()
     return await get_pool_id(word) if word else None
 

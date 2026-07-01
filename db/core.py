@@ -459,6 +459,11 @@ async def init_db():
             await db.execute("ALTER TABLE user_words ADD COLUMN known INTEGER DEFAULT 0")
         except Exception:
             pass
+        # Обратные FK-индексы (dedup/merge ищут по pool_id) + частичный для лидерборда period='all'.
+        # ПОСЛЕ создания dict_words/user_words и ALTER mastered — иначе индексов не на что вешать.
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_dict_words_pool ON dict_words(pool_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_user_words_pool ON user_words(pool_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_user_words_mastered ON user_words(user_id) WHERE mastered = 1")
         # Дневная активность «Учёбы» — для стрика, дневной цели, точности и хитмапа.
         await db.execute("""
         CREATE TABLE IF NOT EXISTS user_activity (

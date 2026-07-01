@@ -513,7 +513,7 @@ async def freq_loop():
                 _free_zipf()                 # работы нет — отдаём память
                 await asyncio.sleep(120)     # подстраховка (freq ставится при вставке слова)
                 continue
-            z = _load_zipf()
+            z = await asyncio.to_thread(_load_zipf)   # 5.5МБ json.load — не блокируем event loop
             if not z:
                 return
             pairs = [(pid, float(z.get((no or "").strip().lower(), 0.0))) for pid, no in pend]
@@ -706,7 +706,7 @@ async def autofill_loop():
                         msg = (f"🆕 автозаполнение ({label}): просили {AUTOFILL_BATCH} · "
                                f"новых {len(new_words)} · повтор {len(dup_words)}")
                         if new_words:
-                            msg += f"\n  ➕ {', '.join(new_words)}"
+                            msg += f"\n  ➕ {', '.join(w for _pid, w in new_words)}"
                         if dup_words:
                             msg += f"\n  ↩️ уже были: {', '.join(dup_words)}"
                         notify.feed(msg)

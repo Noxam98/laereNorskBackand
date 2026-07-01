@@ -18,7 +18,10 @@ def get_client():
     global _llm_client
     if _llm_client is None:
         from openai import AsyncOpenAI
-        _llm_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "not-needed")
+        # max_retries=0/timeout: ротацией ключей и паузами управляет _run — не висим минутами
+        # на внутренних ретраях openai-клиента (дефолт 600с×2), как у embed-клиента.
+        _llm_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "not-needed",
+                                  max_retries=0, timeout=60)
     return _llm_client
 
 

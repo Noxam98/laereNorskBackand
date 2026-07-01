@@ -47,8 +47,10 @@ async def set_word_approval(pool_id: int, approved: int):
     """approved: 1 — одобрить (в общую базу), 2 — отклонить (остаётся приватным у автора)."""
     db = await _conn()
     try:
-        await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (int(approved), pool_id))
+        cur = await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (int(approved), pool_id))
         await db.commit()
+        if cur.rowcount == 0:                       # id не существует — не молчим «успехом»
+            return {"ok": False, "error": "not_found", "pool_id": pool_id}
         return {"ok": True, "pool_id": pool_id, "approved": int(approved)}
     finally:
         await _release(db)

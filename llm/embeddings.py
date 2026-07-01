@@ -7,8 +7,9 @@ import numpy as np
 from db import get_pool_by_id, set_pool_embedding, vec_nearest_rows, get_pool_candidates
 from .settings import EMBED_API_KEYS, EMBED_API_KEY
 from .client import embed_text, embed_texts
+from langs import LANG_CODES
 
-_EMB_LANGS = ["ru", "ukr", "en", "pl", "lt"]
+_EMB_LANGS = LANG_CODES   # derive из реестра — эмбеддинг учитывает все языки перевода (в т.ч. lv/ar)
 
 
 def semantic_embed_text(data):

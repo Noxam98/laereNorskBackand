@@ -41,6 +41,11 @@ from pos import POS_KEYS  # noqa: E402  (ре-экспорт: `from llm.schemas 
 
 # Схемы для гарантированного формата ответа (structured output / JSON-schema).
 _STR_ARR = {"type": "array", "items": {"type": "string"}}
+# translate-блоки схем DERIVE из реестра языков (langs.LANG_CODES) — иначе новые языки (lv/ar)
+# не объявлены в schema и structured-output их НЕ эмитит → переводы навсегда пустые.
+from langs import LANG_CODES  # noqa: E402
+_TR_ARR = {c: _STR_ARR for c in LANG_CODES}                # перевод = массив строк
+_TR_STR = {c: {"type": "string"} for c in LANG_CODES}      # перевод = одна строка
 
 WORDS_SCHEMA = {
     "name": "words_response",
@@ -55,7 +60,7 @@ WORDS_SCHEMA = {
                         "word": {"type": "string", "description": "норвежское слово, без артикля, нейтральная форма"},
                         "translate": {
                             "type": "object",
-                            "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
+                            "properties": _TR_ARR,
                         },
                         "part_of_speech": {"type": "string", "enum": POS_KEYS},
                         "level": {"type": "string", "enum": CEFR_LEVELS},
@@ -84,7 +89,7 @@ PHRASES_SCHEMA = {
                         "phrase": {"type": "string", "description": "норвежская устойчивая фраза, нижний регистр, БЕЗ инфинитивного 'å', без финальной точки"},
                         "translate": {
                             "type": "object",
-                            "properties": {"ru": _STR_ARR, "ukr": _STR_ARR, "en": _STR_ARR, "pl": _STR_ARR, "lt": _STR_ARR},
+                            "properties": _TR_ARR,
                         },
                         "subtype": {"type": "string", "enum": ["collocation", "phrasal_verb", "expression"]},
                         "level": {"type": "string", "enum": CEFR_LEVELS},
@@ -103,8 +108,8 @@ DESC_SCHEMA = {
     "name": "description_response",
     "schema": {
         "type": "object",
-        "properties": {"ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"}, "pl": {"type": "string"}, "lt": {"type": "string"}},
-        "required": ["ru", "ukr", "en", "pl", "lt"],
+        "properties": _TR_STR,
+        "required": list(LANG_CODES),
     },
 }
 
@@ -159,13 +164,7 @@ REVIEW_SCHEMA = {
                     "part_of_speech": {"type": "string"},  # noun | verb | adjective | ...
                     "translate": {
                         "type": "object",
-                        "properties": {
-                            "ru": {"type": "array", "items": {"type": "string"}},
-                            "ukr": {"type": "array", "items": {"type": "string"}},
-                            "en": {"type": "array", "items": {"type": "string"}},
-                            "pl": {"type": "array", "items": {"type": "string"}},
-                            "lt": {"type": "array", "items": {"type": "string"}},
-                        },
+                        "properties": _TR_ARR,
                     },
                 },
             },
@@ -208,10 +207,9 @@ DESCRIBE_BATCH_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "word": {"type": "string"},
-                        "ru": {"type": "string"}, "ukr": {"type": "string"}, "en": {"type": "string"},
-                        "pl": {"type": "string"}, "lt": {"type": "string"},
+                        **_TR_STR,
                     },
-                    "required": ["word", "ru", "ukr", "en", "pl", "lt"],
+                    "required": ["word", *LANG_CODES],
                 },
             }
         },
