@@ -1055,6 +1055,25 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         if phase == "forms" and not batch_pending:
             phase = "words"                            # партия сдана (или все её клетки выключены
             await save_form_cycle(user_id, "words", [])  # тумблерами) → по кругу: снова слова
+        # ── ДОСРОЧНЫЙ флип words→forms (анти-дедлок ветерана): базе нечего отдать (повторы не
+        # подошли, прогресс не due, новые кончились/заблокированы WIP-лимитом или воротами), а
+        # работа по формам ЕСТЬ (несданные клетки или подошедшие повторы) → не даём сессии
+        # опустеть: переключаемся на формы, добирая партию из бэклога. Иначе юзер, выучивший
+        # всё до появления цикла, никогда не наполнит копилку и застрянет с пустыми сессиями. ──
+        if phase == "words":
+            blocked_new = in_work >= WIP_LIMIT or gate_open
+            base_servable = sum(1 for e2, _s2 in ordered if attempts(e2) > 0 or not blocked_new)
+            has_form_work = any(_pending(p) for p in info) or any(
+                pid0 in info and c0 in info[pid0]["cells"]
+                and (st0.get("interval_days") or 0) >= 1 and (st0.get("due_at") or "") <= now_s
+                for (pid0, c0), st0 in fstates.items())
+            if base_servable == 0 and has_form_work:
+                extra = sorted((p for p in info if _pending(p) and p not in batch),
+                               key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
+                batch = (batch + extra)[:FORM_CYCLE_BATCH]
+                phase = "forms"
+                batch_pending = [p for p in batch if _pending(p)]
+                await save_form_cycle(user_id, "forms", batch)
 
         if phase == "forms":
             # ФАЗА ФОРМ: новых слов не вводим, большинство слотов — формы партии.

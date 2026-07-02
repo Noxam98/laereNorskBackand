@@ -299,6 +299,7 @@ async def test_form_reviews_live_in_forms_phase(fresh_db, monkeypatch):
         await db.commit()
     finally:
         await _release(db)
+    pid3, _ = await seed_word(did, "hus", "дом")                     # живое новое — база не голодна
     res = await build_session(uid, size=20)                          # фаза слов: форм НЕТ
     assert res["composition"]["phase"] == "words"
     assert not [w for w in res["words"] if w.get("form_track")]
@@ -342,6 +343,19 @@ async def test_demoted_word_leaves_forms_mode(fresh_db, monkeypatch):
     assert forms3 and forms3[0]["pool_id"] == pid
     st = (await load_form_states(uid, [pid]))[(pid, "present")]
     assert st["stage"] == "choose"                             # прогресс клетки не потерян
+
+
+async def test_words_starved_flips_to_forms_early(fresh_db):
+    """Анти-дедлок: базе нечего отдать (всё выучено, новых нет), партия НЕ набрана (дефолт 10),
+    но есть работа по формам → досрочный флип в фазу форм с партией из бэклога."""
+    uid, did = await seed_user()
+    for w, f in (("gå", _GIKK), ("se", {"pos": "verb", "present": "ser", "past": "så", "perfect": "har sett"})):
+        pid, _ = await seed_word(did, w, w, pos="verb")
+        await _set_forms(pid, f)
+        await _master(uid, pid)                        # копилка = 2 < 10 → фаза words
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"      # но базе нечего отдать → досрочный флип
+    assert [w for w in res["words"] if w.get("form_track")], "формы должны отдаться"
 
 
 async def test_cycle_veteran_seed(fresh_db, monkeypatch):

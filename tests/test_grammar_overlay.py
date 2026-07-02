@@ -286,15 +286,16 @@ async def test_overlay_surfaces_for_mastered_verb(fresh_db, monkeypatch):
 
 
 async def test_words_phase_no_new_form_cells(fresh_db):
-    """ФАЗА СЛОВ (партия не набрана): новые клетки форм НЕ вводятся — только due-повторы
-    (их нет) и местоим-overlay. Слово выучено, но форм-карточка не приходит."""
+    """ФАЗА СЛОВ (партия не набрана, базе есть что отдать): клетки форм НЕ вводятся вовсе."""
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "bok", "книга")
     await _set_forms(pid, _BOK)
     await _master(uid, pid)                                   # партия 1 из 10 — фаза остаётся words
+    await seed_word(did, "hus", "дом")                        # живое НОВОЕ слово — база не голодна
     res = await build_session(uid, size=20)
     assert res["composition"]["phase"] == "words"
     assert not [w for w in res["words"] if w.get("form_track")]
+    assert res["composition"]["total"] > 0                    # база отдала карточку нового
 
 
 # ── PRONOUN/DETERMINER-срез: курируемая парадигма (форм НЕТ в БД, берём из PRONOUN_PARADIGM) ───
