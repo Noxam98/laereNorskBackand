@@ -141,11 +141,13 @@ async def test_apply_form_result_ramp_progression(fresh_db):
     st = (await load_form_states(uid, [pid]))[(pid, "past")]
     assert st["interval_days"] >= 1 and st["due_at"] > st["last_seen"]
 
-    # ошибка на повторе → откат к choose, lapse, скорый повтор
+    # ошибка на повторе → откат к choose, lapse, скорый повтор; interval ОБНУЛЁН —
+    # клетка снова «не сдана» (иначе невидимо выпадала из счётчика/выдачи фазы форм)
     r = await apply_form_result(uid, pid, "past", False)
     assert r["stage"] == "choose"
     st = (await load_form_states(uid, [pid]))[(pid, "past")]
     assert st["lapses"] == 1 and st["ease"] < 2.7
+    assert st["interval_days"] == 0
 
 
 async def test_form_answers_do_not_touch_base_srs(fresh_db):

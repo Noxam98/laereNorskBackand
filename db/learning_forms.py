@@ -185,8 +185,11 @@ def schedule_form(stage, ease, interval_days, correct, elapsed=None):
             interval = 2
         return ("produce", ease, interval, interval)   # клетка отработана → повтор через interval дней
 
-    ease = max(_EASE_MIN, ease - 0.2)          # ошибка: ease вниз, шаг назад, повтор в этой сессии
-    return (FORM_STAGES[max(0, idx - 1)], ease, 1, 0)
+    # ошибка: ease вниз, шаг назад, повтор в этой сессии. interval ОБНУЛЯЕМ (не 1!):
+    # «сдана» = interval ≥ 1 — ошибившаяся клетка иначе невидимо считалась сданной
+    # (выпадала из счётчика «осталось форм» и из выдачи фазы форм).
+    ease = max(_EASE_MIN, ease - 0.2)
+    return (FORM_STAGES[max(0, idx - 1)], ease, 0, 0)
 
 
 # ── DB-слой: form_srs (SRS-состояние клеток форм) ────────────────────────────
