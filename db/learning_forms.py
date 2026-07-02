@@ -129,8 +129,9 @@ def form_element(row, forms, data, cell, stage):
         "pool_id": row["pool_id"], "no": no, "translate": d.get("translate", {}),
         # grammar:True — общий флаг тира ★ (фронт рендерит FormPrompt, _attach_choice_options не
         # трогает варианты); form_track:True — ответ маршрутизируется в form_srs, не в overlay/base.
+        # repeat:False — слово-то выучено, но это НЕ повтор слова, а изучение формы (без бейджа).
         "part_of_speech": pos, "forms": forms, "form_track": True, "grammar": True,
-        "step": cell, "stage": stage, "repeat": (row.get("mastered") == 1),
+        "step": cell, "stage": stage, "repeat": False,
         "prompt": {"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
     }
     if stage == "card":                       # показать форму (пассив, как карточка перевода)
