@@ -1063,12 +1063,24 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             cards_cap = max(1, cap_new)
             cap_new = 0
             quota = max(1, round(size * FORMS_SESSION_SHARE))
+            # 0) подошедшие ПОВТОРЫ уже СДАННЫХ клеток (interval≥1, due≤now) — первыми: формы
+            #    повторяются в СВОЕЙ фазе (в фазе слов форм нет вовсе, см. ветку words ниже)
+            due_rev = []
+            for (rpid, rc), strow in fstates.items():
+                if rpid in info and (strow.get("interval_days") or 0) >= 1 and (strow.get("due_at") or "") <= now_s:
+                    due_rev.append(((strow.get("due_at") or ""), rpid, rc, strow.get("stage") or "produce"))
+            due_rev.sort()
+            taken = {}   # pid → взятые клетки этой сессии
+            for _d, rpid, rc, rstg in due_rev:
+                if len(grammar_picks) >= quota:
+                    break
+                grammar_picks.append(("form", info[rpid]["e"], rc, info[rpid]["fdict"], rstg))
+                taken.setdefault(rpid, set()).add(rc)
             # порядок слов: партия (частотные первыми) → бэклог-филлер (переваривает старые
             # выученные слова, чьи формы ещё не отработаны; флип от филлера не зависит)
             word_order = sorted(batch_pending, key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
             word_order += sorted((p for p in info if p not in set(batch) and _pending(p)),
                                  key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
-            taken = {}   # pid → взятые клетки этой сессии
             cards_n = 0  # карточек формы уже взято (порция ≤ cards_cap)
             for _round in (0, 1):                      # ≤2 клетки на слово, раунд-робином
                 for pid in word_order:
@@ -1088,36 +1100,22 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                         cards_n += 1
                     grammar_picks.append(("form", info[pid]["e"], nxt, info[pid]["fdict"], stage))
                     got.add(nxt)
+            # местоим-overlay (курируемая парадигма, вне трека форм) — добивает остаток квоты
+            ov_picks = []
+            for e, group, fdict in cands:
+                if group != "pronoun":
+                    continue
+                pending_ov = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
+                              if e["modes"].get(c) != "1"]
+                if pending_ov:
+                    ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending_ov[0], fdict, None)))
+            ov_picks.sort(key=lambda x: -x[0])
+            grammar_picks += [it for _, it in ov_picks][:max(0, quota - len(grammar_picks))]
             cycle_phase, cycle_left = "forms", len(batch_pending)
             cycle_cells = sum(len(_pending(pid)) for pid in batch_pending)   # несданных клеток партии
-        else:
-            # ФАЗА СЛОВ: из форм — только подошедшие ПОВТОРЫ начатых клеток (SRS не замораживаем),
-            # новые клетки не вводим; местоим-overlay — как раньше (гейтится воротами экзамена).
-            quota = round(size * GRAMMAR_RATIO)
-            due_cells = []
-            for (pid, c), strow in fstates.items():
-                if pid in info and (strow.get("due_at") or "") <= now_s:
-                    due_cells.append(((strow.get("due_at") or ""), pid, c, strow.get("stage") or "card"))
-            due_cells.sort()                            # самые просроченные первыми
-            seen_words = set()
-            for _due, pid, c, stg in due_cells:
-                if len(grammar_picks) >= quota:
-                    break
-                if pid in seen_words:
-                    continue                            # вне фазы форм — одна клетка на слово
-                seen_words.add(pid)
-                grammar_picks.append(("form", info[pid]["e"], c, info[pid]["fdict"], stg))
-            if not gate_open:
-                ov_picks = []
-                for e, group, fdict in cands:
-                    if group != "pronoun":
-                        continue
-                    pending_ov = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
-                                  if e["modes"].get(c) != "1"]
-                    if pending_ov:
-                        ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending_ov[0], fdict, None)))
-                ov_picks.sort(key=lambda x: -x[0])
-                grammar_picks += [it for _, it in ov_picks][:max(0, quota - len(grammar_picks))]
+        # ФАЗА СЛОВ: грамматики НЕТ ВООБЩЕ (решение юзера — «сессия слов = только слова +
+        # карточки новых в конце»); формы и местоим-overlay живут в фазе форм — цикл короткий,
+        # интервалы почти не едут.
     base_budget = max(0, size - len(grammar_picks))   # под контент — остаток после грамм-квоты
 
     session = []

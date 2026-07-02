@@ -270,8 +270,8 @@ async def test_cycle_full_circle(fresh_db, monkeypatch):
     assert (await lf.get_form_cycle(uid)) == {"phase": "words", "batch": []}
 
 
-async def test_words_phase_serves_due_form_reviews(fresh_db, monkeypatch):
-    """Повторы форм (due) не замораживаются фазой слов: подошедшая клетка приходит в сессию."""
+async def test_form_reviews_live_in_forms_phase(fresh_db, monkeypatch):
+    """Повторы сданных клеток — только в ФАЗЕ ФОРМ (первыми); фаза слов полностью без форм."""
     import db.learning_forms as lf
     monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
     uid, did = await seed_user()
@@ -290,11 +290,19 @@ async def test_words_phase_serves_due_form_reviews(fresh_db, monkeypatch):
         await db.commit()
     finally:
         await _release(db)
-    res = await build_session(uid, size=20)
+    res = await build_session(uid, size=20)                          # фаза слов: форм НЕТ
     assert res["composition"]["phase"] == "words"
-    forms = [w for w in res["words"] if w.get("form_track")]
-    assert len(forms) == 1 and forms[0]["step"] == "past"           # только due-повтор, без новых клеток
-    assert forms[0]["stage"] == "produce"                           # сданная клетка повторяется вводом
+    assert not [w for w in res["words"] if w.get("form_track")]
+    # новое выученное слово → фаза форм → due-повтор приходит ПЕРВЫМ, вводом
+    pid2, _ = await seed_word(did, "se", "видеть", pos="verb")
+    await _set_forms(pid2, {"pos": "verb", "present": "ser", "past": "så", "perfect": "har sett"})
+    await _master(uid, pid2)
+    res2 = await build_session(uid, size=20)
+    assert res2["composition"]["phase"] == "forms"
+    forms = [w for w in res2["words"] if w.get("form_track")]
+    rev = [w for w in forms if w["pool_id"] == pid]
+    assert rev and rev[0]["step"] == "past" and rev[0]["stage"] == "produce"   # повтор сданной — вводом
+    assert forms[0]["pool_id"] == pid                                # повторы первыми
 
 
 async def test_demoted_word_leaves_forms_mode(fresh_db, monkeypatch):

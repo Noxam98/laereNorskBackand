@@ -317,14 +317,23 @@ def test_grammar_cells_pronoun_not_in_paradigm_empty():
     assert _grammar_cells("xyz", _DATA_PRON, None) == []     # не в парадигме
 
 
-async def test_overlay_surfaces_for_mastered_pronoun(fresh_db):
+async def test_overlay_surfaces_for_mastered_pronoun(fresh_db, monkeypatch):
+    """Местоим-overlay живёт в ФАЗЕ ФОРМ (в фазе слов грамматики нет вовсе)."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "jeg", "я", pos="pronoun")
     await _master(uid, pid)                       # форм в БД НЕ ставим — берётся из парадигмы
-    res = await build_session(uid, size=20)
-    grams = [w for w in res["words"] if w.get("grammar")]
-    assert grams and grams[0]["pool_id"] == pid and grams[0]["step"] == "input_objcase"
-    assert grams[0]["target"]["value"] == "meg"
+    res = await build_session(uid, size=20)       # фаза слов (местоимение партию не наполняет)
+    assert not [w for w in res["words"] if w.get("grammar")], "фаза слов — без грамматики"
+    pn, _ = await seed_word(did, "bok", "книга")  # формо-способное слово → партия → фаза форм
+    await _set_forms(pn, _BOK)
+    await _master(uid, pn)
+    res2 = await build_session(uid, size=20)
+    assert res2["composition"]["phase"] == "forms"
+    ov = [w for w in res2["words"] if w.get("grammar") and not w.get("form_track")]
+    assert ov and ov[0]["pool_id"] == pid and ov[0]["step"] == "input_objcase"
+    assert ov[0]["target"]["value"] == "meg"
 
 
 async def test_overlay_respects_per_pos_toggle(fresh_db, monkeypatch):
