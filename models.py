@@ -137,6 +137,9 @@ class LearningAnswer(BaseModel):
     elapsed: float | None = None
     mode: str | None = Field(None, max_length=32)        # choice | build | input | study | …
     direction: str | None = Field(None, max_length=16)   # no2int | int2no — направление клетки рампы
+    form: bool = False                                   # трек ФОРМ: ответ идёт в form_srs (не в base/overlay)
+    cell: str | None = Field(None, max_length=16)        # клетка формы (past | def_sg | gender | …)
+    stage: str | None = Field(None, max_length=8)        # ступень рампы форм (card | choose | produce)
 
 
 class PlacementBody(BaseModel):

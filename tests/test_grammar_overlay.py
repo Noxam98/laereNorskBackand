@@ -8,7 +8,7 @@ import json
 from db.core import _conn, _release
 from db.learning import (
     build_session, apply_result, _is_mastered,
-    _grammar_cells, _grammar_element, REQUIRED_CELLS, NOUN_GRAMMAR_CELLS, GRAMMAR_RATIO,
+    _grammar_cells, _grammar_element, REQUIRED_CELLS, GRAMMAR_RATIO,
 )
 from db.users import set_user_game_prefs
 from tests.conftest import seed_user, seed_word
@@ -76,15 +76,19 @@ def test_grammar_element_indefpl_shape():
 
 # ── (2) overlay в сессии: только mastered + формы, гейт тумблером ────────────────────────────
 async def test_overlay_surfaces_for_mastered_noun(fresh_db):
+    """Сущ./глаг./прил. теперь идут ТРЕКОМ ФОРМ (learning_forms): первая клетка приходит
+    карточкой формы (stage card), а не overlay-упражнением."""
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "bok", "книга")
     await _set_forms(pid, _BOK)
     await _master(uid, pid)
     res = await build_session(uid, size=20)
     grams = [w for w in res["words"] if w.get("grammar")]
-    assert grams, "грамм-overlay должен подмешать упражнение для выученного сущ. с формами"
+    assert grams, "трек форм должен подмешать элемент для выученного сущ. с формами"
     g = grams[0]
-    assert g["pool_id"] == pid and g["step"] in NOUN_GRAMMAR_CELLS
+    assert g["pool_id"] == pid and g["form_track"] is True
+    assert g["step"] in ("gender", "indef_pl", "def_sg", "def_pl")
+    assert g["stage"] == "card" and g["mode"] == "study"      # новая клетка → карточка формы
     assert res["composition"]["grammar"] == len(grams)
 
 
@@ -230,6 +234,7 @@ def test_grammar_element_input_form_shape():
 
 
 async def test_overlay_surfaces_for_mastered_verb(fresh_db):
+    """Глагол — тоже трек форм: первая клетка (present/past/perfect) карточкой формы."""
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "skrive", "писать", pos="verb")
     await _set_forms(pid, _SKRIVE)
@@ -237,7 +242,8 @@ async def test_overlay_surfaces_for_mastered_verb(fresh_db):
     res = await build_session(uid, size=20)
     grams = [w for w in res["words"] if w.get("grammar")]
     assert grams and grams[0]["pool_id"] == pid
-    assert grams[0]["step"] in ("input_past", "input_perfect", "input_present")
+    assert grams[0]["form_track"] is True and grams[0]["stage"] == "card"
+    assert grams[0]["step"] in ("present", "past", "perfect")
 
 
 # ── PRONOUN/DETERMINER-срез: курируемая парадигма (форм НЕТ в БД, берём из PRONOUN_PARADIGM) ───

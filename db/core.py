@@ -475,6 +475,27 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """)
+        # Трек ФОРМ (learning_forms): SRS-состояние на КЛЕТКУ формы выученного слова.
+        # stage = card|choose|produce (текущая ступень рампы); due_at NULL = клетка новая (карточка).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS form_srs (
+            user_id INTEGER NOT NULL,
+            pool_id INTEGER NOT NULL,
+            cell TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'card',
+            ease REAL NOT NULL DEFAULT 2.5,
+            interval_days REAL NOT NULL DEFAULT 0,
+            due_at TEXT,
+            reps INTEGER NOT NULL DEFAULT 0,
+            lapses INTEGER NOT NULL DEFAULT 0,
+            last_seen TEXT,
+            created_at TEXT,
+            PRIMARY KEY (user_id, pool_id, cell),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(pool_id) REFERENCES word_pool(id) ON DELETE CASCADE
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_form_srs_due ON form_srs(user_id, due_at)")
         # Кэш cloze-заданий для служебных слов (персонально, из выученных слов юзера).
         # data = JSON [{blank, answer, options:[...]}], 3 предложения. Чистится при reset/удалении.
         await db.execute("""

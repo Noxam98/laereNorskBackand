@@ -394,6 +394,18 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
             await db.commit()
             return {"ok": True, "strength": st.get("strength", 0), "due_at": st.get("due_at"),
                     "modes": modes, "mastered": bool(st.get("mastered"))}
+        # ── Защита base-SRS: ответ по клетке ФОРМЫ, не попавшей ни в base-рампу, ни в overlay
+        # (трек форм со старого бандла без form-флага; регулярная форма вне gcells и т.п.), не должен
+        # двигать расписание слова (hist/ease/interval/due). Фиксируем только дневную активность. ──
+        if direction and direction not in ("no2int", "int2no") and (not cell or cell not in cells):
+            day = _now()[:10]
+            await db.execute("""
+                INSERT INTO user_activity (user_id, day, answers, correct) VALUES (?,?,1,?)
+                ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
+            """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
+            await db.commit()
+            return {"ok": True, "strength": st.get("strength", 0), "due_at": st.get("due_at"),
+                    "modes": modes, "mastered": bool(st.get("mastered"))}
         bit = "1" if correct else "0"
         ease = st["ease"]; interval = st["interval_days"]
         modes["hist"] = _push(modes.get("hist", ""), bit, CAPACITY)   # общее окно для силы
@@ -966,12 +978,13 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     grammar_on = await get_user_grammar(user_id)
     grammar_pos = await get_user_grammar_pos(user_id) if grammar_on else {}   # пер-POS тумблеры
     grammar_quota = round(size * GRAMMAR_RATIO) if (grammar_on and not scoped and not gate_open) else 0
-    grammar_picks = []
+    grammar_picks = []    # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]
     if grammar_quota > 0:
+        from .learning_forms import form_cells_for, load_form_states   # ленивый импорт (как users выше)
         # слова, уже взятые в base-сессию (в т.ч. due-повторы выученных), грамматикой НЕ резервируем:
         # иначе слот квоты ушёл бы на слово, которое отсеется дедупом ниже → потеря контента и тира.
         ordered_pids = {e["row"]["pool_id"] for e, _ in ordered}
-        g_cands = []
+        cands = []   # (e, group, fdict) — выученные формообразующие с формами, тумблер включён
         for e in enriched:
             if e["status"] != "mastered" or e["row"]["pool_id"] in ordered_pids:
                 continue
@@ -990,12 +1003,44 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 continue                              # формообразующее без форм в БД → пропускаем
             if not fdict:
                 continue
+            cands.append((e, group, fdict))
+        # ── Трек ФОРМ (сущ./глаг./прил.): SRS на каждую клетку формы слова, рампа card→choose→
+        # produce (learning_forms). Для этих POS трек ЗАМЕНЯЕТ overlay (дрилим ВСЕ формы по
+        # интервалам, а не нерегулярные однократно); местоим./притяж. остаются overlay (курируемая
+        # парадигма, закрытый класс). Одна клетка на слово за сессию: сперва самая просроченная
+        # due, иначе первая новая (карточкой). ──
+        track = [(e, g, f) for (e, g, f) in cands if g in ("noun", "verb", "adjective")]
+        fstates = await load_form_states(user_id, [e["row"]["pool_id"] for e, _, _ in track]) if track else {}
+        now_s = _now()
+        due_picks, fresh_picks = [], []
+        for e, group, fdict in track:
+            pid = e["row"]["pool_id"]
+            pos = normalize_pos((e["data"] or {}).get("part_of_speech"))
+            due_c, new_c = None, None
+            for c in form_cells_for(pos, fdict):
+                st = fstates.get((pid, c))
+                if st is None:
+                    new_c = new_c or c
+                elif (st.get("due_at") or "") <= now_s:
+                    if due_c is None or (st["due_at"] or "") < due_c[0]:
+                        due_c = ((st["due_at"] or ""), c, st.get("stage") or "card")
+            if due_c:
+                due_picks.append((due_c[0], ("form", e, due_c[1], fdict, due_c[2])))
+            elif new_c:
+                fresh_picks.append((e["row"].get("freq") or 0, ("form", e, new_c, fdict, "card")))
+        # pronoun-overlay — как раньше: первая непройденная грамм-клетка
+        ov_picks = []
+        for e, group, fdict in cands:
+            if group != "pronoun":
+                continue
             pending = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
                        if e["modes"].get(c) != "1"]
             if pending:
-                g_cands.append((e["row"].get("freq") or 0, e, pending[0], fdict))
-        g_cands.sort(key=lambda x: -x[0])          # частотные первыми
-        grammar_picks = g_cands[:grammar_quota]
+                ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending[0], fdict, None)))
+        due_picks.sort(key=lambda x: x[0])              # просроченные повторы форм: старые первыми
+        rest = fresh_picks + ov_picks
+        rest.sort(key=lambda x: -x[0])                  # новые клетки/overlay: частотные первыми
+        grammar_picks = [it for _, it in due_picks + rest][:grammar_quota]
     base_budget = max(0, size - len(grammar_picks))   # под контент — остаток после грамм-квоты
 
     session = []
@@ -1066,13 +1111,16 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             if pid_pre:
                 await add_word_to_dict(user_id, hid, pid_pre)
 
-    # грамм-overlay (тир ★) — добиваем выученными словами с непройденной грамм-клеткой (частотные
-    # первыми); не дублируем слово, если оно уже попало в сессию обычным упражнением (повтор и т.п.)
+    # грамм-тир ★: трек форм (сущ./глаг./прил.) + pronoun-overlay — добиваем выученными словами;
+    # не дублируем слово, если оно уже попало в сессию обычным упражнением (повтор и т.п.)
+    if grammar_picks:
+        from .learning_forms import form_element   # ленивый импорт (симметрично load_form_states выше)
     in_session = {el["pool_id"] for el in session}
-    for _freq, e, cell, fdict in grammar_picks:
+    for kind, e, cell, fdict, stage in grammar_picks:
         if e["row"]["pool_id"] in in_session:
             continue
-        el = _grammar_element(e["row"], cell, fdict, e["data"])
+        el = (form_element(e["row"], fdict, e["data"], cell, stage) if kind == "form"
+              else _grammar_element(e["row"], cell, fdict, e["data"]))
         if el:
             session.append(el)
             in_session.add(e["row"]["pool_id"])

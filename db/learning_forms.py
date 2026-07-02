@@ -6,11 +6,13 @@
 динамическая подмена окончаний из morphology.*_form_options: различаем нужную форму среди
 правдоподобных ошибок (gå→*gådde, grønn→*grønnt), не «угадайка» по чужим словам.
 
-Здесь только КАКОЕ задание показать и КАК сдвинуть расписание — вызывается и планировщиком, и сессией."""
+Хранилище — form_srs (user_id, pool_id, cell → stage/ease/interval/due): apply_form_result,
+load_form_states. Чистая часть (form_element/schedule_form) — ниже, вызывается и сессией, и apply."""
 import json
-import unicodedata
+from datetime import datetime, timedelta
 
 from pos import normalize_pos
+from .core import _conn, _release, _now
 from morphology import (
     strip_aux,
     noun_form_options, verb_form_options, adj_form_options,
@@ -111,13 +113,16 @@ def form_element(row, forms, data, cell, stage):
     value = cell_value(pos, forms, cell)
     base = {
         "pool_id": row["pool_id"], "no": no, "translate": d.get("translate", {}),
-        "part_of_speech": pos, "forms": forms, "form_track": True,
+        # grammar:True — общий флаг тира ★ (фронт рендерит FormPrompt, _attach_choice_options не
+        # трогает варианты); form_track:True — ответ маршрутизируется в form_srs, не в overlay/base.
+        "part_of_speech": pos, "forms": forms, "form_track": True, "grammar": True,
         "step": cell, "stage": stage, "repeat": (row.get("mastered") == 1),
         "prompt": {"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
     }
     if stage == "card":                       # показать форму (пассив, как карточка перевода)
+        reveal = f"{value} {no}" if cell == "gender" else value   # род показываем как «ei bok»
         return {**base, "mode": "study", "direction": cell,
-                "target": {"field": field, "value": value}, "reveal": value}
+                "target": {"field": field, "value": value}, "reveal": reveal}
     if stage == "choose":                     # выбрать верную среди динамически подменённых окончаний
         correct, dis = form_options(pos, no, forms, cell)
         if not correct:
@@ -156,3 +161,68 @@ def schedule_form(stage, ease, interval_days, correct, elapsed=None):
 
     ease = max(_EASE_MIN, ease - 0.2)          # ошибка: ease вниз, шаг назад, повтор в этой сессии
     return (FORM_STAGES[max(0, idx - 1)], ease, 1, 0)
+
+
+# ── DB-слой: form_srs (SRS-состояние клеток форм) ────────────────────────────
+
+def _due_in(days):
+    return (datetime.utcnow() + timedelta(days=days)).isoformat()
+
+
+async def load_form_states(user_id, pool_ids=None):
+    """Состояния клеток форм юзера: {(pool_id, cell): row}. pool_ids — опц. фильтр (для сессии)."""
+    db = await _conn()
+    try:
+        if pool_ids:
+            marks = ",".join("?" * len(pool_ids))
+            q = f"SELECT * FROM form_srs WHERE user_id = ? AND pool_id IN ({marks})"
+            args = (user_id, *pool_ids)
+        else:
+            q = "SELECT * FROM form_srs WHERE user_id = ?"
+            args = (user_id,)
+        async with db.execute(q, args) as cur:
+            rows = await cur.fetchall()
+        return {(r["pool_id"], r["cell"]): dict(r) for r in rows}
+    finally:
+        await _release(db)
+
+
+async def apply_form_result(user_id, pool_id, cell, correct, elapsed=None, stage=None):
+    """Ответ по клетке формы → сдвиг рампы/расписания (schedule_form) + дневная активность.
+
+    Как у грамм-overlay: base-SRS слова (user_words) НЕ трогаем — трек форм отдельный слой.
+    stage клиента игнорируем в пользу хранимого (анти-рассинхрон двух вкладок); карточка (stage
+    'card') активность не пишет (пассивный показ, не ответ)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT * FROM form_srs WHERE user_id = ? AND pool_id = ? AND cell = ?",
+                              (user_id, pool_id, cell)) as cur:
+            r = await cur.fetchone()
+        st = dict(r) if r else {"stage": "card", "ease": _EASE_START, "interval_days": 0,
+                                "reps": 0, "lapses": 0}
+        cur_stage = st.get("stage") or "card"
+        nxt, ease, interval, due_days = schedule_form(cur_stage, st.get("ease"), st.get("interval_days"),
+                                                      correct, elapsed)
+        is_card = cur_stage == "card"
+        reps = st["reps"] + (0 if is_card else 1)
+        lapses = st["lapses"] + (0 if (is_card or correct) else 1)
+        due = _due_in(due_days)
+        await db.execute("""
+            INSERT INTO form_srs (user_id, pool_id, cell, stage, ease, interval_days, due_at,
+                                  reps, lapses, last_seen, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(user_id, pool_id, cell) DO UPDATE SET
+                stage=excluded.stage, ease=excluded.ease, interval_days=excluded.interval_days,
+                due_at=excluded.due_at, reps=excluded.reps, lapses=excluded.lapses,
+                last_seen=excluded.last_seen
+        """, (user_id, pool_id, cell, nxt, ease, interval, due, reps, lapses, _now(), _now()))
+        if not is_card:   # реальный ответ → стрик/цель/точность (карточка — пассив)
+            day = _now()[:10]
+            await db.execute("""
+                INSERT INTO user_activity (user_id, day, answers, correct) VALUES (?,?,1,?)
+                ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
+            """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
+        await db.commit()
+        return {"ok": True, "form": True, "cell": cell, "stage": nxt, "due_at": due}
+    finally:
+        await _release(db)

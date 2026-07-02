@@ -146,6 +146,10 @@ async def learning_skip_route(body: dict, user=Depends(get_current_user)):
 @router.post("/learning/answer")
 async def learning_answer_route(body: LearningAnswer, user=Depends(get_current_user)):
     mark_activity()
+    if body.form and body.cell:   # трек ФОРМ: отдельный SRS-слой form_srs, base-рампу не трогает
+        from db.learning_forms import apply_form_result
+        return await apply_form_result(user["id"], body.pool_id, body.cell, body.correct,
+                                       body.elapsed, body.stage)
     return await learning_answer(user["id"], body.pool_id, body.correct, body.elapsed, body.mode, body.direction)
 
 

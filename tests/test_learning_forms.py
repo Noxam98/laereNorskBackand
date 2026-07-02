@@ -1,8 +1,13 @@
-"""Тесты трека форм (чистая логика learning_forms: клетки, диспетч опций, элементы, планировщик)."""
+"""Тесты трека форм: чистая логика (клетки, диспетч опций, элементы, планировщик) +
+интеграция с БД (apply_form_result → form_srs → build_session)."""
 import json
+from db.core import _conn, _release
+from db.learning import build_session, apply_result, REQUIRED_CELLS
 from db.learning_forms import (
     FORM_STAGES, form_cells_for, form_options, form_element, cell_value, schedule_form,
+    apply_form_result, load_form_states,
 )
+from tests.conftest import seed_user, seed_word
 
 
 def _data(pos):
@@ -81,3 +86,128 @@ def test_schedule_form_ramp():
 
 def test_form_stages_order():
     assert FORM_STAGES == ("card", "choose", "produce")
+
+
+# ── Интеграция с БД: form_srs + сессия ────────────────────────────────────────
+
+_GIKK = {"pos": "verb", "present": "går", "past": "gikk", "perfect": "har gått"}
+
+
+async def _set_forms(pool_id, forms):
+    db = await _conn()
+    try:
+        await db.execute("UPDATE word_pool SET forms = ? WHERE id = ?", (json.dumps(forms), pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def _master(uid, pid):
+    for cell in REQUIRED_CELLS:
+        mode, direction = cell.split("_", 1)
+        await apply_result(uid, pid, True, mode=mode, direction=direction)
+
+
+async def test_apply_form_result_ramp_progression(fresh_db):
+    """card→choose→produce→интервальный повтор; ошибка откатывает ступень; base-SRS не тронут."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+
+    # карточка показана → ступень choose, due сразу (повтор в след. сессии)
+    r = await apply_form_result(uid, pid, "past", True, stage="card")
+    assert r["stage"] == "choose"
+    st = (await load_form_states(uid, [pid]))[(pid, "past")]
+    assert st["stage"] == "choose" and st["reps"] == 0        # карточка — не ответ
+
+    # выбор верно → produce (ещё в работе), ответ засчитан
+    r = await apply_form_result(uid, pid, "past", True)
+    assert r["stage"] == "produce"
+    st = (await load_form_states(uid, [pid]))[(pid, "past")]
+    assert st["reps"] == 1 and st["lapses"] == 0
+
+    # ввод верно → клетка отработана, интервал ≥ 1 день
+    r = await apply_form_result(uid, pid, "past", True)
+    assert r["stage"] == "produce"
+    st = (await load_form_states(uid, [pid]))[(pid, "past")]
+    assert st["interval_days"] >= 1 and st["due_at"] > st["last_seen"]
+
+    # ошибка на повторе → откат к choose, lapse, скорый повтор
+    r = await apply_form_result(uid, pid, "past", False)
+    assert r["stage"] == "choose"
+    st = (await load_form_states(uid, [pid]))[(pid, "past")]
+    assert st["lapses"] == 1 and st["ease"] < 2.7
+
+
+async def test_form_answers_do_not_touch_base_srs(fresh_db):
+    """Ответы трека форм не двигают base-SRS слова (отдельный слой, как overlay)."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT reps, ease, interval_days, due_at, modes FROM user_words "
+                              "WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            before = dict(await cur.fetchone())
+    finally:
+        await _release(db)
+    await apply_form_result(uid, pid, "past", True, stage="card")
+    await apply_form_result(uid, pid, "past", False)
+    await apply_form_result(uid, pid, "perfect", True)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT reps, ease, interval_days, due_at, modes FROM user_words "
+                              "WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            after = dict(await cur.fetchone())
+    finally:
+        await _release(db)
+    assert after == before
+
+
+async def test_session_serves_stage_after_card(fresh_db):
+    """После карточки клетка снова в сессии УЖЕ упражнением-выбором (stage choose, options)."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+
+    res = await build_session(uid, size=20)
+    el = next(w for w in res["words"] if w.get("form_track"))
+    assert el["stage"] == "card"                            # первая встреча — карточка формы
+    first_cell = el["step"]
+
+    await apply_form_result(uid, pid, first_cell, True, stage="card")   # карточку посмотрели
+    res2 = await build_session(uid, size=20)
+    el2 = next(w for w in res2["words"] if w.get("form_track"))
+    assert el2["step"] == first_cell and el2["stage"] == "choose"       # та же клетка, теперь выбор
+    ws = [o["w"] for o in el2["options"]]
+    assert el2["target"]["value"] in ws and len(ws) >= 2                # верный + дистракторы на месте
+    assert el2["target"]["value"] not in el2["distractors"]
+
+
+async def test_stale_bundle_form_answer_does_not_pollute_base(fresh_db):
+    """Старый бандл шлёт ответ формы БЕЗ form-флага (mode=choice, direction=past) →
+    base-SRS выученного слова не двигается (защитный гард apply_result)."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    db = await _conn()
+    try:
+        async with db.execute("SELECT reps, ease, interval_days, due_at FROM user_words "
+                              "WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            before = dict(await cur.fetchone())
+    finally:
+        await _release(db)
+    await apply_result(uid, pid, False, mode="choice", direction="past")    # ошибка «выбора формы»
+    await apply_result(uid, pid, True, mode="choice", direction="def_sg")   # верный «выбор формы»
+    db = await _conn()
+    try:
+        async with db.execute("SELECT reps, ease, interval_days, due_at FROM user_words "
+                              "WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+            after = dict(await cur.fetchone())
+    finally:
+        await _release(db)
+    assert after == before
