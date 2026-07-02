@@ -21,6 +21,14 @@ async def learning_stats(user_id):
         rows = await _fetch_user_words(db, user_id)
         activity = await _activity_metrics(db, user_id)
         throttled = await _audit_throttled(db, user_id)
+        # трек ФОРМ: клеток в работе / отработано (produce сдан → interval≥1) / к повторению сейчас
+        async with db.execute(
+                "SELECT COUNT(*) AS n, "
+                "SUM(CASE WHEN interval_days >= 1 THEN 1 ELSE 0 END) AS done, "
+                "SUM(CASE WHEN due_at <= ? THEN 1 ELSE 0 END) AS due "
+                "FROM form_srs WHERE user_id = ?", (_now(), user_id)) as cur:
+            fr = await cur.fetchone()
+        forms = {"cells": fr["n"] or 0, "done": fr["done"] or 0, "due": fr["due"] or 0}
     finally:
         await _release(db)
     items = [_shape(r) for r in rows]
@@ -71,7 +79,8 @@ async def learning_stats(user_id):
     return {"total": len(items), "due": due_count, "byStatus": by_status, "byLevel": by_level,
             "currentLevel": current, "toNextLevel": to_next, "startLevel": start, "placed": bool(start),
             "streak": activity["streak"], "today": activity["today"], "accuracy": activity["accuracy"],
-            "retention": retention, "masteredWeek": mastered_week, "gate": gate, "audit": audit}
+            "retention": retention, "masteredWeek": mastered_week, "gate": gate, "audit": audit,
+            "forms": forms}
 
 
 async def estimate_level(user_id):

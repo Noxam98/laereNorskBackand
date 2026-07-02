@@ -142,6 +142,17 @@ class LearningAnswer(BaseModel):
     stage: str | None = Field(None, max_length=8)        # ступень рампы форм (card | choose | produce)
 
 
+class ChangelogEntry(BaseModel):
+    kind: str = Field("feature", max_length=16)      # feature | fix | perf | ui
+    i18n: dict = Field(default={})                   # {lang: {t: заголовок, d: описание}}
+
+
+class ChangelogIngest(BaseModel):
+    repo: str = Field(..., max_length=32)            # backend | frontend
+    source: str | None = Field(None, max_length=128)  # git-range пуша (идемпотентность)
+    entries: list[ChangelogEntry] = Field(default=[], max_length=30)
+
+
 class PlacementBody(BaseModel):
     lang: str = Field("ru", max_length=8)
     answers: list = Field(default=[], max_length=200)        # [{no, level, answer}]

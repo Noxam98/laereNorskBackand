@@ -475,6 +475,21 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """)
+        # Ченжлог приложения: записи «что нового» генерирует страж пуша (git pre-push → Claude
+        # Sonnet выжимает юзерские фичи/фиксы из диффов → POST /admin/changelog). i18n = JSON
+        # {lang: {t, d}}; source = git-range пуша (идемпотентность повторных прогонов хука).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS changelog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            source TEXT,
+            kind TEXT NOT NULL,
+            i18n TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_changelog_source ON changelog(repo, source)")
         # Трек ФОРМ (learning_forms): SRS-состояние на КЛЕТКУ формы выученного слова.
         # stage = card|choose|produce (текущая ступень рампы); due_at NULL = клетка новая (карточка).
         await db.execute("""

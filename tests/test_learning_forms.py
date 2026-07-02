@@ -187,6 +187,37 @@ async def test_session_serves_stage_after_card(fresh_db):
     assert el2["target"]["value"] not in el2["distractors"]
 
 
+def test_gender_produce_is_choice():
+    """Produce-ступень рода — тоже ВЫБОР артикля (текстом артикль не набирают)."""
+    row = {"pool_id": 3, "norwegian": "bok", "mastered": 1}
+    forms = {"gender": "ei", "indef_pl": "bøker", "def_sg": "boka", "def_pl": "bøkene"}
+    el = form_element(row, forms, {"part_of_speech": "noun"}, "gender", "produce")
+    assert el["mode"] == "choice" and el["target"]["value"] == "ei"
+    assert {o["w"] for o in el["options"]} == {"en", "ei", "et"}
+    # обычная клетка на produce остаётся вводом
+    el2 = form_element(row, forms, {"part_of_speech": "noun"}, "def_sg", "produce")
+    assert el2["mode"] == "input"
+
+
+async def test_stats_forms_block(fresh_db):
+    """learning_stats отдаёт блок forms: клеток в работе / отработано / к повторению."""
+    from db.learning_suggest import learning_stats
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    s0 = await learning_stats(uid)
+    assert s0["forms"] == {"cells": 0, "done": 0, "due": 0}
+    await apply_form_result(uid, pid, "past", True, stage="card")     # card→choose, due сразу
+    await apply_form_result(uid, pid, "perfect", True, stage="card")
+    await apply_form_result(uid, pid, "past", True)                   # choose→produce (due сразу)
+    await apply_form_result(uid, pid, "past", True)                   # produce сдан → interval≥1
+    s1 = await learning_stats(uid)
+    assert s1["forms"]["cells"] == 2
+    assert s1["forms"]["done"] == 1        # past отработана
+    assert s1["forms"]["due"] == 1         # perfect ждёт выбора сейчас
+
+
 async def test_stale_bundle_form_answer_does_not_pollute_base(fresh_db):
     """Старый бандл шлёт ответ формы БЕЗ form-флага (mode=choice, direction=past) →
     base-SRS выученного слова не двигается (защитный гард apply_result)."""

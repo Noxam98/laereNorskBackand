@@ -123,7 +123,9 @@ def form_element(row, forms, data, cell, stage):
         reveal = f"{value} {no}" if cell == "gender" else value   # род показываем как «ei bok»
         return {**base, "mode": "study", "direction": cell,
                 "target": {"field": field, "value": value}, "reveal": reveal}
-    if stage == "choose":                     # выбрать верную среди динамически подменённых окончаний
+    # gender: и choose, и produce — ВЫБОР артикля (артикль не «печатают»; produce-ступень
+    # остаётся в SRS-рампе, но UI тот же выбор — различение en/ei/et и есть продукция рода).
+    if stage == "choose" or cell == "gender":
         correct, dis = form_options(pos, no, forms, cell)
         if not correct:
             return None
