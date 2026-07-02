@@ -23,7 +23,7 @@ from .core import _conn, _release, _now
 from morphology import (
     strip_aux,
     noun_form_options, verb_form_options, adj_form_options,
-    NOUN_FORM_CELLS, VERB_FORM_CELLS, ADJ_FORM_CELLS,
+    NOUN_FORM_CELLS, VERB_FORM_CELLS, ADJ_FORM_CELLS, UNCOUNTABLE_NOUNS,
 )
 
 # Рампа одной формы: показать карточку → выбрать верную среди подменённых окончаний → набрать самому.
@@ -90,14 +90,18 @@ def cell_value(pos, forms, cell):
     return "" if val.lower() in _JUNK_FORMS else val
 
 
-def form_cells_for(pos, forms):
+def form_cells_for(pos, forms, no=None):
     """Клетки форм, реально доступные слову: часть речи из FORM_CELLS_BY_POS + форма присутствует и
-    не пуста (несклоняемое/отсутствующее — пропускаем; перифразы 'mer/mest …' — тоже, это не одна форма)."""
+    не пуста (несклоняемое/отсутствующее — пропускаем; перифразы 'mer/mest …' — тоже, это не одна форма).
+    Неисчисляемые сущ. (bruk, vann…): мн.ч. в речи не употребляется — клетки мн.ч. не дрилим."""
     cells = FORM_CELLS_BY_POS.get(pos)
     if not cells:
         return []
+    mass = pos == "noun" and no and str(no).strip().lower() in UNCOUNTABLE_NOUNS
     out = []
     for c in cells:
+        if mass and c in ("indef_pl", "def_pl"):
+            continue
         v = cell_value(pos, forms, c)
         if v and " " not in v:          # 'mer praktisk' и т.п. — не одна словоформа, мимо
             out.append(c)

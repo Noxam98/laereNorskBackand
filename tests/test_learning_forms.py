@@ -27,6 +27,11 @@ def test_form_cells_for():
     assert set(form_cells_for("adjective", a)) == {"neuter", "plural"}
     # местоимение — морфологии форм нет
     assert form_cells_for("pronoun", {"obj": "meg"}) == []
+    # НЕИСЧИСЛЯЕМОЕ сущ. (bruk = использование): «mange bruk» не говорят, а «bruker» читается
+    # как «пользователь» — клетки мн.ч. не дрилим; род и опр. ед. (bruken) остаются
+    b = {"gender": "en", "indef_pl": "bruker", "def_sg": "bruken", "def_pl": "brukene"}
+    assert set(form_cells_for("noun", b, "bruk")) == {"gender", "def_sg"}
+    assert set(form_cells_for("noun", b, "bil")) == {"gender", "indef_pl", "def_sg", "def_pl"}
 
 
 def test_cell_value_perfect_participle():

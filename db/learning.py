@@ -469,7 +469,7 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
             pos0 = normalize_pos(d0.get("part_of_speech"))
             if pos0 in ("noun", "verb", "adjective"):
                 from .learning_forms import note_cycle_mastered, form_cells_for, parse_forms
-                if form_cells_for(pos0, parse_forms(wp["forms"])):
+                if form_cells_for(pos0, parse_forms(wp["forms"]), wp["norwegian"]):
                     await note_cycle_mastered(db, user_id, pool_id)
         # дневная активность (для стрика/цели/точности/хитмапа)
         day = _now()[:10]
@@ -1025,7 +1025,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         for e, group, fdict in track:
             pid = e["row"]["pool_id"]
             pos = normalize_pos((e["data"] or {}).get("part_of_speech"))
-            cells = form_cells_for(pos, fdict)
+            cells = form_cells_for(pos, fdict, e["row"]["norwegian"])
             if cells:
                 info[pid] = {"e": e, "fdict": fdict, "cells": cells}
 
@@ -1067,7 +1067,8 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             #    повторяются в СВОЕЙ фазе (в фазе слов форм нет вовсе, см. ветку words ниже)
             due_rev = []
             for (rpid, rc), strow in fstates.items():
-                if rpid in info and (strow.get("interval_days") or 0) >= 1 and (strow.get("due_at") or "") <= now_s:
+                if (rpid in info and rc in info[rpid]["cells"]
+                        and (strow.get("interval_days") or 0) >= 1 and (strow.get("due_at") or "") <= now_s):
                     due_rev.append(((strow.get("due_at") or ""), rpid, rc, strow.get("stage") or "produce"))
             due_rev.sort()
             taken = {}   # pid → взятые клетки этой сессии

@@ -47,6 +47,15 @@ PLURALIA_TANTUM = {
     "foreldre", "briller", "penger", "klær", "omgivelser", "møbler",
 }
 
+# НЕИСЧИСЛЯЕМЫЕ (mass nouns): мн.ч. формально существует в словаре, но в речи не употребляется
+# («mange bruk» не говорят) — клетки мн.ч. в треке форм НЕ дриллим (род/опр.ед. остаются).
+# bruker к тому же читается как «пользователь» (en bruker) — прямой вред. Список пополняем по жалобам.
+UNCOUNTABLE_NOUNS = {
+    "bruk", "vann", "melk", "luft", "mat", "musikk", "informasjon", "snø", "regn",
+    "sukker", "salt", "smør", "kjøtt", "kaffe", "te", "søvn", "støy", "trafikk",
+    "vær", "ris", "mel", "honning", "bensin", "strøm", "helse", "kunnskap", "frihet",
+}
+
 
 def _is_zero_plural_neuter(no, gender):
     return gender == "et" and _norm(no) in ZERO_PLURAL_NEUTER
