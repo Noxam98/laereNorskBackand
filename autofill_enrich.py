@@ -152,7 +152,9 @@ _FORMS = {
         sys=("Ты — эксперт по существительным норвежского (bokmål). Для каждого слова дай ТОЧНЫЕ "
              "формы (включая нерегулярные). gender — ОБЯЗАТЕЛЬНО один из en/ei/et, НИКОГДА не пусто "
              "(женский род давай 'ei'; примеры: en gutt, ei jente, et hus). def_sg (опр. ед.), "
-             "indef_pl (неопр. мн.), def_pl (опр. мн.). Поле word — ровно как на входе.")),
+             "indef_pl (неопр. мн.), def_pl (опр. мн.). countable — можно ли естественно сказать "
+             "«mange <слово>» в бытовой речи: у неисчисляемых (vann, luft, informasjon, bruk, snø) "
+             "false, у обычных предметных true. Поле word — ровно как на входе.")),
     "verb": dict(
         schema=VERB_FORMS_SCHEMA, fields=["present", "past", "perfect"],
         sys=("Ты — эксперт по глаголам норвежского (bokmål). Для каждого инфинитива дай ТОЧНЫЕ "
@@ -199,6 +201,9 @@ async def forms_batch(category, rows):
         seen.add(pid)
         forms = {f: r[f].strip() for f in cfg["fields"]
                  if isinstance(r.get(f), str) and r[f].strip() and r[f].strip().lower() not in ("-", "null")}
+        # исчисляемость нуна: неисчисляемые (countable=false) не дриллятся по мн.ч. в треке форм
+        if category == "noun" and isinstance(r.get("countable"), bool):
+            forms["uncountable"] = not r["countable"]
         # Анти-залип noun без gender: ретраим ОГРАНИЧЕННО (gender = источник артикля en/ei/et —
         # ждём, что модель вернёт его на след. круге; enum+required в схеме делают промах редким).
         # После CAP промахов сдаёмся и сохраняем без рода, иначе misclassified-слово сливало бы квоту

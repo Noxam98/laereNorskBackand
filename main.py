@@ -15,6 +15,7 @@ from routers.sets import router as sets_router
 from routers.changelog import router as changelog_router
 from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
+    countability_loop,
     yo_fix_loop,
     AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
 )
@@ -122,6 +123,7 @@ async def startup():
         asyncio.create_task(pos_loop())
         logger.info("pos queue enabled: переразметка части речи у «прочее»")
         asyncio.create_task(forms_loop())
+        asyncio.create_task(countability_loop())   # бэкфилл исчисляемости нунов (один проход)
         logger.info("forms queue enabled: грамматические формы по части речи")
         if DEDUP_ENABLED:
             asyncio.create_task(dedup_loop())

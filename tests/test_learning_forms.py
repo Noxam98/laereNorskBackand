@@ -32,6 +32,10 @@ def test_form_cells_for():
     b = {"gender": "en", "indef_pl": "bruker", "def_sg": "bruken", "def_pl": "brukene"}
     assert set(form_cells_for("noun", b, "bruk")) == {"gender", "def_sg"}
     assert set(form_cells_for("noun", b, "bil")) == {"gender", "indef_pl", "def_sg", "def_pl"}
+    # флаг из данных (LLM-разметка uncountable) — работает для ЛЮБОГО слова, не только из списка
+    bu = {**b, "uncountable": True}
+    assert set(form_cells_for("noun", bu, "melodi")) == {"gender", "def_sg"}
+    assert set(form_cells_for("noun", {**b, "uncountable": False}, "melodi")) == {"gender", "indef_pl", "def_sg", "def_pl"}
 
 
 def test_cell_value_perfect_participle():

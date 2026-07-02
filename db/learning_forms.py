@@ -97,7 +97,8 @@ def form_cells_for(pos, forms, no=None):
     cells = FORM_CELLS_BY_POS.get(pos)
     if not cells:
         return []
-    mass = pos == "noun" and no and str(no).strip().lower() in UNCOUNTABLE_NOUNS
+    mass = pos == "noun" and (forms.get("uncountable") is True
+                              or (no and str(no).strip().lower() in UNCOUNTABLE_NOUNS))
     out = []
     for c in cells:
         if mass and c in ("indef_pl", "def_pl"):

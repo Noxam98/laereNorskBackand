@@ -16,6 +16,7 @@ from db import (
     yo_pending, mark_yo_done,
     sem_embed_pending, mark_sem_embed,
     get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
+    nouns_missing_countability, merge_pool_forms,
     pos_uncategorized, set_pool_pos, get_pool_words_by_names,
     dedup_pending, mark_dedup, pool_usage_count, nearest_other, merge_pool_words,
     freq_pending, set_pool_freq_bulk,
@@ -24,7 +25,7 @@ import llm  # текст/эмбеддинги через key-free API: ask_json/
 from llm import (
     embed_texts, encode_emb, ask_json, semantic_embed_text,
     WORDS_SCHEMA, CLASSIFY_SCHEMA, DESCRIBE_BATCH_SCHEMA, TRANSLATE_BATCH_SCHEMA,
-    NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA, POS_REFINE_SCHEMA, POS_KEYS,
+    NOUN_FORMS_SCHEMA, VERB_FORMS_SCHEMA, ADJ_FORMS_SCHEMA, COUNTABLE_SCHEMA, POS_REFINE_SCHEMA, POS_KEYS,
     TOPIC_TAGS, TOPIC_KEYS, CEFR_LEVELS, LANG_NAMES, normalize_word_item, apply_item_meta,
     DEDUP_SCHEMA,
 )
@@ -606,6 +607,52 @@ async def forms_loop():
         await asyncio.sleep(FORMS_CHECK_SEC)
 
 
+
+
+_COUNTABLE_SYS = (
+    "Ты — эксперт по норвежскому (bokmål). Для каждого существительного скажи, ИСЧИСЛЯЕМО ли оно "
+    "в бытовой речи: можно ли естественно сказать «mange/flere <слово>» или «to <слово>». "
+    "Неисчисляемые (масс-нуны: vann, luft, snø, informasjon, bruk, mat, kaffe) — countable=false. "
+    "Обычные предметные (bil, hus, jente) — true. Поле word — ровно как на входе."
+)
+
+
+async def countability_loop():
+    """Бэкфилл исчисляемости нунов (ОДИН проход по базе): у слов с формами, но без отметки
+    uncountable, спрашиваем LLM пачками и дописываем флаг в forms. Новые слова получают отметку
+    сразу в forms_batch (countable в NOUN_FORMS_SCHEMA) — очередь исчерпается и луп заснёт."""
+    await asyncio.sleep(45)
+    while True:
+        if runtime.PAUSED.get("forms"):
+            await asyncio.sleep(20); continue
+        try:
+            if llm.text_enabled() and llm.text_available("autofill"):
+                rows = await nouns_missing_countability(50)
+                if not rows:
+                    await asyncio.sleep(6 * 3600)   # проход завершён — редкая проверка на новые хвосты
+                    continue
+                user = "Слова:\n" + "\n".join(f"- {nw}" for _, nw in rows)
+                data = await ask_json(_COUNTABLE_SYS, user, COUNTABLE_SCHEMA, purpose="autofill",
+                                      label=f"исчисляемость нунов ({len(rows)})", temperature=0)
+                results = (data or {}).get("results", []) if isinstance(data, dict) else []
+                by_word = {}
+                for r in results:
+                    if isinstance(r, dict) and isinstance(r.get("countable"), bool) and r.get("word"):
+                        by_word[str(r["word"]).strip().lower()] = r["countable"]
+                positional = len(results) == len(rows)
+                done = 0
+                for i, (pid, nw) in enumerate(rows):
+                    c = by_word.get(str(nw).strip().lower())
+                    if c is None and positional and isinstance(results[i], dict) and isinstance(results[i].get("countable"), bool):
+                        c = results[i]["countable"]
+                    if c is None:
+                        c = True   # не ответила — считаем исчисляемым (безопасный дефолт) и выводим из очереди
+                    await merge_pool_forms(pid, {"uncountable": not c})
+                    done += 1
+                logger.info(f"countability_loop: +{done}/{len(rows)}")
+        except Exception as e:
+            errors.report(e, "countability_loop")
+        await asyncio.sleep(FORMS_CHECK_SEC)
 
 
 async def autofill_loop():

@@ -847,6 +847,39 @@ async def pos_uncategorized(limit: int = 20):
         await _release(db)
 
 
+async def nouns_missing_countability(limit: int = 50):
+    """[(id, norwegian)] — нуны с заполненными формами, но БЕЗ отметки исчисляемости
+    (бэкфилл одного прохода: countability_loop; новые получают её сразу в forms_batch)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, norwegian FROM word_pool WHERE forms LIKE '%\"pos\": \"noun\"%' "
+            "AND forms NOT LIKE '%uncountable%' ORDER BY id LIMIT ?",
+            (limit,),
+        ) as cur:
+            return [(r["id"], r["norwegian"]) for r in await cur.fetchall()]
+    finally:
+        await _release(db)
+
+
+async def merge_pool_forms(pool_id: int, patch: dict):
+    """Дописать ключи в forms-JSON слова (не затирая остальные формы)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT forms FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            r = await cur.fetchone()
+        try:
+            forms = json.loads(r["forms"]) if r and r["forms"] else {}
+        except Exception:
+            forms = {}
+        forms.update(patch)
+        await db.execute("UPDATE word_pool SET forms = ? WHERE id = ?",
+                         (json.dumps(forms, ensure_ascii=False), pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
 async def pos_missing_forms(category: str, limit: int = 20):
     """[(id, norwegian, data_dict)] — слова заданной части речи БЕЗ грамматических форм."""
     cond, params = _pos_cond(category)

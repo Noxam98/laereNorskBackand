@@ -263,7 +263,20 @@ def _forms_schema(name, fields):
 # на карточке: модель не должна вернуть мусор/пусто (иначе у сущ. навсегда нет артикля).
 NOUN_FORMS_SCHEMA = _forms_schema("noun_forms", ["gender", "def_sg", "indef_pl", "def_pl"])
 NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["properties"]["gender"]["enum"] = ["en", "ei", "et"]
-NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["required"] = ["word", "gender"]  # форсим род
+# countable: можно ли естественно сказать «mange X»; false у mass-нунов (vann, informasjon, bruk) —
+# их мн.ч.-клетки трек форм не дриллит. Форсим вместе с родом.
+NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["properties"]["countable"] = {"type": "boolean"}
+NOUN_FORMS_SCHEMA["schema"]["properties"]["results"]["items"]["required"] = ["word", "gender", "countable"]
+
+# Бэкфилл исчисляемости для УЖЕ заполненных нунов (один проход, countability_loop).
+COUNTABLE_SCHEMA = {
+    "name": "noun_countability",
+    "schema": {"type": "object", "properties": {"results": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"word": {"type": "string"}, "countable": {"type": "boolean"}},
+        "required": ["word", "countable"],
+    }}}, "required": ["results"]},
+}
 # Глагол: спряжение (инфинитив = само слово).
 VERB_FORMS_SCHEMA = _forms_schema("verb_forms", ["present", "past", "perfect"])
 # Прилагательное: степени + согласование.
