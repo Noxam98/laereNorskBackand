@@ -230,11 +230,13 @@ async def admin_set_control(key: str, paused: bool, user=Depends(get_admin_user)
 async def admin_stats(user=Depends(get_admin_user)):
     """Техническая статистика проекта (только для админа)."""
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    from db import countability_progress
     return {
         "pool": await get_pool_stats(),
         "topics": await get_pool_topics_counts(),
         "levels": await get_pool_level_counts(),
         "usageToday": await get_usage_like(today),
+        "countability": await countability_progress(),   # разметка исчисляемости нунов (бэкфилл)
     }
 
 

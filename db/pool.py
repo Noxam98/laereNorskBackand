@@ -862,6 +862,21 @@ async def nouns_missing_countability(limit: int = 50):
         await _release(db)
 
 
+async def countability_progress():
+    """Прогресс разметки исчисляемости нунов: {total, marked, uncountable} (для админки)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COUNT(*) AS t, "
+            "SUM(CASE WHEN forms LIKE '%uncountable%' THEN 1 ELSE 0 END) AS m, "
+            "SUM(CASE WHEN forms LIKE '%\"uncountable\": true%' THEN 1 ELSE 0 END) AS u "
+            "FROM word_pool WHERE forms LIKE '%\"pos\": \"noun\"%'") as cur:
+            r = await cur.fetchone()
+        return {"total": r["t"] or 0, "marked": r["m"] or 0, "uncountable": r["u"] or 0}
+    finally:
+        await _release(db)
+
+
 async def merge_pool_forms(pool_id: int, patch: dict):
     """Дописать ключи в forms-JSON слова (не затирая остальные формы)."""
     db = await _conn()
