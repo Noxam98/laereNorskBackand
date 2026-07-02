@@ -268,6 +268,36 @@ async def test_words_phase_serves_due_form_reviews(fresh_db, monkeypatch):
     assert forms[0]["stage"] == "produce"                           # сданная клетка повторяется вводом
 
 
+async def test_demoted_word_leaves_forms_mode(fresh_db, monkeypatch):
+    """Слово, слетевшее с повтора (ошибка ввода → откат из mastered), НЕ появляется в режиме
+    грамматики, пока не выучится заново; после ре-мастеринга формы возвращаются с того же места."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)                                    # выучено → фаза форм
+    res = await build_session(uid, size=20)
+    assert [w for w in res["words"] if w.get("form_track")], "формы идут, пока слово выучено"
+    await apply_form_result(uid, pid, "present", True, stage="card")   # клетка начата (choose)
+
+    # ошибка на повторе → слово вылетает из mastered (откат в рампу на build)
+    await apply_result(uid, pid, False, mode="input", direction="int2no")
+    res2 = await build_session(uid, size=20)
+    assert not [w for w in res2["words"] if w.get("form_track")], \
+        "слетевшее слово не должно дриллиться в грамматике"
+    assert res2["composition"]["phase"] == "words"             # партия опустела → фаза слов
+
+    # доучили заново → формы возвращаются, начатая клетка — с той же ступени (choose)
+    await apply_result(uid, pid, True, mode="build", direction="int2no")
+    await apply_result(uid, pid, True, mode="input", direction="int2no")
+    res3 = await build_session(uid, size=20)
+    forms3 = [w for w in res3["words"] if w.get("form_track")]
+    assert forms3 and forms3[0]["pool_id"] == pid
+    st = (await load_form_states(uid, [pid]))[(pid, "present")]
+    assert st["stage"] == "choose"                             # прогресс клетки не потерян
+
+
 async def test_cycle_veteran_seed(fresh_db, monkeypatch):
     """Ветеран без строки цикла (выучил слова ДО релиза): первый build сидит партию из бэклога."""
     import db.learning_forms as lf
