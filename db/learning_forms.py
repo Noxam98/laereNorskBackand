@@ -7,8 +7,15 @@
 правдоподобных ошибок (gå→*gådde, grønn→*grønnt), не «угадайка» по чужим словам.
 
 Хранилище — form_srs (user_id, pool_id, cell → stage/ease/interval/due): apply_form_result,
-load_form_states. Чистая часть (form_element/schedule_form) — ниже, вызывается и сессией, и apply."""
+load_form_states. Чистая часть (form_element/schedule_form) — ниже, вызывается и сессией, и apply.
+
+Цикл «СЛОВА ↔ ФОРМЫ» (form_cycle): фазы чередуются по кругу — в фазе words сессии учат слова
+(из форм только подошедшие повторы), выученные формо-способные слова копятся в партию (batch);
+набралось FORM_CYCLE_BATCH → фаза forms: сессии дрилят формы партии (новых слов не вводим),
+пока ВСЕ клетки партии не сданы (produce → interval≥1) — тогда снова words. Повторы обоих
+треков (due) живут в любой фазе — SRS не замораживается."""
 import json
+import os
 from datetime import datetime, timedelta
 
 from pos import normalize_pos
@@ -167,8 +174,69 @@ def schedule_form(stage, ease, interval_days, correct, elapsed=None):
 
 # ── DB-слой: form_srs (SRS-состояние клеток форм) ────────────────────────────
 
+# Размер партии цикла «слова↔формы»: столько выученных слов копим, прежде чем
+# переключиться на фазу форм. Env-кнопка — для тюнинга без релиза (и тестов).
+FORM_CYCLE_BATCH = int(os.getenv("FORM_CYCLE_BATCH", "10"))
+FORMS_SESSION_SHARE = 0.7   # доля сессии под формы в фазе forms (остаток — due/прогресс слов)
+
+
 def _due_in(days):
     return (datetime.utcnow() + timedelta(days=days)).isoformat()
+
+
+# ── Цикл «слова ↔ формы» (form_cycle) ────────────────────────────────────────
+
+async def _cycle_row(db, user_id):
+    async with db.execute("SELECT phase, batch FROM form_cycle WHERE user_id = ?", (user_id,)) as cur:
+        r = await cur.fetchone()
+    if not r:
+        return None
+    try:
+        batch = [int(x) for x in json.loads(r["batch"] or "[]")]
+    except Exception:
+        batch = []
+    return {"phase": r["phase"] or "words", "batch": batch}
+
+
+async def _save_cycle(db, user_id, phase, batch):
+    await db.execute(
+        "INSERT INTO form_cycle (user_id, phase, batch, updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(user_id) DO UPDATE SET phase=excluded.phase, batch=excluded.batch, "
+        "updated_at=excluded.updated_at",
+        (user_id, phase, json.dumps(batch), _now()))
+
+
+async def get_form_cycle(user_id):
+    """Состояние цикла юзера или None (ни разу не создавалось — build_session решит сид ветерана)."""
+    db = await _conn()
+    try:
+        return await _cycle_row(db, user_id)
+    finally:
+        await _release(db)
+
+
+async def save_form_cycle(user_id, phase, batch):
+    db = await _conn()
+    try:
+        await _save_cycle(db, user_id, phase, batch)
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def note_cycle_mastered(db, user_id, pool_id):
+    """Формо-способное слово выучено → в копилку партии (фаза words); FORM_CYCLE_BATCH → фаза forms.
+    Вызывает apply_result на переходе в mastered (тем же соединением, коммит — его).
+    Выученное во время фазы forms в текущую партию не лезет («пока не выучишь» — про неё) —
+    его формы подберёт бэклог-филлер следующих форм-фаз."""
+    row = await _cycle_row(db, user_id) or {"phase": "words", "batch": []}
+    if row["phase"] != "words":
+        return
+    batch = row["batch"]
+    if pool_id not in batch:
+        batch.append(pool_id)
+    phase = "forms" if len(batch) >= FORM_CYCLE_BATCH else "words"
+    await _save_cycle(db, user_id, phase, batch)
 
 
 async def load_form_states(user_id, pool_ids=None):

@@ -166,8 +166,10 @@ async def test_form_answers_do_not_touch_base_srs(fresh_db):
     assert after == before
 
 
-async def test_session_serves_stage_after_card(fresh_db):
+async def test_session_serves_stage_after_card(fresh_db, monkeypatch):
     """После карточки клетка снова в сессии УЖЕ упражнением-выбором (stage choose, options)."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)          # партия из одного — сразу фаза форм
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "gå", "идти", pos="verb")
     await _set_forms(pid, _GIKK)
@@ -185,6 +187,81 @@ async def test_session_serves_stage_after_card(fresh_db):
     ws = [o["w"] for o in el2["options"]]
     assert el2["target"]["value"] in ws and len(ws) >= 2                # верный + дистракторы на месте
     assert el2["target"]["value"] not in el2["distractors"]
+
+
+async def test_cycle_full_circle(fresh_db, monkeypatch):
+    """Полный круг: выучил партию → фаза форм → сдал все клетки → снова фаза слов."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    assert (await lf.get_form_cycle(uid))["phase"] == "forms"      # партия готова
+
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms" and res["composition"]["formsLeft"] == 1
+
+    # сдаём все клетки: card → choose(верно) → produce(верно) — клетка graduates (interval ≥ 1)
+    for cell in ("present", "past", "perfect"):
+        await apply_form_result(uid, pid, cell, True, stage="card")
+        await apply_form_result(uid, pid, cell, True)
+        await apply_form_result(uid, pid, cell, True)
+
+    res2 = await build_session(uid, size=20)                        # партия сдана → флип
+    assert res2["composition"]["phase"] == "words"
+    assert not [w for w in res2["words"] if w.get("form_track")]    # повторы ещё не подошли
+    assert (await lf.get_form_cycle(uid)) == {"phase": "words", "batch": []}
+
+
+async def test_words_phase_serves_due_form_reviews(fresh_db, monkeypatch):
+    """Повторы форм (due) не замораживаются фазой слов: подошедшая клетка приходит в сессию."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    for cell in ("present", "past", "perfect"):                     # сдаём партию → фаза words
+        await apply_form_result(uid, pid, cell, True, stage="card")
+        await apply_form_result(uid, pid, cell, True)
+        await apply_form_result(uid, pid, cell, True)
+    # состариваем один повтор — будто интервал прошёл
+    db = await _conn()
+    try:
+        await db.execute("UPDATE form_srs SET due_at = '2000-01-01T00:00:00' "
+                         "WHERE user_id=? AND pool_id=? AND cell='past'", (uid, pid))
+        await db.commit()
+    finally:
+        await _release(db)
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "words"
+    forms = [w for w in res["words"] if w.get("form_track")]
+    assert len(forms) == 1 and forms[0]["step"] == "past"           # только due-повтор, без новых клеток
+    assert forms[0]["stage"] == "produce"                           # сданная клетка повторяется вводом
+
+
+async def test_cycle_veteran_seed(fresh_db, monkeypatch):
+    """Ветеран без строки цикла (выучил слова ДО релиза): первый build сидит партию из бэклога."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 2)
+    uid, did = await seed_user()
+    pids = []
+    for i, w in enumerate(("gå", "se")):
+        pid, _ = await seed_word(did, w, f"слово{i}", pos="verb")
+        await _set_forms(pid, {"pos": "verb", "present": w + "r", "past": "x" + w, "perfect": "har y" + w})
+        await _master(uid, pid)
+        pids.append(pid)
+    db = await _conn()                                              # имитация «до релиза»: строки цикла нет
+    try:
+        await db.execute("DELETE FROM form_cycle WHERE user_id = ?", (uid,))
+        await db.commit()
+    finally:
+        await _release(db)
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"                   # сид из бэклога → сразу формы
+    cyc = await lf.get_form_cycle(uid)
+    assert cyc["phase"] == "forms" and len(cyc["batch"]) == 2 and set(cyc["batch"]) == set(pids)
 
 
 def test_gender_produce_is_choice():

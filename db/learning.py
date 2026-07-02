@@ -459,6 +459,18 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
                 "UPDATE user_words SET certified = 1, audit_due = ?, audit_interval = ? "
                 "WHERE user_id = ? AND pool_id = ?",
                 (_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id, pool_id))
+        # Цикл «слова↔формы»: свежевыученное ФОРМО-способное слово — в копилку партии
+        # (10 шт. → фаза форм, см. build_session/note_cycle_mastered).
+        if mastered_now and not (st.get("mastered") or 0) and wp and wp["forms"]:
+            try:
+                d0 = json.loads(wp["data"]) if wp["data"] else {}
+            except Exception:
+                d0 = {}
+            pos0 = normalize_pos(d0.get("part_of_speech"))
+            if pos0 in ("noun", "verb", "adjective"):
+                from .learning_forms import note_cycle_mastered, form_cells_for, parse_forms
+                if form_cells_for(pos0, parse_forms(wp["forms"])):
+                    await note_cycle_mastered(db, user_id, pool_id)
         # дневная активность (для стрика/цели/точности/хитмапа)
         day = _now()[:10]
         await db.execute("""
@@ -971,16 +983,18 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             await _release(dbc)
         _tm["cloze"] = time.monotonic() - _tc
 
-    # ── Грамматический overlay (тир ★): доля сессии × частотный приоритет; гейт — тумблер профиля.
-    # Берём ВЫУЧЕННЫЕ слова с формами и непройденной грамм-клеткой (частотные — первыми). Грамматика —
-    # отдельный слой ПОВЕРХ base-рампы: на «выучено»/CEFR не влияет (см. _grammar_cells/apply_result).
-    # Резервируем под неё долю слотов (квоту), остаток сессии — обычный контент; total остаётся ≈size. ──
+    # ── Грамм-тир ★ и ЦИКЛ «слова ↔ формы» (form_cycle). Фаза words: сессия учит слова, из форм —
+    # ТОЛЬКО подошедшие повторы (due) + pronoun-overlay; выученные слова копятся в партию (см.
+    # apply_result → note_cycle_mastered). Фаза forms: сессия дрилит формы партии (FORMS_SESSION_SHARE
+    # слотов, ≤2 клетки на слово, новых СЛОВ не вводим), остаток — due/прогресс слов; партия сдана
+    # (все клетки produce+interval≥1) → флип обратно в words. Формы на «выучено»/CEFR не влияют. ──
     grammar_on = await get_user_grammar(user_id)
     grammar_pos = await get_user_grammar_pos(user_id) if grammar_on else {}   # пер-POS тумблеры
-    grammar_quota = round(size * GRAMMAR_RATIO) if (grammar_on and not scoped and not gate_open) else 0
     grammar_picks = []    # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]
-    if grammar_quota > 0:
-        from .learning_forms import form_cells_for, load_form_states   # ленивый импорт (как users выше)
+    cycle_phase, cycle_left = "words", 0
+    if grammar_on and not scoped:
+        from .learning_forms import (form_cells_for, load_form_states, get_form_cycle, save_form_cycle,
+                                     FORM_CYCLE_BATCH, FORMS_SESSION_SHARE)
         # слова, уже взятые в base-сессию (в т.ч. due-повторы выученных), грамматикой НЕ резервируем:
         # иначе слот квоты ушёл бы на слово, которое отсеется дедупом ниже → потеря контента и тира.
         ordered_pids = {e["row"]["pool_id"] for e, _ in ordered}
@@ -1004,43 +1018,97 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             if not fdict:
                 continue
             cands.append((e, group, fdict))
-        # ── Трек ФОРМ (сущ./глаг./прил.): SRS на каждую клетку формы слова, рампа card→choose→
-        # produce (learning_forms). Для этих POS трек ЗАМЕНЯЕТ overlay (дрилим ВСЕ формы по
-        # интервалам, а не нерегулярные однократно); местоим./притяж. остаются overlay (курируемая
-        # парадигма, закрытый класс). Одна клетка на слово за сессию: сперва самая просроченная
-        # due, иначе первая новая (карточкой). ──
         track = [(e, g, f) for (e, g, f) in cands if g in ("noun", "verb", "adjective")]
         fstates = await load_form_states(user_id, [e["row"]["pool_id"] for e, _, _ in track]) if track else {}
         now_s = _now()
-        due_picks, fresh_picks = [], []
+        info = {}   # pid → {e, fdict, cells} (вселенная клеток формо-способного слова)
         for e, group, fdict in track:
             pid = e["row"]["pool_id"]
             pos = normalize_pos((e["data"] or {}).get("part_of_speech"))
-            due_c, new_c = None, None
-            for c in form_cells_for(pos, fdict):
+            cells = form_cells_for(pos, fdict)
+            if cells:
+                info[pid] = {"e": e, "fdict": fdict, "cells": cells}
+
+        def _pending(pid):
+            """Несданные клетки слова: сперва начатые (они всегда due — рампа держит due=сейчас),
+            затем нетронутые (пойдут карточкой). Сданная = produce пройден → interval ≥ 1."""
+            started, fresh = [], []
+            for c in info[pid]["cells"]:
                 st = fstates.get((pid, c))
                 if st is None:
-                    new_c = new_c or c
-                elif (st.get("due_at") or "") <= now_s:
-                    if due_c is None or (st["due_at"] or "") < due_c[0]:
-                        due_c = ((st["due_at"] or ""), c, st.get("stage") or "card")
-            if due_c:
-                due_picks.append((due_c[0], ("form", e, due_c[1], fdict, due_c[2])))
-            elif new_c:
-                fresh_picks.append((e["row"].get("freq") or 0, ("form", e, new_c, fdict, "card")))
-        # pronoun-overlay — как раньше: первая непройденная грамм-клетка
-        ov_picks = []
-        for e, group, fdict in cands:
-            if group != "pronoun":
-                continue
-            pending = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
-                       if e["modes"].get(c) != "1"]
-            if pending:
-                ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending[0], fdict, None)))
-        due_picks.sort(key=lambda x: x[0])              # просроченные повторы форм: старые первыми
-        rest = fresh_picks + ov_picks
-        rest.sort(key=lambda x: -x[0])                  # новые клетки/overlay: частотные первыми
-        grammar_picks = [it for _, it in due_picks + rest][:grammar_quota]
+                    fresh.append(c)
+                elif (st.get("interval_days") or 0) < 1:
+                    started.append(c)
+            return started + fresh
+
+        cyc = await get_form_cycle(user_id)
+        if cyc is None:
+            # Первый заход после релиза цикла: у ветерана уже есть партия несданных форм (бэклог
+            # выученных слов) → сразу фаза forms из десятки частотных. Новичок — обычная words.
+            backlog = sorted((p for p in info if _pending(p)),
+                             key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
+            cyc = ({"phase": "forms", "batch": backlog[:FORM_CYCLE_BATCH]}
+                   if len(backlog) >= FORM_CYCLE_BATCH else {"phase": "words", "batch": []})
+            await save_form_cycle(user_id, cyc["phase"], cyc["batch"])
+        phase, batch = cyc["phase"], [p for p in cyc["batch"] if p in info]
+        batch_pending = [p for p in batch if _pending(p)] if phase == "forms" else []
+        if phase == "forms" and not batch_pending:
+            phase = "words"                            # партия сдана (или все её клетки выключены
+            await save_form_cycle(user_id, "words", [])  # тумблерами) → по кругу: снова слова
+
+        if phase == "forms":
+            # ФАЗА ФОРМ: новых слов не вводим, большинство слотов — формы партии.
+            cap_new = 0
+            quota = max(1, round(size * FORMS_SESSION_SHARE))
+            # порядок слов: партия (частотные первыми) → бэклог-филлер (переваривает старые
+            # выученные слова, чьи формы ещё не отработаны; флип от филлера не зависит)
+            word_order = sorted(batch_pending, key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
+            word_order += sorted((p for p in info if p not in set(batch) and _pending(p)),
+                                 key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
+            taken = {}   # pid → взятые клетки этой сессии
+            for _round in (0, 1):                      # ≤2 клетки на слово, раунд-робином
+                for pid in word_order:
+                    if len(grammar_picks) >= quota:
+                        break
+                    got = taken.setdefault(pid, set())
+                    if len(got) > _round:              # на первом круге по одной, на втором по второй
+                        continue
+                    nxt = next((c for c in _pending(pid) if c not in got), None)
+                    if not nxt:
+                        continue
+                    strow = fstates.get((pid, nxt))
+                    stage = (strow.get("stage") or "card") if strow else "card"
+                    grammar_picks.append(("form", info[pid]["e"], nxt, info[pid]["fdict"], stage))
+                    got.add(nxt)
+            cycle_phase, cycle_left = "forms", len(batch_pending)
+        else:
+            # ФАЗА СЛОВ: из форм — только подошедшие ПОВТОРЫ начатых клеток (SRS не замораживаем),
+            # новые клетки не вводим; местоим-overlay — как раньше (гейтится воротами экзамена).
+            quota = round(size * GRAMMAR_RATIO)
+            due_cells = []
+            for (pid, c), strow in fstates.items():
+                if pid in info and (strow.get("due_at") or "") <= now_s:
+                    due_cells.append(((strow.get("due_at") or ""), pid, c, strow.get("stage") or "card"))
+            due_cells.sort()                            # самые просроченные первыми
+            seen_words = set()
+            for _due, pid, c, stg in due_cells:
+                if len(grammar_picks) >= quota:
+                    break
+                if pid in seen_words:
+                    continue                            # вне фазы форм — одна клетка на слово
+                seen_words.add(pid)
+                grammar_picks.append(("form", info[pid]["e"], c, info[pid]["fdict"], stg))
+            if not gate_open:
+                ov_picks = []
+                for e, group, fdict in cands:
+                    if group != "pronoun":
+                        continue
+                    pending_ov = [c for c in _grammar_cells(e["row"]["norwegian"], e["data"], fdict)
+                                  if e["modes"].get(c) != "1"]
+                    if pending_ov:
+                        ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending_ov[0], fdict, None)))
+                ov_picks.sort(key=lambda x: -x[0])
+                grammar_picks += [it for _, it in ov_picks][:max(0, quota - len(grammar_picks))]
     base_budget = max(0, size - len(grammar_picks))   # под контент — остаток после грамм-квоты
 
     session = []
@@ -1125,6 +1193,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             session.append(el)
             in_session.add(e["row"]["pool_id"])
             comp["grammar"] += 1
+    # фаза цикла «слова↔формы» — для честной кнопки старта (чип «сессия форм» + остаток партии)
+    comp["phase"] = cycle_phase
+    if cycle_phase == "forms":
+        comp["formsLeft"] = cycle_left
 
     # карточки-знакомства (новые слова, step == "card") — в КОНЕЦ сессии: сначала упражнения по уже
     # начатым словам, потом интро новых. sort стабилен → относительный порядок внутри групп сохранён.

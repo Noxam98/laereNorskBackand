@@ -75,33 +75,42 @@ def test_grammar_element_indefpl_shape():
 
 
 # ── (2) overlay в сессии: только mastered + формы, гейт тумблером ────────────────────────────
-async def test_overlay_surfaces_for_mastered_noun(fresh_db):
-    """Сущ./глаг./прил. теперь идут ТРЕКОМ ФОРМ (learning_forms): первая клетка приходит
-    карточкой формы (stage card), а не overlay-упражнением."""
+async def test_overlay_surfaces_for_mastered_noun(fresh_db, monkeypatch):
+    """Цикл «слова↔формы»: выученное слово наполняет партию; партия готова → ФАЗА ФОРМ —
+    сессия дрилит формы (карточка формы первой), новых слов не вводит."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "bok", "книга")
     await _set_forms(pid, _BOK)
-    await _master(uid, pid)
+    await _master(uid, pid)                                   # партия из 1 → фаза форм
     res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"
+    assert res["composition"]["fresh"] == 0                    # новых слов в фазе форм нет
     grams = [w for w in res["words"] if w.get("grammar")]
-    assert grams, "трек форм должен подмешать элемент для выученного сущ. с формами"
+    assert grams, "фаза форм должна дрилить формы выученного сущ."
     g = grams[0]
     assert g["pool_id"] == pid and g["form_track"] is True
     assert g["step"] in ("gender", "indef_pl", "def_sg", "def_pl")
     assert g["stage"] == "card" and g["mode"] == "study"      # новая клетка → карточка формы
     assert res["composition"]["grammar"] == len(grams)
+    assert len(grams) <= 2                                     # ≤2 клетки на слово за сессию
 
 
 async def test_overlay_quota_proportional(fresh_db):
-    """Грамм-квота = round(size*RATIO): много выученных сущ. с формами → не больше квоты."""
+    """15 выученных → на 10-м партия готова (дефолт FORM_CYCLE_BATCH=10) → фаза форм:
+    форм-слоты = FORMS_SESSION_SHARE сессии, остальные 5 слов уходят в бэклог-филлер."""
+    from db.learning_forms import FORMS_SESSION_SHARE
     uid, did = await seed_user()
     for i in range(15):
         pid, _ = await seed_word(did, f"bok{i}", f"книга{i}")
         await _set_forms(pid, _BOK)
         await _master(uid, pid)
     res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"
+    assert res["composition"]["formsLeft"] == 10               # партия = 10, не 15
     grams = [w for w in res["words"] if w.get("grammar")]
-    assert len(grams) == round(20 * GRAMMAR_RATIO)
+    assert len(grams) == round(20 * FORMS_SESSION_SHARE)       # форм-квота фазы форм
 
 
 async def test_overlay_off_via_toggle(fresh_db):
@@ -233,8 +242,10 @@ def test_grammar_element_input_form_shape():
     assert ela["direction"] == "superlative" and ela["target"]["value"] == "best"
 
 
-async def test_overlay_surfaces_for_mastered_verb(fresh_db):
-    """Глагол — тоже трек форм: первая клетка (present/past/perfect) карточкой формы."""
+async def test_overlay_surfaces_for_mastered_verb(fresh_db, monkeypatch):
+    """Глагол — тоже трек форм: в фазе форм первая клетка (present/past/perfect) карточкой."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "skrive", "писать", pos="verb")
     await _set_forms(pid, _SKRIVE)
@@ -244,6 +255,18 @@ async def test_overlay_surfaces_for_mastered_verb(fresh_db):
     assert grams and grams[0]["pool_id"] == pid
     assert grams[0]["form_track"] is True and grams[0]["stage"] == "card"
     assert grams[0]["step"] in ("present", "past", "perfect")
+
+
+async def test_words_phase_no_new_form_cells(fresh_db):
+    """ФАЗА СЛОВ (партия не набрана): новые клетки форм НЕ вводятся — только due-повторы
+    (их нет) и местоим-overlay. Слово выучено, но форм-карточка не приходит."""
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "bok", "книга")
+    await _set_forms(pid, _BOK)
+    await _master(uid, pid)                                   # партия 1 из 10 — фаза остаётся words
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "words"
+    assert not [w for w in res["words"] if w.get("form_track")]
 
 
 # ── PRONOUN/DETERMINER-срез: курируемая парадигма (форм НЕТ в БД, берём из PRONOUN_PARADIGM) ───
@@ -276,16 +299,18 @@ async def test_overlay_surfaces_for_mastered_pronoun(fresh_db):
     assert grams[0]["target"]["value"] == "meg"
 
 
-async def test_overlay_respects_per_pos_toggle(fresh_db):
+async def test_overlay_respects_per_pos_toggle(fresh_db, monkeypatch):
     """Пер-POS тумблер (gamePrefs.grammarPos): отключённая часть речи не даёт грамм-упражнений,
-    включённая — даёт. Здесь глаголы выключены, существительные — нет."""
+    включённая — даёт (в фазе форм). Здесь глаголы выключены, существительные — нет."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 2)
     uid, did = await seed_user()
     pn, _ = await seed_word(did, "bok", "книга", pos="noun")
     await _set_forms(pn, _BOK)
     await _master(uid, pn)
     pv, _ = await seed_word(did, "skrive", "писать", pos="verb")
     await _set_forms(pv, _SKRIVE)
-    await _master(uid, pv)
+    await _master(uid, pv)                                     # партия из 2 → фаза форм
     await set_user_game_prefs(uid, json.dumps({"grammarPos": {"verb": False}}))
     res = await build_session(uid, size=20)
     grams = {w["pool_id"] for w in res["words"] if w.get("grammar")}

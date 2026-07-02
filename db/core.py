@@ -511,6 +511,18 @@ async def init_db():
         )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_form_srs_due ON form_srs(user_id, due_at)")
+        # Цикл «слова ↔ формы» (learning_forms): фаза юзера + партия (pool_id выученных слов,
+        # чьи формы сейчас дрилим). words: копим выученные → 10 шт. → forms: сессии из форм
+        # партии, новых слов не вводим → все клетки сданы → снова words. По кругу.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS form_cycle (
+            user_id INTEGER PRIMARY KEY,
+            phase TEXT NOT NULL DEFAULT 'words',
+            batch TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
         # Кэш cloze-заданий для служебных слов (персонально, из выученных слов юзера).
         # data = JSON [{blank, answer, options:[...]}], 3 предложения. Чистится при reset/удалении.
         await db.execute("""
