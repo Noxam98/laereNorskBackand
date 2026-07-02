@@ -991,7 +991,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     grammar_on = await get_user_grammar(user_id)
     grammar_pos = await get_user_grammar_pos(user_id) if grammar_on else {}   # пер-POS тумблеры
     grammar_picks = []    # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]
-    cycle_phase, cycle_left = "words", 0
+    cycle_phase, cycle_left, cycle_cells = "words", 0, 0
     if grammar_on and not scoped:
         from .learning_forms import (form_cells_for, load_form_states, get_form_cycle, save_form_cycle,
                                      FORM_CYCLE_BATCH, FORMS_SESSION_SHARE)
@@ -1089,6 +1089,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                     grammar_picks.append(("form", info[pid]["e"], nxt, info[pid]["fdict"], stage))
                     got.add(nxt)
             cycle_phase, cycle_left = "forms", len(batch_pending)
+            cycle_cells = sum(len(_pending(pid)) for pid in batch_pending)   # несданных клеток партии
         else:
             # ФАЗА СЛОВ: из форм — только подошедшие ПОВТОРЫ начатых клеток (SRS не замораживаем),
             # новые клетки не вводим; местоим-overlay — как раньше (гейтится воротами экзамена).
@@ -1209,7 +1210,8 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # фаза цикла «слова↔формы» — для честной кнопки старта (чип «сессия форм» + остаток партии)
     comp["phase"] = cycle_phase
     if cycle_phase == "forms":
-        comp["formsLeft"] = cycle_left
+        comp["formsLeft"] = cycle_left           # слов партии с несданными формами
+        comp["formsCellsLeft"] = cycle_cells     # несданных ФОРМ (клеток) до возврата новых слов
         # сессия ФОРМ должна и НАЧИНАТЬСЯ с форм: до сортировки формы висели в хвосте (эмиссия
         # после base-цикла) — юзер открывал «сессию форм», а первым шёл перевод слова. sort
         # стабилен: внутри форм порядок партии сохранён, base-повторы уходят в хвост.

@@ -110,6 +110,7 @@ async def test_overlay_quota_proportional(fresh_db):
     res = await build_session(uid, size=20)
     assert res["composition"]["phase"] == "forms"
     assert res["composition"]["formsLeft"] == 10               # партия = 10, не 15
+    assert res["composition"]["formsCellsLeft"] == 40          # 10 слов × 4 клетки — до новых слов
     grams = [w for w in res["words"] if w.get("grammar")]
     assert len(grams) == 6                                     # порция карточек (NEW_PER_SESSION)
     assert all(g["stage"] == "card" for g in grams)
