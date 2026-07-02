@@ -189,6 +189,25 @@ async def test_session_serves_stage_after_card(fresh_db, monkeypatch):
     assert el2["target"]["value"] not in el2["distractors"]
 
 
+async def test_forms_phase_session_starts_with_forms(fresh_db, monkeypatch):
+    """Сессия фазы форм НАЧИНАЕТСЯ с форм: base-повторы слов — в хвосте, не первыми
+    (баг: формы эмитились после base-цикла и юзер открывал «сессию форм» с переводов)."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    # ещё слово в прогрессе — оно даст base-упражнение в той же сессии
+    pid2, _ = await seed_word(did, "hus", "дом")
+    await apply_result(uid, pid2, True, mode="choice", direction="int2no")
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"
+    kinds = [bool(w.get("form_track")) for w in res["words"]]
+    assert kinds[0] is True                                   # первая — форма
+    assert kinds == sorted(kinds, reverse=True)               # формы монолитом в начале
+
+
 async def test_cycle_full_circle(fresh_db, monkeypatch):
     """Полный круг: выучил партию → фаза форм → сдал все клетки → снова фаза слов."""
     import db.learning_forms as lf
