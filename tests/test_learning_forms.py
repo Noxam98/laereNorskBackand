@@ -35,6 +35,14 @@ def test_cell_value_perfect_participle():
     assert cell_value("noun", {"gender": "et"}, "gender") == "et"
 
 
+def test_junk_form_markers_not_drilled():
+    """LLM-маркеры «формы нет» (n/a и т.п.) — клетка не создаётся (не просим ввести «n/a»)."""
+    f = {"neuter": "neste", "plural": "neste", "comparative": "n/a", "superlative": "N/A"}
+    assert cell_value("adjective", f, "comparative") == ""
+    assert set(form_cells_for("adjective", f)) == {"neuter", "plural"}
+    assert cell_value("noun", {"gender": "-"}, "gender") == ""
+
+
 def test_form_options_dispatch():
     # сущ. gender → 2 других артикля
     c, d = form_options("noun", "bil", {"gender": "en", "indef_pl": "biler", "def_sg": "bilen", "def_pl": "bilene"}, "gender")

@@ -72,15 +72,22 @@ def parse_forms(forms):
         return {}
 
 
+# Маркеры «формы не существует» из LLM-заполнения (n/a у несравнимых прилагательных и т.п.):
+# такие клетки НЕ дрилим (иначе просили бы ввести «n/a») и на фронте показываем «нет формы».
+_JUNK_FORMS = {"n/a", "na", "-", "–", "—", "none", "null", "ingen"}
+
+
 def cell_value(pos, forms, cell):
-    """Значение клетки формы. Перфект глагола дрилим как ПРИЧАСТИЕ (без 'har' — вспом. постоянен)."""
+    """Значение клетки формы ('' если формы нет/мусор-маркер). Перфект глагола дрилим как
+    ПРИЧАСТИЕ (без 'har' — вспом. постоянен)."""
     if cell == "gender":
-        return (forms.get("gender") or "").strip()
-    field = _FORM_FIELD.get(cell, (cell, cell))[0]
-    val = (forms.get(field) or "").strip()
-    if pos == "verb" and cell == "perfect" and val:
-        return strip_aux(val)
-    return val
+        val = (forms.get("gender") or "").strip()
+    else:
+        field = _FORM_FIELD.get(cell, (cell, cell))[0]
+        val = (forms.get(field) or "").strip()
+        if pos == "verb" and cell == "perfect" and val:
+            val = strip_aux(val)
+    return "" if val.lower() in _JUNK_FORMS else val
 
 
 def form_cells_for(pos, forms):
