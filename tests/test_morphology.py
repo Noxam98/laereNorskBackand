@@ -380,3 +380,7 @@ def test_adj_form_options():
     assert "gammele" in d and "gamle" not in d   # gamle=correct, не дистрактор
     # Несравнимое/пустое → (None, []).
     assert adj_form_options("fin", {"neuter": "fint"}, "comparative") == (None, [])
+    # «n/a» из LLM-заполнения соседних форм НЕ утекает в варианты ответа.
+    c, d = adj_form_options("neste", {"neuter": "neste", "plural": "neste",
+                                      "comparative": "n/a", "superlative": "N/A"}, "plural")
+    assert all("n/a" not in x.lower() and "/" not in x for x in d)
