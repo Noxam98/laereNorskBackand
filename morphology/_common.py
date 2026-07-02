@@ -46,3 +46,28 @@ def _degeminate_tail(w):
     if _ends_double_cons(w):
         return w[:-1]
     return w
+
+
+def _plausible(f):
+    """Отсечь явные малформы (двойная гласная/тройная согласная) — учащийся так не ошибётся.
+
+    Общий фильтр дистракторов для всех частей речи: строка правдоподобна как форма,
+    если в ней нет подряд двух одинаковых гласных и трёх одинаковых согласных.
+    """
+    if not f or len(f) < 2:
+        return False
+    prev = ""
+    run_v = run_c = 0
+    for ch in f:
+        if ch in VOWELS:
+            run_v = run_v + 1 if ch == prev else 1
+            run_c = 0
+            if run_v >= 2:
+                return False
+        else:
+            run_c = run_c + 1 if ch == prev else 1
+            run_v = 0
+            if run_c >= 3:
+                return False
+        prev = ch
+    return True

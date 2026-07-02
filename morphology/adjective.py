@@ -1,5 +1,5 @@
 """Морфология прилагательных (bokmål): согласование (нейтрум/мн.), степени, детектор, дистракторы."""
-from ._common import VOWELS, _norm, _syllables, _degeminate_tail
+from ._common import VOWELS, _norm, _syllables, _degeminate_tail, _plausible
 
 
 # Супплетив/умлаут степеней — НЕ выводим правилом, всегда нерегулярны.
@@ -205,6 +205,73 @@ def is_irregular_adj(adj, forms):
                 return True, "superlative_mismatch"
 
     return False, "regular"
+
+
+# ── Опции для упражнения-РАЗЛИЧЕНИЯ формы прилагательного ─────────────────────
+# Клетки форм прил. в треке форм. Компаратив/суперлатив могут отсутствовать
+# (несравнимые/описательные mer/mest) — тогда correct пуст и клетку не дрилим.
+ADJ_FORM_CELLS = ("neuter", "plural", "comparative", "superlative")
+
+
+def _adj_regular(adj, cell):
+    return {"neuter": regular_neuter, "plural": regular_plural,
+            "comparative": regular_comparative, "superlative": regular_superlative}[cell](adj)
+
+
+def adj_form_options(adj, forms, cell, n=3):
+    """(correct, [distractors]) для клетки-различения формы прилагательного.
+    Дистракторы: наивная регулярная форма (для нерегулярных — «ожидаемая, но неверная»:
+    god→*godere, stor→*storere, grønn→*grønnt) + РЕАЛЬНЫЕ соседние формы (позитив/нейтрум/мн./степени)
+    + лемма (позитив). Валидная регулярная форма и малформы отфильтрованы.
+
+    Для нерегулярных regular_* → None, значит наивная форма НЕ попадает в «допустимые» и работает
+    дистрактором. Для регулярных наивная = correct и отсеивается, дистракторы дают соседние формы."""
+    w = _norm(adj)
+    forms = forms or {}
+    correct = _norm(forms.get(cell))
+    if not correct:
+        return None, []
+
+    reg = _adj_regular(adj, cell)
+    allowed = {correct}
+    if reg:
+        allowed.add(reg)
+
+    neu = _norm(forms.get("neuter"))
+    pl = _norm(forms.get("plural"))
+    comp = _norm(forms.get("comparative"))
+    sup = _norm(forms.get("superlative"))
+
+    # наивная регулярная форма для этой клетки (слепое правило без синкопы/умлаута/дифтонга)
+    naive = {"neuter": w + "t", "plural": w + "e",
+             "comparative": w + "ere", "superlative": w + "est"}[cell]
+
+    # порядок: наивная ошибка + «ближайшая» соседняя форма первыми (максимум педагогики)
+    order = {
+        "neuter":      [naive, w, pl, comp, sup],       # позитив↔нейтрум — главная путаница
+        "plural":      [naive, neu, w, comp, sup],
+        "comparative": [naive, sup, neu, pl, w],        # компаратив↔суперлатив
+        "superlative": [naive, comp, neu, pl, w],
+    }[cell]
+
+    if cell == "neuter":
+        fallback = [w + "t", w + "tt", w + "e"]
+    elif cell == "plural":
+        fallback = [w + "e", w + "ere"]
+    elif cell == "comparative":
+        fallback = [w + "ere", w + "est"]
+    else:  # superlative
+        fallback = [w + "est", w + "st", w + "ere"]
+
+    seen, out = set(), []
+    for f in order + fallback:
+        if not f or f in allowed or f in seen or not _plausible(f):
+            continue
+        seen.add(f)
+        out.append(f)
+        if len(out) >= n:
+            break
+    return correct, out
 
 
 # ── Дистракторы для прилагательного ──────────────────────────────────────────

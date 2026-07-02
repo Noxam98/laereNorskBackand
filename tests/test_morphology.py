@@ -296,3 +296,87 @@ def test_adjective_morphology():
     assert "godere" in da["comparative"]
     da = distractors_adj("gammel", {"neuter": "gammelt", "plural": "gamle"})
     assert "gammele" in da["plural"]
+
+
+def test_noun_form_options():
+    # ── Свод по исследованию: felleskjønn / -a↔-en / -er-стяжение / дистракторы форм ──
+    # #1/#2: опр.ед. -a и -en у не-среднего взаимозаменяемы (реформа 2005) — не «нерегуляр».
+    assert is_irregular_noun("klokke", "en", {"def_sg": "klokka", "indef_pl": "klokker", "def_pl": "klokkene"})[0] is False
+    assert is_irregular_noun("hytte", "ei", {"def_sg": "hytten", "indef_pl": "hytter", "def_pl": "hyttene"})[0] is False
+    assert is_irregular_noun("hytte", "ei", {"def_sg": "hytta", "indef_pl": "hytter", "def_pl": "hyttene"})[0] is False
+    # #3: -er-стяжение — третий вариант vintere регулярен; finger — исключение (нет *fingere).
+    assert is_irregular_noun("vinter", "en", {"indef_pl": "vintere"})[0] is False
+    assert is_irregular_noun("finger", "en", {"indef_pl": "fingere"})[0] is True
+
+    # noun_form_options: correct + до 3 правдоподобных дистракторов, без дублей, correct не среди них.
+    forms_bil = {"indef_pl": "biler", "def_sg": "bilen", "def_pl": "bilene"}
+    for cell in NOUN_FORM_CELLS:
+        correct, dis = noun_form_options("bil", "en", forms_bil, cell)
+        assert correct and correct not in dis
+        assert 1 <= len(dis) <= 3 and len(dis) == len(set(dis))
+    # дистракторы неопр.мн. = реальные соседние формы слова (тренируем различение).
+    _, dip = noun_form_options("bil", "en", forms_bil, "indef_pl")
+    assert "bilen" in dip and "bilene" in dip
+    # gender: два других артикля.
+    g, gd = noun_form_options("bil", "en", forms_bil, "gender")
+    assert g == "en" and set(gd) == {"ei", "et"}
+
+    # НЕТ утечки валидных дублетов в дистракторы:
+    _, dsg = noun_form_options("klokke", "en", {"indef_pl": "klokker", "def_sg": "klokka", "def_pl": "klokkene"}, "def_sg")
+    assert "klokken" not in dsg          # klokken валиден (felleskjønn) → не дистрактор
+    _, dpl = noun_form_options("hus", "et", {"indef_pl": "hus", "def_sg": "huset", "def_pl": "husene"}, "def_pl")
+    assert "husa" not in dpl             # husa валиден (дублет опр.мн.) → не дистрактор
+
+
+def test_verb_form_options():
+    # Инварианты по всем клеткам: correct есть и не среди дистракторов, без дублей, ≤3.
+    ga = {"present": "går", "past": "gikk", "perfect": "har gått"}
+    for cell in VERB_FORM_CELLS:
+        c, d = verb_form_options("gå", ga, cell)
+        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 3
+
+    # Сильные: наивная СЛАБАЯ форма — сильнейший дистрактор (типичная ошибка учащегося).
+    _, d = verb_form_options("gå", ga, "past")
+    assert "gådde" in d                    # gå→*gådde
+    _, d = verb_form_options("drikke", {"present": "drikker", "past": "drakk", "perfect": "har drukket"}, "perfect")
+    assert "drikket" in d                  # drikke→*drikket (наивное причастие)
+    _, d = verb_form_options("skrive", {"present": "skriver", "past": "skrev", "perfect": "har skrevet"}, "past")
+    assert "skrivde" in d                  # skrive→*skrivde
+
+    # Перфект дрилим как ПРИЧАСТИЕ (без 'har'); соседние формы — реальные.
+    c, d = verb_form_options("drikke", {"present": "drikker", "past": "drakk", "perfect": "har drukket"}, "perfect")
+    assert c == "drukket" and "drakk" in d and all("har " not in x for x in d)
+
+    # Слабые: НЕТ утечки валидного дублета -a; дистракторы — кросс-форменные.
+    c, d = verb_form_options("kaste", {"present": "kaster", "past": "kastet", "perfect": "har kastet"}, "past")
+    assert c == "kastet" and "kasta" not in d and "kaster" in d
+    # Нерегулярный презенс: naïve +r к инфинитиву.
+    _, d = verb_form_options("være", {"present": "er", "past": "var", "perfect": "har vært"}, "present")
+    assert "værer" in d and "var" in d
+    # Пустая клетка → (None, []).
+    assert verb_form_options("gå", {"present": "går"}, "past") == (None, [])
+
+
+def test_adj_form_options():
+    fin = {"neuter": "fint", "plural": "fine", "comparative": "finere", "superlative": "finest"}
+    for cell in ADJ_FORM_CELLS:
+        c, d = adj_form_options("fin", fin, cell)
+        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 3
+
+    # Наивные регулярные степени — сильнейшие дистракторы у супплетивов.
+    c, d = adj_form_options("stor", {"neuter": "stort", "plural": "store", "comparative": "større", "superlative": "størst"}, "comparative")
+    assert c == "større" and "storere" in d   # storere — наивная ошибка; større (correct) не среди дистракторов
+    _, d = adj_form_options("god", {"neuter": "godt", "plural": "gode", "comparative": "bedre", "superlative": "best"}, "comparative")
+    assert "godere" in d
+    # Нейтрум: классические ошибки согласования.
+    _, d = adj_form_options("grønn", {"neuter": "grønt", "plural": "grønne", "comparative": "grønnere", "superlative": "grønnest"}, "neuter")
+    assert "grønnt" in d                   # сохранил nn
+    _, d = adj_form_options("ny", {"neuter": "nytt", "plural": "nye", "comparative": "nyere", "superlative": "nyest"}, "neuter")
+    assert "nyt" in d                      # одно t
+    _, d = adj_form_options("billig", {"neuter": "billig", "plural": "billige", "comparative": "billigere", "superlative": "billigst"}, "neuter")
+    assert "billigt" in d                  # лишнее t на -ig
+    # Синкопа: наивная форма без синкопы.
+    _, d = adj_form_options("gammel", {"neuter": "gammelt", "plural": "gamle", "comparative": "eldre", "superlative": "eldst"}, "plural")
+    assert "gammele" in d and "gamle" not in d   # gamle=correct, не дистрактор
+    # Несравнимое/пустое → (None, []).
+    assert adj_form_options("fin", {"neuter": "fint"}, "comparative") == (None, [])

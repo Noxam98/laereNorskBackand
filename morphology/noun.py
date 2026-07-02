@@ -1,5 +1,5 @@
 """Морфология существительных (bokmål): род, склонение, мн.ч., детектор нерегулярности, дистракторы."""
-from ._common import _norm, _degeminate_tail
+from ._common import _norm, _degeminate_tail, _plausible
 
 
 
@@ -153,6 +153,10 @@ def _allowed_indef_pl(no, gender):
         base = _degeminate_tail(l[:-2]) + l[-1]
         out.add(base + "er")
         out.add(base + "e")
+        # -er-стяжение даёт и третий, НЕсинкопированный вариант: vinter→vintere, mester→mestere.
+        # Исключение — finger: только fingre/fingrer (см. Språkrådet, реформа 2005).
+        if l.endswith("er") and l != "finger":
+            out.add(l + "e")
     # нулевое среднее: и -er тоже изредка встречается, но каноник = лемма
     if _is_zero_plural_neuter(no, gender):
         out.add(l)
@@ -216,10 +220,10 @@ def is_irregular_noun(no, gender, forms):
         if regular_indef_pl(no, gender) is None:
             return True, "no_indef_pl_assume_irregular"
 
-    # 2) Опр. ед.ч. (учёт рода).
+    # 2) Опр. ед.ч. — -a/-en у не-среднего взаимозаменяемы (реформа 2005), не флагаем как ошибку.
     if stored_dsg:
-        pred_dsg = regular_def_sg(no, gender)
-        if pred_dsg is not None and stored_dsg != pred_dsg:
+        allowed_dsg = _allowed_def_sg(no, gender)
+        if allowed_dsg and stored_dsg not in allowed_dsg:
             return True, "def_sg_mismatch"
 
     # 3) Опр. мн.ч. (учёт дублетов).
@@ -248,6 +252,89 @@ def _competing_def_sg(no, gender):
         if g != gender and f != correct:
             out.append(f)
     return out
+
+
+# ── Опции для упражнения-РАЗЛИЧЕНИЯ формы (correct + правдоподобные дистракторы) ──────────────
+# Клетки форм сущ., которые гоняем в треке форм.
+NOUN_FORM_CELLS = ("gender", "indef_pl", "def_sg", "def_pl")
+
+
+def _allowed_def_sg(no, gender):
+    """Допустимые опр. ед.ч. Bokmål (реформа 2005 + felleskjønn): у НЕ-среднего рода -a и -en
+    равноправно взаимозаменяемы — «ei bok→boka И boken», «en klokke→klokka И klokken». Средний род —
+    только -et/-t. (Источники: Språkrådet, Riksmålsforbundet.)"""
+    l = _norm(no)
+    ends_e = l.endswith("e")
+    out = set()
+    if gender == "et":
+        out.add(l + ("t" if ends_e else "et"))
+    else:  # en/ei/неизв. — общий/женский: оба окончания валидны, не считаем вариант ошибкой
+        out.add((l + "n") if ends_e else (l + "en"))          # klokken / boken
+        out.add((l[:-1] + "a") if ends_e else (l + "a"))      # klokka / boka
+    return out
+
+
+def noun_form_options(no, gender, forms, cell, n=3):
+    """(correct, [distractors]) для клетки-различения формы существительного.
+    Дистракторы: РЕАЛЬНЫЕ соседние формы слова (учим отличать нужную) + наивная регулярная форма
+    (для нерегулярных — «ожидаемая, но неверная») + чужой род (для def_sg); добор из типовых окончаний.
+    Валидные дублеты и малформы отфильтрованы. Всегда до n дистракторов."""
+    l = _norm(no)
+    forms = forms or {}
+
+    if cell == "gender":                                 # выбор артикля en/ei/et
+        return gender, [g for g in ("en", "ei", "et") if g != gender][:n]
+
+    correct = _norm(forms.get(cell))
+    if not correct:
+        return None, []
+
+    if cell == "indef_pl":
+        allowed = set(_allowed_indef_pl(no, gender))
+    elif cell == "def_pl":
+        allowed = set(_allowed_def_pl(no, gender, forms.get("indef_pl")))
+    elif cell == "def_sg":
+        allowed = set(_allowed_def_sg(no, gender))
+    else:
+        allowed = set()
+    allowed.add(correct)
+
+    primary, fallback = [], []
+    # 1) соседние РЕАЛЬНЫЕ формы слова + лемма → тренируем различение форм
+    for c in ("indef_pl", "def_sg", "def_pl"):
+        if c != cell:
+            primary.append(_norm(forms.get(c)))
+    primary.append(l)
+    # 2) наивная регулярная форма (для нерегулярных ≠ correct → сильнейший дистрактор)
+    try:
+        naive = {"indef_pl": lambda: regular_indef_pl(no, gender),
+                 "def_sg": lambda: regular_def_sg(no, gender),
+                 "def_pl": lambda: regular_def_pl(no, gender, forms.get("indef_pl"))}[cell]()
+    except Exception:
+        naive = None
+    if naive:
+        primary.append(_norm(naive))
+    # 3) чужой род — для опр. ед.ч.
+    if cell == "def_sg":
+        primary += [_norm(x) for x in _competing_def_sg(no, gender)]
+    # 4) добор типовыми окончаниями (чтобы всегда набрать n)
+    if cell == "indef_pl":
+        fallback += [l + "er", l + "e", l + "a", l]
+    elif cell == "def_sg":
+        fallback += [l + "en", l + "a", l + "et"]
+    elif cell == "def_pl":
+        ipl = _norm(forms.get("indef_pl")) or l
+        fallback += [ipl + "ne", l + "a", l + "ene", l + "er"]
+
+    seen, out = set(), []
+    for f in primary + fallback:
+        if not f or f in allowed or f in seen or not _plausible(f):
+            continue
+        seen.add(f)
+        out.append(f)
+        if len(out) >= n:
+            break
+    return correct, out
 
 
 def distractors_noun(no, gender, forms):

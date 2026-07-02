@@ -1,5 +1,5 @@
 """Морфология глаголов (bokmål): слабые классы, презенс/претерит/перфект, детектор, дистракторы."""
-from ._common import VOWELS, _norm, _syllables, _ends_double_cons, _degeminate_tail
+from ._common import VOWELS, _norm, _syllables, _ends_double_cons, _degeminate_tail, _plausible
 
 
 # Нерегулярный презенс (НЕ +r).
@@ -217,6 +217,77 @@ def is_irregular_verb(inf, forms):
         return True, "perfect_not_weak"
 
     return False, "regular_weak"
+
+
+# ── Опции для упражнения-РАЗЛИЧЕНИЯ формы глагола ─────────────────────────────
+# Клетки форм глагола в треке форм. Перфект дрилим как ПРИЧАСТИЕ (без 'har'):
+# вспомогательный глагол — постоянный контекст, различаем именно причастие.
+VERB_FORM_CELLS = ("present", "past", "perfect")
+
+
+def verb_form_options(inf, forms, cell, n=3):
+    """(correct, [distractors]) для клетки-различения формы глагола.
+    Дистракторы: РЕАЛЬНЫЕ соседние формы слова (презенс/претерит/причастие/инфинитив) +
+    наивная СЛАБО-регулярная форма (для сильных — «ожидаемая, но неверная»: drikke→*drikket, gå→*gådde);
+    добор чужими окончаниями классов. Валидные дублеты (kastet/kasta) и малформы отфильтрованы.
+
+    Важно: у СИЛЬНЫХ глаголов all_weak_* даёт механически-слабые формы (=желанные дистракторы),
+    поэтому «допустимым» слабый набор считаем ТОЛЬКО когда глагол реально слабый (regular_* ≠ None)."""
+    inf = _norm(inf)
+    forms = forms or {}
+
+    if cell == "perfect":
+        correct = strip_aux(forms.get("perfect"))
+    else:
+        correct = _norm(forms.get(cell))
+    if not correct:
+        return None, []
+
+    # Множество ДОПУСТИМЫХ вариантов правильной формы (не предлагаем как дистрактор).
+    if cell == "past":
+        allowed = set(all_weak_pasts(inf)) if regular_past(inf) is not None else set()
+    elif cell == "perfect":
+        allowed = set(all_weak_perfects(inf)) if regular_perfect(inf) is not None else set()
+    else:  # present — валиден только предсказанный презенс
+        allowed = {predict_present(inf)}
+    allowed.add(correct)
+
+    pres = _norm(forms.get("present"))
+    past = _norm(forms.get("past"))
+    part = strip_aux(forms.get("perfect"))
+    sib = {"present": pres, "past": past, "perfect": part}
+
+    # наивная слабо-регулярная форма для этой клетки
+    _, w_past, w_perf = predict_weak_class(inf)
+    naive = {"present": inf + "r",
+             "past": w_past,
+             "perfect": strip_aux(w_perf) if w_perf else None}[cell]
+
+    # соседние реальные формы (кроме текущей клетки) + наивная + инфинитив-путаница
+    primary = [v for c, v in sib.items() if c != cell and v]
+    if naive:
+        primary.append(_norm(naive))
+    primary.append(inf)
+
+    # добор чужими окончаниями классов (чтобы набрать n)
+    stem = _weak_stem(inf)
+    simp = _degeminate_tail(stem)
+    if cell == "present":
+        fallback = [inf + "er", stem + "er"]
+    elif cell == "past":
+        fallback = [stem + "et", stem + "te", stem + "de", simp + "te", simp + "de", inf + "dde"]
+    else:  # perfect
+        fallback = [stem + "et", stem + "t", stem + "d", simp + "t", simp + "d", inf + "dd"]
+
+    seen, out = set(), []
+    for f in primary + fallback:
+        if not f or f in allowed or f in seen or not _plausible(f):
+            continue
+        seen.add(f)
+        out.append(f)
+        if len(out) >= n:
+            break
+    return correct, out
 
 
 # ── Дистракторы для глагола ──────────────────────────────────────────────────
