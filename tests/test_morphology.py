@@ -384,3 +384,10 @@ def test_adj_form_options():
     c, d = adj_form_options("neste", {"neuter": "neste", "plural": "neste",
                                       "comparative": "n/a", "superlative": "N/A"}, "plural")
     assert all("n/a" not in x.lower() and "/" not in x for x in d)
+    # Прил. на -e (siste): наивные w+e/w+ere — малформы, добор идёт от основы без -e.
+    # Выбор НЕ должен оставаться без дистракторов (был баг: одна кнопка-ответ).
+    for cell in ("neuter", "plural"):
+        c, d = adj_form_options("siste", {"neuter": "siste", "plural": "siste",
+                                          "comparative": "n/a", "superlative": "n/a"}, cell)
+        assert c == "siste" and len(d) >= 2, (cell, d)
+        assert all(x != "siste" for x in d)

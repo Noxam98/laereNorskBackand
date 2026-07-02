@@ -147,13 +147,16 @@ def form_element(row, forms, data, cell, stage):
         correct, dis = form_options(pos, no, forms, cell)
         if not correct:
             return None
-        target = {"field": field, "value": correct}
-        if cell == "gender" and correct == "ei":
-            target["accept"] = ["en"]         # ei-слово: выбор «en» тоже верен (не наказываем)
-        return {**base, "mode": "choice", "direction": cell,
-                "target": target,
-                "options": [{"w": w, "alt": None} for w in [correct] + dis],
-                "distractors": dis}
+        if dis:                               # нормальный выбор: верный + правдоподобные подмены
+            target = {"field": field, "value": correct}
+            if cell == "gender" and correct == "ei":
+                target["accept"] = ["en"]     # ei-слово: выбор «en» тоже верен (не наказываем)
+            return {**base, "mode": "choice", "direction": cell,
+                    "target": target,
+                    "options": [{"w": w, "alt": None} for w in [correct] + dis],
+                    "distractors": dis}
+        # дистракторов не собрать (все правдоподобные варианты — валидные формы слова):
+        # однокнопочный «выбор» бессмыслен — отдаём ВВОД, ступень choose всё равно продвинется
     # produce — набрать форму самому
     return {**base, "mode": "input", "direction": cell,
             "target": {"field": field, "value": value}, "scoring": {"typoForgive": False}}

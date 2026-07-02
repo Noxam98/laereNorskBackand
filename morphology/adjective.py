@@ -254,14 +254,18 @@ def adj_form_options(adj, forms, cell, n=3):
         "superlative": [naive, comp, neu, pl, w],
     }[cell]
 
+    # Добор окончаний и от ОСНОВЫ без -e: у прилагательных на -e (siste, øde, moderne) наивные
+    # w+e/w+ere дают двойную гласную (sistee) и режутся _plausible — без стем-вариантов выбор
+    # оставался без дистракторов (одна кнопка-ответ).
+    stem = w[:-1] if w.endswith("e") else w
     if cell == "neuter":
-        fallback = [w + "t", w + "tt", w + "e"]
+        fallback = [w + "t", w + "tt", w + "e", stem + "t", stem + "e"]
     elif cell == "plural":
-        fallback = [w + "e", w + "ere"]
+        fallback = [w + "e", w + "ere", stem + "ere", stem + "t", stem + "est"]
     elif cell == "comparative":
-        fallback = [w + "ere", w + "est"]
+        fallback = [w + "ere", w + "est", stem + "ere", stem + "est"]
     else:  # superlative
-        fallback = [w + "est", w + "st", w + "ere"]
+        fallback = [w + "est", w + "st", w + "ere", stem + "est", stem + "ere"]
 
     seen, out = set(), []
     for f in order + fallback:
