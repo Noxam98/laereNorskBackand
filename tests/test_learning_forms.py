@@ -198,15 +198,15 @@ async def test_session_serves_stage_after_card(fresh_db, monkeypatch):
 
 
 async def test_forms_phase_session_starts_with_forms(fresh_db, monkeypatch):
-    """Сессия фазы форм НАЧИНАЕТСЯ с форм: base-повторы слов — в хвосте, не первыми
-    (баг: формы эмитились после base-цикла и юзер открывал «сессию форм» с переводов)."""
+    """Сессия фазы форм: формы первыми, а слова СЕРЕДИНЫ рампы (начатые/слабые) в неё вообще
+    не попадают — никакого «выбора перевода» недоученного слова в режиме грамматики."""
     import db.learning_forms as lf
     monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
     uid, did = await seed_user()
     pid, _ = await seed_word(did, "gå", "идти", pos="verb")
     await _set_forms(pid, _GIKK)
     await _master(uid, pid)
-    # ещё слово в прогрессе — оно даст base-упражнение в той же сессии
+    # слово в прогрессе — в фазу форм НЕ попадает (ждёт фазы слов)
     pid2, _ = await seed_word(did, "hus", "дом")
     await apply_result(uid, pid2, True, mode="choice", direction="int2no")
     res = await build_session(uid, size=20)
@@ -214,6 +214,33 @@ async def test_forms_phase_session_starts_with_forms(fresh_db, monkeypatch):
     kinds = [bool(w.get("form_track")) for w in res["words"]]
     assert kinds[0] is True                                   # первая — форма
     assert kinds == sorted(kinds, reverse=True)               # формы монолитом в начале
+    assert pid2 not in {w["pool_id"] for w in res["words"]}   # недоученное слово — не в сессии форм
+
+
+async def test_forms_phase_tail_only_mastered_reviews(fresh_db, monkeypatch):
+    """Хвост фазы форм — только due-ПОВТОРЫ выученных (приходят вводом), середина рампы ждёт."""
+    import db.learning_forms as lf
+    monkeypatch.setattr(lf, "FORM_CYCLE_BATCH", 1)
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "gå", "идти", pos="verb")
+    await _set_forms(pid, _GIKK)
+    await _master(uid, pid)
+    # второе ВЫУЧЕННОЕ слово с подошедшим повтором (без форм — чтобы не попало в грамм-часть)
+    pid2, _ = await seed_word(did, "hus", "дом")
+    await _master(uid, pid2)
+    db = await _conn()
+    try:
+        await db.execute("UPDATE user_words SET due_at = '2000-01-01T00:00:00' "
+                         "WHERE user_id=? AND pool_id=?", (uid, pid2))
+        await db.commit()
+    finally:
+        await _release(db)
+    res = await build_session(uid, size=20)
+    assert res["composition"]["phase"] == "forms"
+    base = [w for w in res["words"] if not w.get("form_track")]
+    assert base and all(w.get("repeat") for w in base)         # хвост — только повторы выученных
+    rev = next(w for w in base if w["pool_id"] == pid2)
+    assert rev["mode"] == "input"                              # повтор приходит вводом
 
 
 async def test_cycle_full_circle(fresh_db, monkeypatch):
