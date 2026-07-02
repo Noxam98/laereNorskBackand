@@ -15,6 +15,6 @@ async def changelog_ingest_route(body: ChangelogIngest, user=Depends(get_admin_u
 
 
 @router.get("/changelog")
-async def changelog_route(limit: int = 30, user=Depends(get_current_user)):
-    """Свежие записи «что нового» (новые первыми); i18n целиком — язык выбирает фронт."""
-    return {"entries": await get_changelog(limit)}
+async def changelog_route(limit: int = 30, offset: int = 0, user=Depends(get_current_user)):
+    """Страница истории «что нового» (новые первыми); i18n целиком — язык выбирает фронт."""
+    return await get_changelog(limit, offset)

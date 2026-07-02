@@ -42,13 +42,16 @@ async def add_changelog(repo, source, entries):
         await _release(db)
 
 
-async def get_changelog(limit=30):
-    """Свежие записи (новые первыми): [{id, day, kind, i18n}]."""
+async def get_changelog(limit=30, offset=0):
+    """Страница истории (новые первыми): {entries: [{id, day, kind, i18n}], total}.
+    offset — для «показать ещё» на фронте (вся история, не только свежие)."""
     db = await _conn()
     try:
+        async with db.execute("SELECT COUNT(*) AS n FROM changelog") as cur:
+            total = (await cur.fetchone())["n"]
         async with db.execute(
-                "SELECT id, day, kind, i18n FROM changelog ORDER BY id DESC LIMIT ?",
-                (max(1, min(int(limit), 100)),)) as cur:
+                "SELECT id, day, kind, i18n FROM changelog ORDER BY id DESC LIMIT ? OFFSET ?",
+                (max(1, min(int(limit), 100)), max(0, int(offset)))) as cur:
             rows = await cur.fetchall()
         out = []
         for r in rows:
@@ -57,6 +60,6 @@ async def get_changelog(limit=30):
             except Exception:
                 continue
             out.append({"id": r["id"], "day": r["day"], "kind": r["kind"], "i18n": i18n})
-        return out
+        return {"entries": out, "total": total}
     finally:
         await _release(db)
