@@ -274,7 +274,7 @@ def _allowed_def_sg(no, gender):
     return out
 
 
-def noun_form_options(no, gender, forms, cell, n=3):
+def noun_form_options(no, gender, forms, cell, n=5):
     """(correct, [distractors]) для клетки-различения формы существительного.
     Дистракторы: РЕАЛЬНЫЕ соседние формы слова (учим отличать нужную) + наивная регулярная форма
     (для нерегулярных — «ожидаемая, но неверная») + чужой род (для def_sg); добор из типовых окончаний.
@@ -299,13 +299,13 @@ def noun_form_options(no, gender, forms, cell, n=3):
         allowed = set()
     allowed.add(correct)
 
-    primary, fallback = [], []
-    # 1) соседние РЕАЛЬНЫЕ формы слова + лемма → тренируем различение форм
-    for c in ("indef_pl", "def_sg", "def_pl"):
-        if c != cell:
-            primary.append(_norm(forms.get(c)))
-    primary.append(l)
-    # 2) наивная регулярная форма (для нерегулярных ≠ correct → сильнейший дистрактор)
+    # ДИСТРАКТОРЫ = ВЫДУМАННЫЕ окончания: подмешиваем правильное к правдоподобно-неверным.
+    # Реальные формы слова (из ЛЮБОЙ клетки) в варианты не попадают — «неверный» вариант должен
+    # быть действительно неверным, а не существующей формой из другого слота парадигмы.
+    real = {l} | {_norm(forms.get(c)) for c in ("indef_pl", "def_sg", "def_pl") if forms.get(c)}
+    stem = l[:-1] if l.endswith("e") else l
+    primary = []
+    # наивная регулярная форма (для нерегулярных ≠ correct → сильнейшая «выдуманная» ошибка: *boker)
     try:
         naive = {"indef_pl": lambda: regular_indef_pl(no, gender),
                  "def_sg": lambda: regular_def_sg(no, gender),
@@ -314,26 +314,33 @@ def noun_form_options(no, gender, forms, cell, n=3):
         naive = None
     if naive:
         primary.append(_norm(naive))
-    # 3) чужой род — для опр. ед.ч.
+    # чужой род — для опр. ед.ч. (*bilet у en-слова — выдуманная форма, не слот парадигмы)
     if cell == "def_sg":
         primary += [_norm(x) for x in _competing_def_sg(no, gender)]
-    # 4) добор типовыми окончаниями (чтобы всегда набрать n)
+    # пул выдуманных окончаний (чтобы всегда набрать n)
     if cell == "indef_pl":
-        fallback += [l + "er", l + "e", l + "a", l]
+        fallback = [l + "er", l + "e", l + "a", stem + "ar", stem + "er"]
     elif cell == "def_sg":
-        fallback += [l + "en", l + "a", l + "et"]
-    elif cell == "def_pl":
+        fallback = [l + "en", l + "a", l + "et", stem + "en", stem + "et"]
+    else:  # def_pl
         ipl = _norm(forms.get("indef_pl")) or l
-        fallback += [ipl + "ne", l + "a", l + "ene", l + "er"]
+        fallback = [ipl + "ne", l + "a", l + "ene", l + "er", stem + "ane"]
 
     seen, out = set(), []
     for f in primary + fallback:
-        if not f or f in allowed or f in seen or not _plausible(f):
+        if not f or f in allowed or f in real or f in seen or not _plausible(f):
             continue
         seen.add(f)
         out.append(f)
         if len(out) >= n:
             break
+    # + ОДНА реальная соседняя форма сверху (классическая путаница слотов: biler↔bilene);
+    # правильный + дистракторы ≤ n+1 вариантов всего
+    sib_pref = {"indef_pl": ("def_pl", "def_sg"), "def_sg": ("indef_pl", "def_pl"),
+                "def_pl": ("indef_pl", "def_sg")}[cell]
+    sib = next((v for c in sib_pref if (v := _norm(forms.get(c))) and v not in allowed and v not in seen and _plausible(v)), None)
+    if sib:
+        out = ([sib] + out)[:n]
     return correct, out
 
 

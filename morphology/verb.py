@@ -225,7 +225,7 @@ def is_irregular_verb(inf, forms):
 VERB_FORM_CELLS = ("present", "past", "perfect")
 
 
-def verb_form_options(inf, forms, cell, n=3):
+def verb_form_options(inf, forms, cell, n=5):
     """(correct, [distractors]) для клетки-различения формы глагола.
     Дистракторы: РЕАЛЬНЫЕ соседние формы слова (презенс/претерит/причастие/инфинитив) +
     наивная СЛАБО-регулярная форма (для сильных — «ожидаемая, но неверная»: drikke→*drikket, gå→*gådde);
@@ -255,38 +255,41 @@ def verb_form_options(inf, forms, cell, n=3):
     pres = _norm(forms.get("present"))
     past = _norm(forms.get("past"))
     part = strip_aux(forms.get("perfect"))
-    sib = {"present": pres, "past": past, "perfect": part}
+    # ДИСТРАКТОРЫ = ВЫДУМАННЫЕ окончания (чужой слабый класс и т.п.), НЕ реальные формы слова:
+    # «неверный» вариант должен быть действительно неверным, а не формой из соседнего слота.
+    real = {inf, pres, past, part}
 
-    # наивная слабо-регулярная форма для этой клетки
+    # наивная слабо-регулярная форма для этой клетки (для сильных — главная «выдуманная» ошибка)
     _, w_past, w_perf = predict_weak_class(inf)
     naive = {"present": inf + "r",
              "past": w_past,
              "perfect": strip_aux(w_perf) if w_perf else None}[cell]
+    primary = [_norm(naive)] if naive else []
 
-    # соседние реальные формы (кроме текущей клетки) + наивная + инфинитив-путаница
-    primary = [v for c, v in sib.items() if c != cell and v]
-    if naive:
-        primary.append(_norm(naive))
-    primary.append(inf)
-
-    # добор чужими окончаниями классов (чтобы набрать n)
+    # пул выдуманных окончаний чужих классов (чтобы набрать n)
     stem = _weak_stem(inf)
     simp = _degeminate_tail(stem)
     if cell == "present":
-        fallback = [inf + "er", stem + "er"]
+        fallback = [inf + "er", stem + "er", stem + "ar", inf + "s"]
     elif cell == "past":
-        fallback = [stem + "et", stem + "te", stem + "de", simp + "te", simp + "de", inf + "dde"]
+        fallback = [stem + "et", stem + "te", stem + "de", simp + "te", simp + "de", inf + "dde", stem + "a"]
     else:  # perfect
-        fallback = [stem + "et", stem + "t", stem + "d", simp + "t", simp + "d", inf + "dd"]
+        fallback = [stem + "et", stem + "t", stem + "d", simp + "t", simp + "d", inf + "dd", stem + "i"]
 
     seen, out = set(), []
     for f in primary + fallback:
-        if not f or f in allowed or f in seen or not _plausible(f):
+        if not f or f in allowed or f in real or f in seen or not _plausible(f):
             continue
         seen.add(f)
         out.append(f)
         if len(out) >= n:
             break
+    # + ОДНА реальная соседняя форма сверху (классическая путаница: drakk↔drukket);
+    # правильный + дистракторы ≤ n+1 вариантов всего
+    sib_pref = {"present": (past, part), "past": (part, pres), "perfect": (past, pres)}[cell]
+    sib = next((v for v in sib_pref if v and v != correct and v not in allowed and v not in seen and _plausible(v)), None)
+    if sib:
+        out = ([sib] + out)[:n]
     return correct, out
 
 

@@ -218,7 +218,7 @@ def _adj_regular(adj, cell):
             "comparative": regular_comparative, "superlative": regular_superlative}[cell](adj)
 
 
-def adj_form_options(adj, forms, cell, n=3):
+def adj_form_options(adj, forms, cell, n=5):
     """(correct, [distractors]) для клетки-различения формы прилагательного.
     Дистракторы: наивная регулярная форма (для нерегулярных — «ожидаемая, но неверная»:
     god→*godere, stor→*storere, grønn→*grønnt) + РЕАЛЬНЫЕ соседние формы (позитив/нейтрум/мн./степени)
@@ -241,40 +241,42 @@ def adj_form_options(adj, forms, cell, n=3):
     pl = _norm(forms.get("plural"))
     comp = _norm(forms.get("comparative"))
     sup = _norm(forms.get("superlative"))
+    # ДИСТРАКТОРЫ = ВЫДУМАННЫЕ окончания, НЕ реальные формы слова (из любого слота парадигмы):
+    # «неверный» вариант должен быть действительно неверным (mulige — не ошибка, а мн.ч.).
+    real = {w, neu, pl, comp, sup} - {""}
 
-    # наивная регулярная форма для этой клетки (слепое правило без синкопы/умлаута/дифтонга)
+    # наивная регулярная форма (слепое правило без синкопы/умлаута/дифтонга: *storere, *grønnt)
     naive = {"neuter": w + "t", "plural": w + "e",
              "comparative": w + "ere", "superlative": w + "est"}[cell]
+    order = [naive]
 
-    # порядок: наивная ошибка + «ближайшая» соседняя форма первыми (максимум педагогики)
-    order = {
-        "neuter":      [naive, w, pl, comp, sup],       # позитив↔нейтрум — главная путаница
-        "plural":      [naive, neu, w, comp, sup],
-        "comparative": [naive, sup, neu, pl, w],        # компаратив↔суперлатив
-        "superlative": [naive, comp, neu, pl, w],
-    }[cell]
-
-    # Добор окончаний и от ОСНОВЫ без -e: у прилагательных на -e (siste, øde, moderne) наивные
-    # w+e/w+ere дают двойную гласную (sistee) и режутся _plausible — без стем-вариантов выбор
-    # оставался без дистракторов (одна кнопка-ответ).
+    # пул выдуманных окончаний; добор и от ОСНОВЫ без -e — у прилагательных на -e (siste, øde)
+    # наивные w+e/w+ere дают двойную гласную и режутся _plausible.
     stem = w[:-1] if w.endswith("e") else w
     if cell == "neuter":
-        fallback = [w + "t", w + "tt", w + "e", stem + "t", stem + "e"]
+        fallback = [w + "t", w + "tt", stem + "t", stem + "tt", w + "et", stem + "e"]
     elif cell == "plural":
-        fallback = [w + "e", w + "ere", stem + "ere", stem + "t", stem + "est"]
+        fallback = [w + "e", w + "er", w + "ete", stem + "ere", stem + "t", stem + "est"]
     elif cell == "comparative":
-        fallback = [w + "ere", w + "est", stem + "ere", stem + "est"]
+        fallback = [w + "ere", w + "re", w + "are", stem + "ere", w + "est", stem + "est"]
     else:  # superlative
-        fallback = [w + "est", w + "st", w + "ere", stem + "est", stem + "ere"]
+        fallback = [w + "est", w + "st", w + "ast", stem + "est", w + "ere", stem + "ere"]
 
     seen, out = set(), []
     for f in order + fallback:
-        if not f or f in allowed or f in seen or not _plausible(f):
+        if not f or f in allowed or f in real or f in seen or not _plausible(f):
             continue
         seen.add(f)
         out.append(f)
         if len(out) >= n:
             break
+    # + ОДНА реальная соседняя форма сверху (путаница слотов: компаратив↔суперлатив и т.п.);
+    # правильный + дистракторы ≤ n+1 вариантов всего
+    sib_pref = {"neuter": (pl, comp), "plural": (neu, comp),
+                "comparative": (sup, neu), "superlative": (comp, neu)}[cell]
+    sib = next((v for v in sib_pref if v and v != correct and v not in allowed and v not in seen and _plausible(v)), None)
+    if sib:
+        out = ([sib] + out)[:n]
     return correct, out
 
 

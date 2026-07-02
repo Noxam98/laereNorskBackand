@@ -308,15 +308,16 @@ def test_noun_form_options():
     assert is_irregular_noun("vinter", "en", {"indef_pl": "vintere"})[0] is False
     assert is_irregular_noun("finger", "en", {"indef_pl": "fingere"})[0] is True
 
-    # noun_form_options: correct + до 3 правдоподобных дистракторов, без дублей, correct не среди них.
+    # noun_form_options: correct + до 5 дистракторов (≤6 вариантов), без дублей, correct не среди них.
     forms_bil = {"indef_pl": "biler", "def_sg": "bilen", "def_pl": "bilene"}
     for cell in NOUN_FORM_CELLS:
         correct, dis = noun_form_options("bil", "en", forms_bil, cell)
         assert correct and correct not in dis
-        assert 1 <= len(dis) <= 3 and len(dis) == len(set(dis))
-    # дистракторы неопр.мн. = реальные соседние формы слова (тренируем различение).
+        assert 1 <= len(dis) <= 5 and len(dis) == len(set(dis))
+    # дистракторы = ВЫДУМАННЫЕ окончания + максимум ОДНА реальная соседняя форма (путаница слотов).
     _, dip = noun_form_options("bil", "en", forms_bil, "indef_pl")
-    assert "bilen" in dip and "bilene" in dip
+    assert len(set(dip) & {"bilen", "bilene", "bil"}) <= 1
+    assert any(x not in ("bilen", "bilene", "bil") for x in dip)   # выдуманные есть
     # gender: два других артикля.
     g, gd = noun_form_options("bil", "en", forms_bil, "gender")
     assert g == "en" and set(gd) == {"ei", "et"}
@@ -329,11 +330,13 @@ def test_noun_form_options():
 
 
 def test_verb_form_options():
-    # Инварианты по всем клеткам: correct есть и не среди дистракторов, без дублей, ≤3.
+    # Инварианты по всем клеткам: correct есть и не среди дистракторов, без дублей, ≤5.
     ga = {"present": "går", "past": "gikk", "perfect": "har gått"}
     for cell in VERB_FORM_CELLS:
         c, d = verb_form_options("gå", ga, cell)
-        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 3
+        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 5
+        # реальных форм слова среди дистракторов — максимум одна (подмешанная «путаница слотов»)
+        assert len(set(d) & {"gå", "går", "gikk", "gått"}) <= 1
 
     # Сильные: наивная СЛАБАЯ форма — сильнейший дистрактор (типичная ошибка учащегося).
     _, d = verb_form_options("gå", ga, "past")
@@ -343,16 +346,16 @@ def test_verb_form_options():
     _, d = verb_form_options("skrive", {"present": "skriver", "past": "skrev", "perfect": "har skrevet"}, "past")
     assert "skrivde" in d                  # skrive→*skrivde
 
-    # Перфект дрилим как ПРИЧАСТИЕ (без 'har'); соседние формы — реальные.
+    # Перфект дрилим как ПРИЧАСТИЕ (без 'har'); классическая путаница drakk↔drukket подмешана.
     c, d = verb_form_options("drikke", {"present": "drikker", "past": "drakk", "perfect": "har drukket"}, "perfect")
     assert c == "drukket" and "drakk" in d and all("har " not in x for x in d)
 
-    # Слабые: НЕТ утечки валидного дублета -a; дистракторы — кросс-форменные.
+    # Слабые: НЕТ утечки валидного дублета -a.
     c, d = verb_form_options("kaste", {"present": "kaster", "past": "kastet", "perfect": "har kastet"}, "past")
-    assert c == "kastet" and "kasta" not in d and "kaster" in d
+    assert c == "kastet" and "kasta" not in d
     # Нерегулярный презенс: naïve +r к инфинитиву.
     _, d = verb_form_options("være", {"present": "er", "past": "var", "perfect": "har vært"}, "present")
-    assert "værer" in d and "var" in d
+    assert "værer" in d
     # Пустая клетка → (None, []).
     assert verb_form_options("gå", {"present": "går"}, "past") == (None, [])
 
@@ -361,7 +364,9 @@ def test_adj_form_options():
     fin = {"neuter": "fint", "plural": "fine", "comparative": "finere", "superlative": "finest"}
     for cell in ADJ_FORM_CELLS:
         c, d = adj_form_options("fin", fin, cell)
-        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 3
+        assert c and c not in d and len(d) == len(set(d)) and len(d) <= 5
+        # реальных форм слова среди дистракторов — максимум одна
+        assert len(set(d) & {"fin", "fint", "fine", "finere", "finest"}) <= 1
 
     # Наивные регулярные степени — сильнейшие дистракторы у супплетивов.
     c, d = adj_form_options("stor", {"neuter": "stort", "plural": "store", "comparative": "større", "superlative": "størst"}, "comparative")
