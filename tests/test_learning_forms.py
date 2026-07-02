@@ -295,6 +295,24 @@ def test_gender_produce_is_choice():
     assert el2["mode"] == "input"
 
 
+def test_gender_feminine_accepts_common():
+    """ei-слово валидно и как общего рода (реформа 2005): выбор «en» не наказываем,
+    карточка учит «ei/en»; мужское слово (en) — без accept (ei bil не бывает)."""
+    row = {"pool_id": 3, "norwegian": "bok", "mastered": 1}
+    fei = {"gender": "ei", "indef_pl": "bøker", "def_sg": "boka", "def_pl": "bøkene"}
+    el = form_element(row, fei, {"part_of_speech": "noun"}, "gender", "choose")
+    assert el["target"]["value"] == "ei" and el["target"]["accept"] == ["en"]
+    card = form_element(row, fei, {"part_of_speech": "noun"}, "gender", "card")
+    assert card["reveal"] == "ei/en bok"
+    fen = {"gender": "en", "indef_pl": "biler", "def_sg": "bilen", "def_pl": "bilene"}
+    el2 = form_element({"pool_id": 4, "norwegian": "bil", "mastered": 1}, fen,
+                       {"part_of_speech": "noun"}, "gender", "choose")
+    assert el2["target"]["value"] == "en" and "accept" not in el2["target"]
+    card2 = form_element({"pool_id": 4, "norwegian": "bil", "mastered": 1}, fen,
+                         {"part_of_speech": "noun"}, "gender", "card")
+    assert card2["reveal"] == "en bil"
+
+
 async def test_stats_forms_block(fresh_db):
     """learning_stats отдаёт блок forms: клеток в работе / отработано / к повторению."""
     from db.learning_suggest import learning_stats

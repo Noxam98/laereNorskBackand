@@ -10,6 +10,7 @@ from db.learning import (
     build_session, apply_result, _is_mastered,
     _grammar_cells, _grammar_element, REQUIRED_CELLS, GRAMMAR_RATIO,
 )
+from db.learning_forms import apply_form_result
 from db.users import set_user_game_prefs
 from tests.conftest import seed_user, seed_word
 
@@ -98,9 +99,9 @@ async def test_overlay_surfaces_for_mastered_noun(fresh_db, monkeypatch):
 
 
 async def test_overlay_quota_proportional(fresh_db):
-    """15 выученных → на 10-м партия готова (дефолт FORM_CYCLE_BATCH=10) → фаза форм:
-    форм-слоты = FORMS_SESSION_SHARE сессии, остальные 5 слов уходят в бэклог-филлер."""
-    from db.learning_forms import FORMS_SESSION_SHARE
+    """15 выученных → на 10-м партия готова (дефолт FORM_CYCLE_BATCH=10) → фаза форм.
+    ПЕРВАЯ сессия партии: все клетки новые → только ПОРЦИЯ карточек (как «новых за сессию»,
+    дефолт 6), стена из 14 карточек не валится; остальное сессия добьёт словами."""
     uid, did = await seed_user()
     for i in range(15):
         pid, _ = await seed_word(did, f"bok{i}", f"книга{i}")
@@ -110,7 +111,33 @@ async def test_overlay_quota_proportional(fresh_db):
     assert res["composition"]["phase"] == "forms"
     assert res["composition"]["formsLeft"] == 10               # партия = 10, не 15
     grams = [w for w in res["words"] if w.get("grammar")]
-    assert len(grams) == round(20 * FORMS_SESSION_SHARE)       # форм-квота фазы форм
+    assert len(grams) == 6                                     # порция карточек (NEW_PER_SESSION)
+    assert all(g["stage"] == "card" for g in grams)
+
+
+async def test_forms_phase_card_portion_then_exercises(fresh_db):
+    """Порция карточек: после просмотра карточек след. сессия несёт УПРАЖНЕНИЯ (choose) по ним
+    + новую порцию карточек — формы разбавляются заданиями, а не листаются пачкой."""
+    from db.learning_forms import FORMS_SESSION_SHARE
+    uid, did = await seed_user()
+    pids = []
+    for i in range(12):
+        pid, _ = await seed_word(did, f"bok{i}", f"книга{i}")
+        await _set_forms(pid, _BOK)
+        await _master(uid, pid)
+        pids.append(pid)
+    res = await build_session(uid, size=20)
+    cards = [w for w in res["words"] if w.get("form_track")]
+    assert len(cards) == 6 and all(w["stage"] == "card" for w in cards)
+    for w in cards:                                            # карточки просмотрены
+        await apply_form_result(uid, w["pool_id"], w["step"], True, stage="card")
+    res2 = await build_session(uid, size=20)
+    forms2 = [w for w in res2["words"] if w.get("form_track")]
+    chooses = [w for w in forms2 if w["stage"] == "choose"]
+    cards2 = [w for w in forms2 if w["stage"] == "card"]
+    assert len(chooses) == 6                                   # вчерашние карточки стали выбором
+    assert 1 <= len(cards2) <= 6                               # плюс новая порция карточек
+    assert len(forms2) <= round(20 * FORMS_SESSION_SHARE)
 
 
 async def test_overlay_off_via_toggle(fresh_db):

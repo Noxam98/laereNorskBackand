@@ -1058,6 +1058,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
 
         if phase == "forms":
             # ФАЗА ФОРМ: новых слов не вводим, большинство слотов — формы партии.
+            # КАРТОЧКИ форм — порциями, как новые слова (настройка «новых за сессию»): иначе
+            # первая сессия партии — стена из 10-14 карточек подряд без единого задания.
+            cards_cap = max(1, cap_new)
             cap_new = 0
             quota = max(1, round(size * FORMS_SESSION_SHARE))
             # порядок слов: партия (частотные первыми) → бэклог-филлер (переваривает старые
@@ -1066,6 +1069,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             word_order += sorted((p for p in info if p not in set(batch) and _pending(p)),
                                  key=lambda p: -(info[p]["e"]["row"].get("freq") or 0))
             taken = {}   # pid → взятые клетки этой сессии
+            cards_n = 0  # карточек формы уже взято (порция ≤ cards_cap)
             for _round in (0, 1):                      # ≤2 клетки на слово, раунд-робином
                 for pid in word_order:
                     if len(grammar_picks) >= quota:
@@ -1078,6 +1082,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                         continue
                     strow = fstates.get((pid, nxt))
                     stage = (strow.get("stage") or "card") if strow else "card"
+                    if stage == "card":
+                        if cards_n >= cards_cap:       # порция карточек исчерпана → ждём след. сессии
+                            continue
+                        cards_n += 1
                     grammar_picks.append(("form", info[pid]["e"], nxt, info[pid]["fdict"], stage))
                     got.add(nxt)
             cycle_phase, cycle_left = "forms", len(batch_pending)

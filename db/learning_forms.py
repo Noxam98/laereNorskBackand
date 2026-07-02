@@ -127,7 +127,10 @@ def form_element(row, forms, data, cell, stage):
         "prompt": {"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
     }
     if stage == "card":                       # показать форму (пассив, как карточка перевода)
-        reveal = f"{value} {no}" if cell == "gender" else value   # род показываем как «ei bok»
+        # род: «ei bok»; женское слово валидно и как общего рода (реформа 2005) → учим «ei/en»
+        reveal = value
+        if cell == "gender":
+            reveal = f"ei/en {no}" if value == "ei" else f"{value} {no}"
         return {**base, "mode": "study", "direction": cell,
                 "target": {"field": field, "value": value}, "reveal": reveal}
     # gender: и choose, и produce — ВЫБОР артикля (артикль не «печатают»; produce-ступень
@@ -136,8 +139,11 @@ def form_element(row, forms, data, cell, stage):
         correct, dis = form_options(pos, no, forms, cell)
         if not correct:
             return None
+        target = {"field": field, "value": correct}
+        if cell == "gender" and correct == "ei":
+            target["accept"] = ["en"]         # ei-слово: выбор «en» тоже верен (не наказываем)
         return {**base, "mode": "choice", "direction": cell,
-                "target": {"field": field, "value": correct},
+                "target": target,
                 "options": [{"w": w, "alt": None} for w in [correct] + dis],
                 "distractors": dis}
     # produce — набрать форму самому
