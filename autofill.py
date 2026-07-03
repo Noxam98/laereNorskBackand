@@ -626,7 +626,9 @@ async def autofill_loop():
                     await asyncio.sleep(600)
                     continue
                 if emb_miss or tts_miss:
-                    words = emb_miss or tts_miss  # пачка до 10: эмбеддинг одним запросом + озвучка
+                    # озвучка первой: она бесплатная (edge) и не зависит от квот; эмбеддинги при
+                    # выжатой квоте ловят 429 на одной и той же пачке и морили бы озвучку голодом
+                    words = tts_miss or emb_miss  # пачка до 10: озвучка + эмбеддинг одним запросом
                     n = await complete_batch(words)
                     logger.info(f"autofill: completed batch {len(words)} (emb +{n})")
                 elif unclassified:
