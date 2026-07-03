@@ -211,6 +211,10 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN approved INTEGER DEFAULT 1")
         except Exception:
             pass
+        # кэш походов в живой ordbøkene (ord.uib.no): '{}' = слова в словаре нет
+        await db.execute("""CREATE TABLE IF NOT EXISTS ordbank_ext (
+            norwegian TEXT NOT NULL, pos TEXT NOT NULL, forms TEXT NOT NULL,
+            ts TEXT, PRIMARY KEY (norwegian, pos))""")
         # озвучка слов живёт в отдельной word_tts (mp3-BLOBы раздували word_pool до ~334МБ,
         # любой скан читал их с диска); ключ — написание: омонимы делят один клип
         await db.execute(

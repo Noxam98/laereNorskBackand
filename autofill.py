@@ -544,8 +544,23 @@ async def forms_loop():
                 cat = cats[i % len(cats)]; i += 1
                 rows = await pos_missing_forms(cat, FORMS_BATCH)
                 if rows:
-                    done = await forms_batch(cat, rows)
-                    logger.info(f"forms_loop[{cat}]: +{done}/{len(rows)}")
+                    # формы — сначала детерминированно: дамп ordbank → живой ordbøkene
+                    # (nyord, кэш в ordbank_ext) → и только остаток генерит LLM
+                    from db import ordbank
+                    await ordbank.ensure_file()
+                    left, det = [], 0
+                    for pid, nw, data in rows:
+                        f = ordbank.lookup(nw, cat) or await ordbank.lookup_online(nw, cat)
+                        if f:
+                            await set_pool_forms(pid, f)
+                            det += 1
+                        else:
+                            left.append((pid, nw, data))
+                    if det:
+                        logger.info(f"forms_loop[{cat}]: ordbank +{det}")
+                    if left:
+                        done = await forms_batch(cat, left)
+                        logger.info(f"forms_loop[{cat}]: LLM +{done}/{len(left)}")
         except Exception as e:
             errors.report(e, "forms_loop")
         await asyncio.sleep(FORMS_CHECK_SEC)
