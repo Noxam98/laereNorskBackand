@@ -535,6 +535,7 @@ async def forms_loop():
     по FORMS_BATCH слов за запрос. Слова без подходящей POS форм не получают (наречия/фразы)."""
     await asyncio.sleep(30)
     cats = list(_FORMS.keys())
+    i = 0
     while True:
         if runtime.PAUSED["forms"]:
             await asyncio.sleep(20); continue
