@@ -557,6 +557,7 @@ async def get_pool_stats():
         async with db.execute(
             f"SELECT {_POS_COL} AS p, COUNT(*) AS t, SUM(forms IS NOT NULL) AS w, "
             "SUM(CASE WHEN forms IS NOT NULL AND COALESCE(json_extract(forms,'$.gender'),'')='' "
+            "AND COALESCE(json_extract(forms,'$.uninflectable'),0)=0 "   # несклоняемые (fjor, fru…) — не «застрявшие»
             "THEN 1 ELSE 0 END) AS ng, "
             # исчисляемость нунов — в том же проходе (отдельный LIKE-скан стоил ~4с)
             "SUM(json_extract(forms,'$.uncountable') IS NOT NULL) AS cm, "
