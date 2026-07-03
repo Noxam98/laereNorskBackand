@@ -18,3 +18,28 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Run test suite
         run: python -m pytest -q
+
+  deploy:
+    needs: pytest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency: deploy-prod   # деплои не наслаиваются
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ключ и known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "[204.168.163.44]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBWVlHdClJpMXXxcJRbG6huD4OCiYIYnIKgs9uINWLxD" >> ~/.ssh/known_hosts
+      - name: Rsync кода на VPS
+        run: >
+          rsync -az --delete
+          --exclude .git --exclude .venv --exclude __pycache__
+          --exclude '*.pyc' --exclude app.log
+          -e "ssh -p 2222" ./ root@204.168.163.44:/opt/norsk/app/
+      - name: Зависимости, рестарт, здоровье
+        run: |
+          ssh -p 2222 root@204.168.163.44 'VIRTUAL_ENV=/opt/norsk/venv /root/.local/bin/uv pip install -q -r /opt/norsk/app/requirements.txt && chown -R norsk:norsk /opt/norsk/app && systemctl restart norsk && sleep 8 && systemctl is-active norsk'
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://api.learnnorsk.space/changelog)
+          echo "https-код: $code"; [ "$code" = "401" ]
