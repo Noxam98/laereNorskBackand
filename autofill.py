@@ -632,7 +632,7 @@ async def autofill_loop():
                     words = tts_miss or emb_miss  # пачка до 10: озвучка + эмбеддинг одним запросом
                     n = await complete_batch(words)
                     logger.info(f"autofill: completed batch {len(words)} (emb +{n})")
-                elif unclassified:
+                elif unclassified and not runtime.PAUSED["classify"]:
                     done = await classify_batch(unclassified)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)}")
         except Exception as e:

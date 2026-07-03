@@ -4,7 +4,9 @@ True = поставлено на паузу. Персистятся в БД (app
 import json
 
 PAUSED = {
-    "autofill": False,   # автодобавление новых слов (autofill_loop)
+    "autofill": False,   # доделка слов: озвучка + добор векторов (генератор слов выпилен 3.07)
+    "classify": False,   # классификация уровней/тем у слов без level (classify_batch)
+    "tts_tr": False,     # переозвучка переводов (tts_translation_loop → Tigris)
     "embed": False,      # фоновые эмбеддинги (reembed_loop + досчёт в autofill)
     "describe": False,   # генерация описаний (describe_loop)
     "forms": False,      # грамматические формы по части речи (forms_loop)

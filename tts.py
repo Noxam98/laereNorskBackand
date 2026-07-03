@@ -71,8 +71,12 @@ async def tts_translation_loop():
         logger.info("tts translation loop: хранилище не настроено — пропуск")
         return
     await asyncio.sleep(20)
+    import runtime
     while True:
         try:
+            if runtime.PAUSED.get("tts_tr"):
+                await asyncio.sleep(30)
+                continue
             batch = await tr_tts_pending(TTS_TR_BATCH)
             if not batch:
                 await asyncio.sleep(60)  # очередь пуста — ждём дольше
