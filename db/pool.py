@@ -541,34 +541,41 @@ async def pool_missing_meta(limit: int = 50):
 
 
 async def get_pool_stats():
-    """Сводка по пулу: всего и сколько с эмбеддингом/озвучкой/описанием/уровнем."""
+    """Сводка по пулу: всего и сколько с эмбеддингом/озвучкой/описанием/уровнем.
+    ДВА прохода по таблице вместо ~13 отдельных COUNT: строки жирные (tts/embedding
+    BLOBы, ~334МБ), каждый лишний скан — это чтение всей таблицы с сетевого диска."""
     db = await _conn()
     try:
-        async def one(sql):
-            async with db.execute(sql) as cur:
-                return (await cur.fetchone())[0]
-        # покрытие форм по каждой formable-части речи (прогресс перегенерации)
-        forms_by_pos = {}
-        for p in FORMABLE_POS:
-            forms_by_pos[p] = {
-                "with": await one(f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_POS_COL}='{p}'"),
-                "total": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_POS_COL}='{p}'"),
-            }
+        async with db.execute(
+            "SELECT COUNT(*) AS t, SUM(embedding IS NOT NULL) AS e, SUM(tts IS NOT NULL) AS a, "
+            "SUM(description IS NOT NULL) AS d, SUM(level IS NOT NULL) AS c FROM word_pool") as cur:
+            r = await cur.fetchone()
+            total, emb, tts_n, descr, classified = (r[k] or 0 for k in ("t", "e", "a", "d", "c"))
+        forms_by_pos = {p: {"with": 0, "total": 0} for p in FORMABLE_POS}
+        forms_sum = formable_sum = noun_no_gender = 0
+        async with db.execute(
+            f"SELECT {_POS_COL} AS p, COUNT(*) AS t, SUM(forms IS NOT NULL) AS w, "
+            "SUM(CASE WHEN forms IS NOT NULL AND COALESCE(json_extract(forms,'$.gender'),'')='' "
+            "THEN 1 ELSE 0 END) AS ng FROM word_pool GROUP BY p") as cur:
+            async for r in cur:
+                if r["p"] in forms_by_pos:
+                    forms_by_pos[r["p"]] = {"with": r["w"] or 0, "total": r["t"] or 0}
+                    forms_sum += r["w"] or 0
+                    formable_sum += r["t"] or 0
+                if r["p"] == "noun":
+                    noun_no_gender = r["ng"] or 0
         return {
-            "total": await one("SELECT COUNT(*) FROM word_pool"),
-            "embedding": await one("SELECT COUNT(*) FROM word_pool WHERE embedding IS NOT NULL"),
-            "tts": await one("SELECT COUNT(*) FROM word_pool WHERE tts IS NOT NULL"),
-            "description": await one("SELECT COUNT(*) FROM word_pool WHERE description IS NOT NULL"),
-            "classified": await one("SELECT COUNT(*) FROM word_pool WHERE level IS NOT NULL"),
+            "total": total,
+            "embedding": emb,
+            "tts": tts_n,
+            "description": descr,
+            "classified": classified,
             # формы считаем только у formable-частей речи (иначе числитель > знаменателя)
-            "forms": await one(f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_FORMABLE_SQL}"),
-            # сколько слов вообще должны иметь формы (сущ./глаг./прил.) — знаменатель для прогресса
-            "formable": await one(f"SELECT COUNT(*) FROM word_pool WHERE {_FORMABLE_SQL}"),
+            "forms": forms_sum,
+            "formable": formable_sum,
             "forms_by_pos": forms_by_pos,
             # «застрявшие»: сущ. с формами, но БЕЗ рода (нет артикля en/ei/et) — анти-залип/качество
-            "noun_no_gender": await one(
-                f"SELECT COUNT(*) FROM word_pool WHERE forms IS NOT NULL AND {_POS_COL}='noun' "
-                "AND COALESCE(json_extract(forms,'$.gender'),'')=''"),
+            "noun_no_gender": noun_no_gender,
         }
     finally:
         await _release(db)
