@@ -1,0 +1,22 @@
+name: diag
+on:
+  workflow_dispatch:
+    inputs:
+      script_b64:
+        description: "base64 питон-скрипта для исполнения на VPS (venv, .env загружен)"
+        required: true
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ключ и known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "[204.168.163.44]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBWVlHdClJpMXXxcJRbG6huD4OCiYIYnIKgs9uINWLxD" >> ~/.ssh/known_hosts
+      - name: Выполнение на VPS
+        run: |
+          ssh -p 2222 root@204.168.163.44 'set -a; . /opt/norsk/.env; set +a; echo "${{ inputs.script_b64 }}" | base64 -d | /opt/norsk/venv/bin/python'
