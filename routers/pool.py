@@ -230,14 +230,18 @@ async def admin_set_control(key: str, paused: bool, user=Depends(get_admin_user)
 async def admin_stats(user=Depends(get_admin_user)):
     """Техническая статистика проекта (только для админа)."""
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    from db import countability_progress
-    return {
-        "pool": await get_pool_stats(),
-        "topics": await get_pool_topics_counts(),
-        "levels": await get_pool_level_counts(),
-        "usageToday": await get_usage_like(today),
-        "countability": await countability_progress(),   # разметка исчисляемости нунов (бэкфилл)
-    }
+    import time as _t
+    parts, out = {}, {}
+    for key, fn in (("pool", get_pool_stats), ("topics", get_pool_topics_counts),
+                    ("levels", get_pool_level_counts), ("usageToday", lambda: get_usage_like(today))):
+        t0 = _t.monotonic()
+        out[key] = await fn()
+        parts[key] = round(_t.monotonic() - t0, 2)
+    # исчисляемость считается внутри get_pool_stats тем же проходом (отдельный скан стоил ~4с)
+    out["countability"] = out["pool"].pop("countability", {})
+    if sum(parts.values()) > 1.5:   # медленно — раскладка в лог, чтобы не гадать
+        logger.info(f"admin/stats медленно: {parts}")
+    return out
 
 
 @router.get("/admin/homograph")

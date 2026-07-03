@@ -553,10 +553,15 @@ async def get_pool_stats():
             total, emb, tts_n, descr, classified = (r[k] or 0 for k in ("t", "e", "a", "d", "c"))
         forms_by_pos = {p: {"with": 0, "total": 0} for p in FORMABLE_POS}
         forms_sum = formable_sum = noun_no_gender = 0
+        countability = {"total": 0, "marked": 0, "uncountable": 0}
         async with db.execute(
             f"SELECT {_POS_COL} AS p, COUNT(*) AS t, SUM(forms IS NOT NULL) AS w, "
             "SUM(CASE WHEN forms IS NOT NULL AND COALESCE(json_extract(forms,'$.gender'),'')='' "
-            "THEN 1 ELSE 0 END) AS ng FROM word_pool GROUP BY p") as cur:
+            "THEN 1 ELSE 0 END) AS ng, "
+            # исчисляемость нунов — в том же проходе (отдельный LIKE-скан стоил ~4с)
+            "SUM(json_extract(forms,'$.uncountable') IS NOT NULL) AS cm, "
+            "SUM(CASE WHEN json_extract(forms,'$.uncountable') THEN 1 ELSE 0 END) AS cu "
+            "FROM word_pool GROUP BY p") as cur:
             async for r in cur:
                 if r["p"] in forms_by_pos:
                     forms_by_pos[r["p"]] = {"with": r["w"] or 0, "total": r["t"] or 0}
@@ -564,6 +569,8 @@ async def get_pool_stats():
                     formable_sum += r["t"] or 0
                 if r["p"] == "noun":
                     noun_no_gender = r["ng"] or 0
+                    countability = {"total": r["t"] or 0, "marked": r["cm"] or 0,
+                                    "uncountable": r["cu"] or 0}
         return {
             "total": total,
             "embedding": emb,
@@ -576,6 +583,7 @@ async def get_pool_stats():
             "forms_by_pos": forms_by_pos,
             # «застрявшие»: сущ. с формами, но БЕЗ рода (нет артикля en/ei/et) — анти-залип/качество
             "noun_no_gender": noun_no_gender,
+            "countability": countability,
         }
     finally:
         await _release(db)
