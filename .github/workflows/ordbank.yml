@@ -1,0 +1,38 @@
+name: ordbank
+on:
+  workflow_dispatch:
+    inputs:
+      dump_url:
+        description: "URL дампа Norsk ordbank (tar.gz)"
+        default: "https://www.nb.no/sbfil/leksikalske_databaser/ordbank/20220201_norsk_ordbank_nob_2005.tar.gz"
+        required: true
+      restore_backup:
+        description: "S3-ключ бэкапа для отката значений (обычно пусто)"
+        default: ""
+        required: false
+permissions:
+  contents: read
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    concurrency: deploy-prod   # не пересекаться с деплоем
+    steps:
+      - uses: actions/checkout@v4
+      - name: Сборка ordbank.db из дампа
+        run: python3 scripts/build_ordbank.py "${{ inputs.dump_url }}" ordbank_new.db
+      - name: Ключ и known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "[204.168.163.44]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBWVlHdClJpMXXxcJRbG6huD4OCiYIYnIKgs9uINWLxD" >> ~/.ssh/known_hosts
+      - name: Доставка на VPS
+        run: scp -P 2222 ordbank_new.db root@204.168.163.44:/opt/norsk/data/ordbank_new.db
+      - name: Стабильность выбора, ремонт пула, подмена, Tigris
+        run: |
+          scp -P 2222 scripts/bank_repair.py root@204.168.163.44:/tmp/bank_repair.py
+          ssh -p 2222 root@204.168.163.44 'set -a; . /opt/norsk/.env; set +a; RESTORE_BACKUP="${{ inputs.restore_backup }}" /opt/norsk/venv/bin/python /tmp/bank_repair.py && rm /tmp/bank_repair.py && systemctl restart norsk && sleep 6 && systemctl is-active norsk'
+      - name: Health
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://api.learnnorsk.space/changelog)
+          echo "https: $code"; [ "$code" = "401" ]
