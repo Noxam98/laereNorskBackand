@@ -13,9 +13,9 @@ async def get_pool_tts(norwegian: str):
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute("SELECT mp3 FROM word_tts WHERE word = ?", (key,)) as cur:
             r = await cur.fetchone()
-            return r["tts"] if r and r["tts"] else None
+            return r["mp3"] if r and r["mp3"] else None
     finally:
         await _release(db)
 
@@ -26,7 +26,7 @@ async def set_pool_tts(norwegian: str, data: bytes):
         return
     db = await _conn()
     try:
-        await db.execute("UPDATE word_pool SET tts = ? WHERE norwegian = ?", (data, key))
+        await db.execute("INSERT OR REPLACE INTO word_tts(word, mp3) VALUES (?, ?)", (key, data))
         await db.commit()
     finally:
         await _release(db)
@@ -86,7 +86,10 @@ async def pool_missing_embedding(limit: int = 1):
 async def pool_missing_tts(limit: int = 1):
     db = await _conn()
     try:
-        async with db.execute("SELECT norwegian FROM word_pool WHERE tts IS NULL LIMIT ?", (limit,)) as cur:
+        async with db.execute(
+                "SELECT DISTINCT norwegian FROM word_pool "
+                "WHERE NOT EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) "
+                "LIMIT ?", (limit,)) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
         await _release(db)

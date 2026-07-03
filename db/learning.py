@@ -586,7 +586,7 @@ async def _fetch_user_words(db, user_id, set_id=None):
         """
         src_params = (user_id, user_id, user_id)
     async with db.execute(f"""
-        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, (wp.tts IS NOT NULL) AS has_tts,
+        SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, wp.freq, wp.forms, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = wp.norwegian) AS has_tts,
                uw.strength, uw.reps, uw.lapses, uw.ease, uw.interval_days, uw.due_at,
                uw.correct, uw.incorrect, uw.streak, uw.archived, uw.modes, uw.last_seen,
                uw.certified, uw.audit_due, uw.audit_interval, uw.was_certified, uw.mastered, uw.known

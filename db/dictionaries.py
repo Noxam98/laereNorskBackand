@@ -302,7 +302,7 @@ async def get_user_data(user_id: int):
         for d in dicts:
             async with db.execute("""
                 SELECT dw.id AS dw_id, dw.pool_id, dw.override, dw.correct, dw.incorrect,
-                       wp.data, wp.description, wp.forms, wp.freq, (wp.tts IS NOT NULL) AS has_tts
+                       wp.data, wp.description, wp.forms, wp.freq, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = wp.norwegian) AS has_tts
                 FROM dict_words dw
                 JOIN word_pool wp ON wp.id = dw.pool_id
                 WHERE dw.dict_id = ?

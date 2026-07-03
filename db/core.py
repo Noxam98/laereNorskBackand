@@ -211,10 +211,21 @@ async def init_db():
             await db.execute("ALTER TABLE word_pool ADD COLUMN approved INTEGER DEFAULT 1")
         except Exception:
             pass
-        try:
-            await db.execute("ALTER TABLE word_pool ADD COLUMN tts BLOB")
-        except Exception:
-            pass
+        # озвучка слов живёт в отдельной word_tts (mp3-BLOBы раздували word_pool до ~334МБ,
+        # любой скан читал их с диска); ключ — написание: омонимы делят один клип
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS word_tts (word TEXT PRIMARY KEY, mp3 BLOB NOT NULL)")
+        try:  # одноразовый перенос из старой колонки + сброс колонки
+            cols = [r[1] for r in await (await db.execute("PRAGMA table_info(word_pool)")).fetchall()]
+            if "tts" in cols:
+                await db.execute(
+                    "INSERT OR IGNORE INTO word_tts(word, mp3) "
+                    "SELECT norwegian, tts FROM word_pool WHERE tts IS NOT NULL")
+                await db.commit()
+                await db.execute("ALTER TABLE word_pool DROP COLUMN tts")
+                await db.commit()
+        except Exception as e:
+            print(f"word_tts migration: {e}")
         # уровень CEFR (A1..C2); NULL = ещё не классифицировано
         try:
             await db.execute("ALTER TABLE word_pool ADD COLUMN level TEXT")
