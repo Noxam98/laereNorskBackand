@@ -8,7 +8,7 @@
 # Токен админа: ~/.config/norsk/changelog_token (Bearer). Логи: ~/.cache/norsk-changelog/<repo>.log
 set -u
 
-API="${NORSK_API:-https://learn-norsk-backend.fly.dev}"
+API="${NORSK_API:-https://api.learnnorsk.space}"
 TOKEN_FILE="$HOME/.config/norsk/changelog_token"
 LOG_DIR="$HOME/.cache/norsk-changelog"
 DIFF_CAP=60000   # символов диффа в промпт (хватает на типичный пуш, не раздувает контекст)
