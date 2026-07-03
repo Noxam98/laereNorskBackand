@@ -1040,7 +1040,9 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         conds.append("COALESCE(approved,1) = 1")
     key = normalize_word(q) if q else None
     if key:
-        c, p = _key_cond(key, lang)   # норвежский (+å/ø/æ) + перевод на язык интерфейса
+        # норвежский (+å/ø/æ) + перевод на язык интерфейса + сведение словоформы
+        # к лемме банка (gikk → gå) — грид находит слово по любой его форме
+        c, p = _key_cond_with_forms(key, lang)
         conds.append(c)
         params += p
     if topics:

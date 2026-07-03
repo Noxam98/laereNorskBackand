@@ -75,3 +75,10 @@ async def test_generate_uses_bank_and_lexin(fresh_db, bank, monkeypatch):
     w = await D.get_pool_by_id(pid)
     forms = w.get("forms") if isinstance(w, dict) else None
     assert forms and forms.get("past") == "gikk"   # формы легли из банка, не из LLM
+
+
+async def test_grid_finds_word_by_form(fresh_db, bank):
+    await _seed_pos("gå", "verb", "идти")
+    res = await D.get_pool_list(limit=10, q="gikk")
+    words = [w["word"] for w in res["words"]]
+    assert "gå" in words   # грид Базы сводит форму к лемме через банк
