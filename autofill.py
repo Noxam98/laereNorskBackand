@@ -15,7 +15,7 @@ from db import (
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
     yo_pending, mark_yo_done,
     sem_embed_pending, mark_sem_embed,
-    get_pool_sample, get_pool_letter, pos_missing_forms, set_pool_forms,
+    pos_missing_forms, set_pool_forms,
     nouns_missing_countability, merge_pool_forms,
     pos_uncategorized, set_pool_pos, get_pool_words_by_names,
     dedup_pending, mark_dedup, pool_usage_count, nearest_other, merge_pool_words,
@@ -40,19 +40,16 @@ from autofill_wordgen import (  # noqa: E402,F401 — реэкспорт для 
     _persist_word_items, _embed_new,
 )
 
-# --- Авто-заполнение общего пула в рамках суточного бюджета ("свободная" квота) ---
-AUTOFILL_ENABLED = os.getenv("AUTOFILL_ENABLED", "false").lower() == "true"
-AUTOFILL_DAILY_BUDGET = int(os.getenv("AUTOFILL_DAILY_BUDGET", "150"))
+# --- Фоновая доделка недостающего (эмбеддинг/озвучка/классификация).
+# Генерация НОВЫХ слов LLM-ом выпилена (3.07.2026): база собирается из
+# человеческих источников (Lexin/ordbank), фоновому генератору тут делать нечего.
 AUTOFILL_INTERVAL_SEC = int(os.getenv("AUTOFILL_INTERVAL_SEC", "150"))  # одно слово целиком раз в N сек (день)
-AUTOFILL_BATCH = int(os.getenv("AUTOFILL_BATCH", "1"))
 AUTOFILL_IDLE_SEC = int(os.getenv("AUTOFILL_IDLE_SEC", "300"))  # фон только после N сек простоя
 # Ночной режим — агрессивнее (когда никто не пользуется)
 AUTOFILL_NIGHT_INTERVAL_SEC = int(os.getenv("AUTOFILL_NIGHT_INTERVAL_SEC", "6"))   # ~10 операций/мин
-AUTOFILL_NIGHT_BUDGET = int(os.getenv("AUTOFILL_NIGHT_BUDGET", "200"))             # потолок за день (оставляет запас квоты на день)
 AUTOFILL_NIGHT_START = int(os.getenv("AUTOFILL_NIGHT_START", "2"))    # локальный час начала ночи
 AUTOFILL_NIGHT_END = int(os.getenv("AUTOFILL_NIGHT_END", "7"))        # локальный час конца ночи
 AUTOFILL_TZ_OFFSET = int(os.getenv("AUTOFILL_TZ_OFFSET", "2"))        # сдвиг от UTC (Норвегия летом = +2)
-AUTOFILL_AVOID_SAMPLE = int(os.getenv("AUTOFILL_AVOID_SAMPLE", "60"))  # фикс-размер списка исключений в промпте
 CLASSIFY_BATCH = int(os.getenv("CLASSIFY_BATCH", "50"))  # слов на один LLM-вызов классификации
 # Профили моделей и ротация ключей/квоты — целиком внутри llm.py (key-free API):
 # llm.ask_json(purpose="autofill"), llm.embed_texts(...), llm.text_available("autofill"),
@@ -63,59 +60,6 @@ def _is_night():
     h = (datetime.utcnow().hour + AUTOFILL_TZ_OFFSET) % 24
     s, e = AUTOFILL_NIGHT_START, AUTOFILL_NIGHT_END
     return (s <= h < e) if s <= e else (h >= s or h < e)
-
-
-AUTOFILL_TOPICS = [
-    "семья и родственники", "еда и блюда", "напитки", "фрукты и овощи", "дом и жильё",
-    "мебель", "кухня и посуда", "одежда и обувь", "аксессуары и украшения", "тело человека",
-    "здоровье и болезни", "медицина и аптека", "гигиена и косметика", "эмоции и чувства",
-    "черты характера", "отношения и любовь", "дружба и общение", "город и улицы",
-    "здания и места", "транспорт и машины", "дорога и движение", "путешествия и туризм",
-    "гостиница и отдых", "природа и ландшафт", "погода и климат", "времена года",
-    "животные", "птицы", "рыбы и морские", "насекомые", "растения и деревья", "цветы",
-    "сад и огород", "ферма и село", "море и пляж", "горы и лес", "небо и космос",
-    "цвета и оттенки", "числа и счёт", "время и даты", "дни и месяцы", "работа и офис",
-    "профессии", "школа и учёба", "наука", "технологии и компьютеры", "интернет и связь",
-    "телефон и гаджеты", "деньги и финансы", "покупки и магазин", "рынок и продукты",
-    "ресторан и кафе", "приготовление еды", "вкус и запах", "спорт и фитнес",
-    "хобби и досуг", "музыка и инструменты", "искусство", "книги и литература",
-    "кино и театр", "игры", "праздники и традиции", "религия", "политика и общество",
-    "закон и право", "армия и оружие", "география и страны", "языки и народы",
-    "инструменты и ремонт", "строительство и материалы", "энергия и экология",
-    "виды транспорта", "безопасность и чрезвычайные", "детство и дети", "возраст и жизнь",
-    "свадьба и события", "органы чувств", "ум и память", "сны и воображение",
-    "качества и свойства", "размеры и формы", "материалы и вещества", "звуки и шумы",
-    "свет и тьма", "движение и направление", "глаголы речи", "глаголы действия",
-    "повседневные дела", "приветствия и вежливость", "вопросы и сомнения",
-    "количество и меры", "абстрактные понятия", "бизнес и торговля", "экономика",
-]
-
-# Буквы норвежского алфавита с весами по частоте слов-начал (частые буквы выпадают чаще).
-_LETTER_WEIGHTS = {
-    "s": 12, "f": 9, "b": 9, "k": 9, "m": 8, "t": 8, "h": 7, "v": 7, "d": 7, "a": 6,
-    "p": 6, "l": 6, "g": 5, "r": 5, "o": 4, "e": 4, "i": 4, "n": 4, "u": 3, "j": 3,
-    "å": 3, "y": 2, "ø": 2, "æ": 1, "c": 1,
-}
-AUTOFILL_LETTERS = list(_LETTER_WEIGHTS.keys())
-AUTOFILL_LETTER_W = list(_LETTER_WEIGHTS.values())
-
-# Срез для генерации новых слов — узкий 2-буквенный префикс: его слова влезают в стоп-лист
-# ЦЕЛИКОМ, поэтому «не предлагай известные» реально работает (на одну букву слов уже сотни —
-# случайные 60 не покрывали, модель повторяла известное → дубли).
-AUTOFILL_PREFIX_AVOID = int(os.getenv("AUTOFILL_PREFIX_AVOID", "400"))  # потолок стоп-листа на срез
-AUTOFILL_DRY_LIMIT = int(os.getenv("AUTOFILL_DRY_LIMIT", "3"))  # столько пустых ответов подряд → срез временно пропускаем
-_dry = {}  # срез -> сколько раз подряд не дал новых слов (в памяти; сбрасывается при рестарте)
-
-_VOWELS = "aeiouyæøå"
-_CLUSTER_AFTER = set("skgbpftdvhr")  # согласные, после которых бывают кластеры (kl-, str-, sp-, gr- …)
-_CLUSTER_2ND = "lrjvn"
-
-
-def _pick_prefix():
-    """Случайный правдоподобный 2-буквенный норвежский префикс (1-я буква — по частоте начал)."""
-    first = random.choices(AUTOFILL_LETTERS, weights=AUTOFILL_LETTER_W, k=1)[0]
-    pool2 = "bdfghklmnprstv" if first in _VOWELS else _VOWELS + (_CLUSTER_2ND if first in _CLUSTER_AFTER else "")
-    return first + random.choice(pool2)
 
 
 async def complete_batch(items):
@@ -591,7 +535,6 @@ async def forms_loop():
     по FORMS_BATCH слов за запрос. Слова без подходящей POS форм не получают (наречия/фразы)."""
     await asyncio.sleep(30)
     cats = list(_FORMS.keys())
-    i = 0
     while True:
         if runtime.PAUSED["forms"]:
             await asyncio.sleep(20); continue
@@ -657,7 +600,6 @@ async def countability_loop():
 
 async def autofill_loop():
     await asyncio.sleep(15)
-    i = 0
     while True:
         if runtime.PAUSED["autofill"]:
             await asyncio.sleep(20); continue
@@ -690,73 +632,6 @@ async def autofill_loop():
                 elif unclassified:
                     done = await classify_batch(unclassified)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)}")
-                elif text_ok and not await sem_embed_pending(1):
-                    # Пока не пересчитаны ВСЕ эмбеддинги по смыслу — новые слова не добавляем
-                    # (чтобы пул не рос во время пере-эмбеддинга и статистика была понятной).
-                    i += 1
-                    # Генерация новых слов — основной приоритет. Описания не догоняем
-                    # фоном (генерятся по запросу при открытии), чтобы пул рос быстрее.
-                    nonce = random.randint(1000, 99999)
-                    # Срез: 1 из 4 — тема, иначе 2-буквенный префикс (узкий срез → стоп-лист
-                    # по нему полный). «Выдоенные» срезы (несколько пустых ответов подряд)
-                    # пропускаем — до 8 попыток найти свежий.
-                    kind = "topic" if i % 4 == 0 else "prefix"
-                    key = label = constraint = None
-                    for _ in range(8):
-                        if kind == "topic":
-                            key = AUTOFILL_TOPICS[random.randrange(len(AUTOFILL_TOPICS))]
-                            constraint = f"на тему: {key}"; label = f"topic='{key}'"
-                        else:
-                            key = _pick_prefix()
-                            constraint = f"начинающихся на «{key}»"; label = f"prefix='{key}'"
-                        if _dry.get(key, 0) < AUTOFILL_DRY_LIMIT:
-                            break
-                    # Полный стоп-лист по срезу (не 60 случайных): для префикса — все слова
-                    # этого префикса (их десятки — влезают целиком), для темы — выборка.
-                    avoid = (await get_pool_sample(AUTOFILL_AVOID_SAMPLE)) if kind == "topic" \
-                        else (await get_pool_letter(key, AUTOFILL_PREFIX_AVOID))
-                    avoid_s = ", ".join(avoid)
-                    prompt = (f"Дай {AUTOFILL_BATCH} разных норвежских слов (bokmål) {constraint}. "
-                              f"Подойдут и менее частотные — уровня A2–C1, не только базовые. "
-                              f"Только НОВЫЕ слова, которых НЕТ в списке ниже.\n"
-                              f"Уже в базе ({len(avoid)}): {avoid_s}. (вариант {nonce})")
-                    new_words, dup_words = [], []
-                    ok = True
-                    try:
-                        data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
-                                              purpose="autofill", label=f"автозаполнение ({label})")
-                        items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                        for it in items:
-                            if isinstance(it, dict) and not it.get("error") and it.get("word"):
-                                existed = await get_pool_id(it["word"])
-                                pid = await get_or_create_pool(it["word"], normalize_word_item(it))
-                                if pid:
-                                    await apply_item_meta(pid, it)
-                                if existed:
-                                    dup_words.append(it["word"])
-                                else:
-                                    new_words.append((pid, it["word"]))  # pid новой записи → эмбеддинг по нему
-                    except Exception as e:
-                        ok = False
-                        errors.report(e, "autofill generate")  # ошибку уже отчитали — «пусто» не шлём
-                    if new_words:
-                        await complete_batch(new_words)  # пачкой
-                    if ok:  # счётчик «выдоенности» среза — только при успешном запросе
-                        _dry[key] = 0 if new_words else _dry.get(key, 0) + 1
-                    logger.info(f"autofill: {label} new={len(new_words)} dup={len(dup_words)} dry={_dry.get(key, 0)}")
-                    # Разбивка в ленту: LLM иногда повторяет известные слова (несмотря на стоп-лист),
-                    # а иногда не находит новых вовсе — тогда честно пишем «пусто».
-                    if ok and not new_words and not dup_words:
-                        notify.feed(f"🆕 автозаполнение ({label}): пусто — модель не нашла новых слов "
-                                    f"(просили {AUTOFILL_BATCH}, все распространённые уже в пуле)")
-                    elif ok:
-                        msg = (f"🆕 автозаполнение ({label}): просили {AUTOFILL_BATCH} · "
-                               f"новых {len(new_words)} · повтор {len(dup_words)}")
-                        if new_words:
-                            msg += f"\n  ➕ {', '.join(w for _pid, w in new_words)}"
-                        if dup_words:
-                            msg += f"\n  ↩️ уже были: {', '.join(dup_words)}"
-                        notify.feed(msg)
         except Exception as e:
             errors.report(e, "autofill_loop")
             await asyncio.sleep(120)

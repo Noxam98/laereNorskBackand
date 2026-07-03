@@ -17,7 +17,7 @@ from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
     countability_loop,
     yo_fix_loop,
-    AUTOFILL_ENABLED, AUTOFILL_DAILY_BUDGET, AUTOFILL_INTERVAL_SEC, DEDUP_ENABLED,
+    DEDUP_ENABLED,
 )
 
 # Swagger/OpenAPI скрываем в проде (ENABLE_DOCS=1 чтобы включить) — не светим карту эндпоинтов.
@@ -111,9 +111,8 @@ async def startup():
     except Exception as e:
         logger.warning(f"forms reset: {e}")
     if text_enabled():
-        if AUTOFILL_ENABLED:
-            asyncio.create_task(autofill_loop())
-            logger.info(f"autofill loop started: budget={AUTOFILL_DAILY_BUDGET}/day, interval={AUTOFILL_INTERVAL_SEC}s")
+        asyncio.create_task(autofill_loop())
+        logger.info("autofill (доделка): эмбеддинг/озвучка/классификация недостающего")
         asyncio.create_task(describe_loop())
         logger.info("describe queue enabled: новые слова получают описание пачками")
         asyncio.create_task(translate_loop())
