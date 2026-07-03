@@ -82,3 +82,67 @@ async def test_grid_finds_word_by_form(fresh_db, bank):
     res = await D.get_pool_list(limit=10, q="gikk")
     words = [w["word"] for w in res["words"]]
     assert "gå" in words   # грид Базы сводит форму к лемме через банк
+
+
+async def _seed_learning_word(dbc, uid, did, no, modes, due_shift="+2 days"):
+    """Слово в наборе юзера с прогрессом: рампа по modes, due в будущем."""
+    cur = await dbc.execute(
+        "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+        (no, json.dumps({"translate": {"no": [no], "ru": ["слово"]}, "part_of_speech": "noun"}), "noun", "A1"))
+    pid = cur.lastrowid
+    await dbc.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?,?,datetime('now'))",
+                      (did, pid))
+    await dbc.execute(
+        "INSERT INTO user_words (user_id, pool_id, strength, reps, correct, incorrect, "
+        "interval_days, due_at, modes, created_at) "
+        f"VALUES (?,?,?,?,?,?,?,datetime('now','{due_shift}'),?,datetime('now'))",
+        (uid, pid, 3, 3, 3, 0, 2, modes))
+    return pid
+
+
+# рампа сдана вся, КРОМЕ аудио-клетки → слово «ждёт слух» (живёт в слуховой партии)
+_AUDIO_PENDING = '{"choice_int2no":"1","build_int2no":"1","input_int2no":"1"}'
+
+
+async def test_audio_pending_words_dont_choke_wip(fresh_db, bank):
+    """Тупик ветерана 3.07: 21 слово ждёт слуховой сдачи (>WIP_LIMIT) + новые в наборе.
+    Слуховые НЕ должны душить WIP — дневная сессия обязана отдать новые слова."""
+    from tests.conftest import seed_user
+    from db.learning import build_session
+    uid, did = await seed_user("veteran")
+    dbc = await _conn()
+    try:
+        for i in range(21):
+            await _seed_learning_word(dbc, uid, did, f"lyttord{i}", _AUDIO_PENDING)
+        for i in range(2):   # новые слова, которые тупик раньше запирал
+            cur = await dbc.execute(
+                "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+                (f"nyord{i}", json.dumps({"translate": {"no": [f"nyord{i}"], "ru": ["новое"]},
+                                          "part_of_speech": "noun"}), "noun", "A1"))
+            await dbc.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?,?,datetime('now'))",
+                              (did, cur.lastrowid))
+        await dbc.commit()
+    finally:
+        from db.core import _release
+        await _release(dbc)
+    res = await build_session(uid, size=10)
+    assert res["composition"]["total"] >= 1, res["composition"]
+    words = {w["no"] for w in res["words"]}
+    assert any(w.startswith("nyord") for w in words), words   # новые прошли, слуховые не душат
+
+
+async def test_empty_session_says_listen_pending(fresh_db, bank):
+    """Если отдать нечего, а слова ждут слуха — фронт получает честную причину."""
+    from tests.conftest import seed_user
+    from db.learning import build_session
+    uid, did = await seed_user("listener")
+    dbc = await _conn()
+    try:
+        await _seed_learning_word(dbc, uid, did, "lytteord", _AUDIO_PENDING)
+        await dbc.commit()
+    finally:
+        from db.core import _release
+        await _release(dbc)
+    res = await build_session(uid, size=10)
+    assert res["composition"]["total"] == 0
+    assert res["composition"].get("reason") == "listen_pending"

@@ -806,8 +806,13 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             except Exception:
                 pdata = {}
             enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r), "data": pdata})
-        # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых
-        in_work = sum(1 for e in enriched if e["status"] in ("learning", "review", "weak"))
+        # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых.
+        # Слова, ждущие ТОЛЬКО слуховой сдачи (audio-pending), НЕ считаем «в работе»: они живут
+        # в параллельной слуховой партии и в дневной сессии клеток не получают — иначе 20+ таких
+        # слов душили WIP-лимит и дневная сессия ветерана приходила ПУСТОЙ (тупик 3.07).
+        in_work = sum(1 for e in enriched
+                      if e["status"] in ("learning", "review", "weak")
+                      and not (audio_on and _is_audio_pending(e["row"], e["modes"], e["data"])))
         # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим;
         # мягкий тормоз аудита (>THROTTLE забытого) тоже временно замораживает приток новых
         pack_n = sum(1 for e in enriched if e["status"] == "mastered" and not _is_certified(e["row"]))
@@ -934,6 +939,25 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
 
     # недавно показанные — в хвост (не лидируют следующую сессию); остальные сохраняют приоритет
     ordered = [c for c in cand if not is_fresh(c[0])] + [c for c in cand if is_fresh(c[0])]
+
+    # ── ДОСРОЧНЫЕ ПОВТОРЫ (анти-тупик ветерана, 3.07): повторов due нет, новые заперты
+    # WIP-лимитом/воротами, а формы могут быть выключены тумблером — раньше сессия
+    # приходила ПУСТОЙ («В процессе 23, Повторение 0» → тупик до завтрашних due).
+    # Даём начатые слова с БЛИЖАЙШИМ due на повтор раньше срока: SRS не страдает —
+    # интервал пересчитается от сегодняшнего ответа. ──
+    early_review = False
+    if not ordered and not scoped:
+        early = sorted(
+            [e for e in enriched if e["status"] in ("learning", "review", "weak")
+             and attempts(e) > 0 and not e["row"].get("archived") and not e["row"].get("known")
+             # слова, ждущие слуховой сдачи, живут в СЛУХОВОЙ партии — сюда не тянем
+             and not (audio_on and _is_audio_pending(e["row"], e["modes"], e["data"]))],
+            key=lambda e: e["row"].get("due_at") or "~")
+        for e in early[:size]:
+            step = _review_step(e["row"])
+            if step:
+                ordered.append((e, step))
+        early_review = bool(ordered)
 
     # ── Дистракторы order-игры (устойчивые выражения): показываем только УЗНАВАЕМЫЕ — уровень ≤
     # уровня юзера ИЛИ уже выученные. Уровни дистракторов берём из Базы (они туда заведены). Если у
@@ -1242,6 +1266,19 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     await _attach_choice_options(session, lang)
     _tm["choice"] = time.monotonic() - _ta
     comp["total"] = len(session)
+    if early_review and session:
+        comp["reason"] = "early_review"          # сессия из досрочных повторов (тупик обойдён)
+    # ПУСТАЯ сессия у ветерана — не баг, а состояние: скажем фронту ПОЧЕМУ пусто
+    # (повторы не due; новые заперты пачкой на экзамен / WIP-лимитом; формы выключены).
+    if not session and not scoped:
+        if audio_on and any(_is_audio_pending(e["row"], e["modes"], e["data"]) for e in enriched):
+            comp["reason"] = "listen_pending"    # слова ждут слуховой сдачи — жми «Слушать»
+        elif gate_open:
+            comp["reason"] = "exam_pending"      # сдай экзамен пачки → откроются новые
+        elif in_work >= WIP_LIMIT:
+            comp["reason"] = "wip_full"          # слишком много слов в работе — доучи текущие
+        else:
+            comp["reason"] = "all_done"          # всё повторено, ждём due
     _tm["total"] = time.monotonic() - _t0
     if _tm["total"] > 1.0:   # канарейка: логируем ТОЛЬКО медленную сборку (>1с) с разбивкой фаз
         logger.warning("slow build_session uid=%s n=%d %s", user_id, len(session),
