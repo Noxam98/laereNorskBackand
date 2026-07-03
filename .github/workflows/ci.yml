@@ -38,8 +38,15 @@ jobs:
           --exclude .git --exclude .venv --exclude __pycache__
           --exclude '*.pyc' --exclude app.log
           -e "ssh -p 2222" ./ root@204.168.163.44:/opt/norsk/app/
-      - name: Зависимости, рестарт, здоровье
+      - name: Бэкап БД перед рестартом
+        run: ssh -p 2222 root@204.168.163.44 '/opt/norsk/backup.sh'
+      - name: Зависимости и рестарт (миграции применяются на старте)
+        run: ssh -p 2222 root@204.168.163.44 'VIRTUAL_ENV=/opt/norsk/venv /root/.local/bin/uv pip install -q -r /opt/norsk/app/requirements.txt && chown -R norsk:norsk /opt/norsk/app && systemctl restart norsk'
+      - name: Health-check (до 2 минут — на случай долгой миграции)
         run: |
-          ssh -p 2222 root@204.168.163.44 'VIRTUAL_ENV=/opt/norsk/venv /root/.local/bin/uv pip install -q -r /opt/norsk/app/requirements.txt && chown -R norsk:norsk /opt/norsk/app && systemctl restart norsk && sleep 8 && systemctl is-active norsk'
-          code=$(curl -s -o /dev/null -w '%{http_code}' https://api.learnnorsk.space/changelog)
-          echo "https-код: $code"; [ "$code" = "401" ]
+          for i in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://api.learnnorsk.space/changelog || true)
+            [ "$code" = "401" ] && echo "ок за ~$((i*5))с" && exit 0
+            sleep 5
+          done
+          echo "прод не ожил за 2 минуты (код: $code)"; exit 1
