@@ -1,0 +1,24 @@
+name: levels
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    concurrency: deploy-prod
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ключ и known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "[204.168.163.44]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBWVlHdClJpMXXxcJRbG6huD4OCiYIYnIKgs9uINWLxD" >> ~/.ssh/known_hosts
+      - name: Применение словника уровней
+        run: |
+          scp -P 2222 data/levels-v1.json scripts/apply_levels.py root@204.168.163.44:/tmp/
+          ssh -p 2222 root@204.168.163.44 '/opt/norsk/venv/bin/python /tmp/apply_levels.py /tmp/levels-v1.json && rm /tmp/levels-v1.json /tmp/apply_levels.py'
+      - name: Health
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://api.learnnorsk.space/changelog)
+          echo "https: $code"; [ "$code" = "401" ]
