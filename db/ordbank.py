@@ -169,3 +169,45 @@ async def lookup_online(norwegian: str, pos: str):
         return forms
     finally:
         await _release(db)
+
+
+# ── поиск: обратный индекс словоформ и автокомплит по леммам банка ────────────
+def _q(sql, args):
+    """Сырой запрос к банку (None, если файла/таблицы нет — старый ordbank.db без formindex)."""
+    global _conn
+    with _lock:
+        if _conn is None:
+            if not os.path.exists(PATH):
+                return []
+            _conn = sqlite3.connect(f"file:{PATH}?mode=ro", uri=True, check_same_thread=False)
+        try:
+            return _conn.execute(sql, args).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+
+def exact_form(form: str):
+    """Точная словоформа → [(лемма, pos)]: gikk → [(gå, verb)]. Леммы-сами-себя не считаем."""
+    key = (form or "").strip().lower()
+    if not key:
+        return []
+    return [(w, p) for w, p in _q(
+        "SELECT norwegian, pos FROM formindex WHERE form = ?", (key,)) if w != key]
+
+
+def prefix_forms(prefix: str, limit: int = 10):
+    """Формы по префиксу → [(форма, лемма, pos)] — авто̇комплит «gik → gikk (gå)»."""
+    key = (prefix or "").strip().lower()
+    if len(key) < 2:
+        return []
+    return _q("SELECT form, norwegian, pos FROM formindex WHERE form LIKE ? "
+              "AND form != norwegian LIMIT ?", (key + "%", limit))
+
+
+def prefix_lemmas(prefix: str, limit: int = 20):
+    """Леммы банка по префиксу → [(лемма, pos)] — добор автокомплита вне пула."""
+    key = (prefix or "").strip().lower()
+    if len(key) < 2:
+        return []
+    return _q("SELECT norwegian, pos FROM forms WHERE norwegian LIKE ? LIMIT ?",
+              (key + "%", limit))

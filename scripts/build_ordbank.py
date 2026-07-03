@@ -184,6 +184,9 @@ def main():
                 "PRIMARY KEY (norwegian, pos)) WITHOUT ROWID")
     out.execute("CREATE TABLE variants (norwegian TEXT NOT NULL, pos TEXT NOT NULL, v TEXT NOT NULL, "
                 "PRIMARY KEY (norwegian, pos)) WITHOUT ROWID")
+    # обратный индекс словоформ: gikk → gå/verb (поиск по любой форме)
+    out.execute("CREATE TABLE formindex (form TEXT NOT NULL, norwegian TEXT NOT NULL, pos TEXT NOT NULL, "
+                "PRIMARY KEY (form, norwegian, pos)) WITHOUT ROWID")
     build = {"subst": build_noun, "verb": build_verb, "adj": build_adj}
     n = 0
     for (lemma, cls), rr in rows.items():
@@ -194,6 +197,8 @@ def main():
                     (lemma, POS[cls], json.dumps(f, ensure_ascii=False)))
         out.execute("INSERT OR REPLACE INTO variants VALUES (?,?,?)",
                     (lemma, POS[cls], json.dumps(variant_sets(cls, rr), ensure_ascii=False)))
+        out.executemany("INSERT OR IGNORE INTO formindex VALUES (?,?,?)",
+                        [(form, lemma, POS[cls]) for form, _tag in rr])
         n += 1
     out.commit()
     print(f"ordbank.db: {n} парадигм → {dst}")

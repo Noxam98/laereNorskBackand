@@ -11,6 +11,7 @@ from db import (
     get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
     pending_words, pending_count, set_word_approval,
     reported_words, reported_count, resolve_report,
+    set_pool_forms, set_pool_meta,
 )
 from auth import get_current_user, get_admin_user
 from ratelimit import llm_rate_limit, tts_rate_limit
@@ -264,6 +265,30 @@ async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(ge
     return {"results": await search_pool(q, limit, lang)}
 
 
+_LEVELS = None
+
+
+def _level_of(word: str, pos: str):
+    """Уровень из нашего опубликованного словника (data/levels-v1.json), если есть."""
+    global _LEVELS
+    if _LEVELS is None:
+        import os
+        try:
+            p = os.path.join(os.path.dirname(__file__), "..", "data", "levels-v1.json")
+            _LEVELS = json.load(open(p)).get("levels", {})
+        except Exception:
+            _LEVELS = {}
+    return _LEVELS.get(f"{word}|{pos}")
+
+
+async def _notify_mods_bg():
+    try:
+        from webpush import notify_moderators
+        await notify_moderators(await pending_count())
+    except Exception:
+        pass
+
+
 @router.post("/pool/generate")
 async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
     """Сгенерировать новое слово (LLM) и положить в пул — для слов, которых нет ни в пуле, ни
@@ -276,9 +301,42 @@ async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
         p = await get_pool_by_id(pid)
         return {"word": word, "pool_id": pid, "generated": False,
                 "translate": (p or {}).get("translate", {}) if isinstance(p, dict) else {}}
+    mark_activity()
+    # ПУТЬ 1 (решение юзера 3.07): слово есть в нашем банке → формы сразу из банка,
+    # переводы — из живого Lexin (человеческие). Введённая ФОРМА (gikk) сводится к
+    # лемме (gå). LLM остаётся только на добивку недостающих языков (translate_loop)
+    # и на слова вне банка/Lexin.
+    from db import ordbank
+    import lexin as lexin_live
+    key = normalize_word(word)
+    cands = [(key, p) for p in ("noun", "verb", "adjective") if ordbank.lookup(key, p)]
+    if not cands:
+        cands = [(l, p) for l, p in ordbank.exact_form(key) if ordbank.lookup(l, p)]
+    for lemma, pos in cands[:3]:
+        if await get_pool_id(lemma, pos):
+            continue
+        tr = await lexin_live.lookup(lemma, pos)
+        if not tr:
+            continue
+        item = {"word": lemma, "part_of_speech": pos,
+                "translate": {**tr, "no": [lemma]}}
+        pids = await persist_pool([item], created_by=user["id"], approved=0)
+        npid = await get_pool_id(lemma, pos)
+        if not npid:
+            break
+        await set_pool_forms(npid, ordbank.lookup(lemma, pos))
+        lvl = _level_of(lemma, pos)
+        if lvl:
+            await set_pool_meta(npid, level=lvl)
+        asyncio.create_task(_notify_mods_bg())
+        out = {"word": lemma, "pool_id": npid, "generated": True, "source": "lexin",
+               "translate": item["translate"]}
+        if lemma != key:
+            out["viaForm"] = key
+        return out
+    # ПУТЬ 2: вне банка/Lexin — полная LLM-генерация (как раньше)
     if not text_enabled():
         raise HTTPException(status_code=503, detail="generation disabled")
-    mark_activity()
     try:
         normalized, _ = await generate_words(word, None)
         # модерация: новые слова от юзера → в его личное расширение (approved=0), не в общую базу
