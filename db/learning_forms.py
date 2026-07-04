@@ -109,6 +109,16 @@ def form_cells_for(pos, forms, no=None):
     return out
 
 
+def is_formable(pos, forms, no=None):
+    """ЕДИНЫЙ предикат «слово формо-способно» (Этап 5): трек форм ведём только для
+    noun/verb/adjective и только если есть реальные клетки (form_cells_for непуст).
+    Им пользуются ОБА края цикла: apply_result (копилка партии note_cycle_mastered)
+    и build_session (вселенная трека) — расхождение критериев = слово копится в
+    партию, но сессия его не дрилит (или наоборот)."""
+    return pos in ("noun", "verb", "adjective") and bool(
+        form_cells_for(pos, forms if isinstance(forms, dict) else parse_forms(forms), no))
+
+
 def form_options(pos, no, forms, cell, n=3):
     """(correct, [distractors]) для клетки формы — диспетч в морфологию по части речи."""
     if pos == "noun":

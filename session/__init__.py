@@ -3,4 +3,4 @@
 Каждый шаг — функция от простых данных (enriched-элементы: dict с row/status/due/data),
 без SQL и asyncio; побочные эффекты и БД остаются в оркестраторе db/learning.build_session.
 """
-from . import pools  # noqa: F401
+from . import pools, forms_phase  # noqa: F401
