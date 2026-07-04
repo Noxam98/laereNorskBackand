@@ -48,6 +48,7 @@ from srs.cells import (REQUIRED_CELLS, FUNC_CELLS, FUNC_CELLS_CHOICE, PHRASE_CEL
                        ALL_CELLS, AUDIO_CELL as _AUDIO_CELL)
 from srs import cells as _srs_cells, status as _srs_status, steps as _srs_steps
 from srs import gates as _gates
+from session import pools as _pools
 # Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
 # (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
 # (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
@@ -840,66 +841,20 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 func_gate_ok = content_known >= FUNC_GATE
         _tm["phrases"] = time.monotonic() - _tp
 
-    # пулы по приоритету
+    # пулы/отбор/кулдаун — чистые шаги session.pools (Этап 4); БД-специфика (предикаты,
+    # степы ядра, настройки юзера) инжектится замыканиями
     def attempts(e):
-        rr = e["row"]
-        return (rr.get("correct") or 0) + (rr.get("incorrect") or 0)
+        return _pools.attempts_of(e)
 
-    returned = sorted(
-        [e for e in enriched if e["status"] in ("weak", "learning", "review")
-         and (e["row"].get("lapses") or 0) > 0],
-        key=lambda e: (e["row"].get("strength") or 0, e["row"].get("due_at") or ""))
-    overdue = sorted([e for e in enriched if e["due"]], key=lambda e: e["row"].get("due_at") or "")
-    weak = sorted([e for e in enriched if e["status"] == "weak"], key=lambda e: e["row"].get("strength") or 0)
-    # дозревающие: всё, что ещё не выучено и не в архиве (new/learning + review, не достигшие mastered)
-    maturing = sorted(
-        [e for e in enriched if e["status"] in ("new", "learning", "review")],
-        key=lambda e: (attempts(e) == 0, e["row"].get("strength") or 0))  # сначала тронутые, новые в хвост
-    # выученные, но ещё НЕ сертифицированные контентные слова, у которых наступил due — на ПОВТОР
-    # (ввод с клавиатуры), чтобы не «зависали» в ожидании зачёта пачкой. Сертифицированные не трогаем
-    # (у них свой аудит). Служебные исключаем — у них cloze-рампа, повтор так не делаем.
-    due_mastered = sorted(
-        [e for e in enriched if e["status"] == "mastered" and e["due"]
-         and not _is_certified(e["row"])
-         and not is_function_word(e["row"]["norwegian"], e["data"])],
-        key=lambda e: e["row"].get("due_at") or "")
-
-    # «Умная очередь»: слово, показанное ТОЛЬКО ЧТО (last_seen свежее кулдауна), не ставим в начало
-    # следующей сессии — откладываем в ХВОСТ очереди (а при достатке слов — фактически в следующую
-    # сессию). Так только что подсказанное слово не всплывает сразу же; через кулдаун вернётся штатно.
+    pools = _pools.build_pools(enriched, is_certified=_is_certified,
+                               is_function_word=is_function_word)
+    cand = _pools.select_candidates(
+        pools,
+        next_step=lambda e: _next_step(e["row"], e["modes"], audio_on),
+        review_step=lambda e: _review_step(e["row"], e["modes"], audio_on=audio_on),
+        func_locked=_func_locked)
     cooldown_cut = (datetime.utcnow() - timedelta(minutes=COOLDOWN_MIN)).isoformat()
-    def is_fresh(e):
-        ls = e["row"].get("last_seen")
-        return bool(ls) and ls >= cooldown_cut   # last_seen — UTC ISO, сравнение строк = по времени
-
-    # func_gate_ok уже посчитан выше (после загрузки/добора)
-    # кандидаты в порядке приоритета (дедуп; без mastered/archived и без следующего шага рампы)
-    cand, seen, seen_wp = [], set(), set()
-    # (пул, review): review-пул выученных due-слов идёт на ПОВТОР (последняя ступень — ввод), а не
-    # по _next_step. Тир повторов — после returned/overdue, до weak/maturing (повторы важнее новых).
-    for pool, review in ((returned, False), (overdue, False), (due_mastered, True), (weak, False), (maturing, False)):
-        for e in pool:
-            pid = e["row"]["pool_id"]
-            # не допускаем в сессии два одинаковых слова с одинаковой частью речи (омонимы с
-            # РАЗНЫМ pos — можно, это разные слова; одинаковые (norwegian, pos) — нет)
-            wp = (e["row"]["norwegian"], (e["data"] or {}).get("part_of_speech", "") or "")
-            if pid in seen or wp in seen_wp or e["status"] in ("archived", "known"):
-                continue
-            if not review and e["status"] == "mastered":   # mastered в обычные пулы не берём
-                continue
-            # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
-            if attempts(e) == 0 and _func_locked(e):
-                continue
-            step = (_review_step(e["row"], e["modes"], audio_on=audio_on) if review
-                    else _next_step(e["row"], e["modes"], audio_on))
-            if not step:
-                continue
-            seen.add(pid)
-            seen_wp.add(wp)
-            cand.append((e, step))
-
-    # недавно показанные — в хвост (не лидируют следующую сессию); остальные сохраняют приоритет
-    ordered = [c for c in cand if not is_fresh(c[0])] + [c for c in cand if is_fresh(c[0])]
+    ordered = _pools.apply_cooldown(cand, cooldown_cut=cooldown_cut)
 
     # ── ДОСРОЧНЫЕ ПОВТОРЫ (анти-тупик ветерана, 3.07): повторов due нет, новые заперты
     # WIP-лимитом/воротами, а формы могут быть выключены тумблером — раньше сессия
@@ -908,16 +863,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # интервал пересчитается от сегодняшнего ответа. ──
     early_review = False
     if not ordered and not scoped:
-        early = sorted(
-            [e for e in enriched if e["status"] in ("learning", "review", "weak")
-             and attempts(e) > 0 and not e["row"].get("archived") and not e["row"].get("known")],
-            key=lambda e: e["row"].get("due_at") or "~")
-        for e in early[:size]:
-            # слуховые слова не утянет: review_step сам вернёт None для audio-pending
-            # (контракт srs.steps, Этап 2 — ручной фильтр здесь больше не нужен)
-            step = _review_step(e["row"], e["modes"], audio_on=audio_on)
-            if step:
-                ordered.append((e, step))
+        ordered = _pools.early_review_pool(
+            enriched, size=size,
+            review_step=lambda e: _review_step(e["row"], e["modes"], audio_on=audio_on))
         early_review = bool(ordered)
 
     # ── Дистракторы order-игры (устойчивые выражения): показываем только УЗНАВАЕМЫЕ — уровень ≤
