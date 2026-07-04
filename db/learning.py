@@ -49,6 +49,7 @@ from srs.cells import (REQUIRED_CELLS, FUNC_CELLS, FUNC_CELLS_CHOICE, PHRASE_CEL
 from srs import cells as _srs_cells, status as _srs_status, steps as _srs_steps
 from srs import gates as _gates
 from session import pools as _pools, forms_phase as _forms_phase
+from session.shape import make_element as _make_element
 # Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
 # (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
 # (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
@@ -981,17 +982,17 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         cell, mode, direction = step
         pid = e["row"]["pool_id"]
         data = e["data"] or {}   # уже распарсено в _load — не парсим data повторно на каждый элемент
-        el = {
-            "pool_id": pid, "no": e["row"]["norwegian"],
-            "translate": data.get("translate", {}),
-            "part_of_speech": data.get("part_of_speech", ""),
-            "gloss": data.get("gloss"), "example": data.get("example"),  # для карточки служебного (Ф2)
-            "forms": (json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
-            "mode": mode, "direction": direction, "step": cell,
+        el = _make_element(
+            pool_id=pid, no=e["row"]["norwegian"],
+            translate=data.get("translate", {}),
+            part_of_speech=data.get("part_of_speech", ""),
+            gloss=data.get("gloss"), example=data.get("example"),  # для карточки служебного (Ф2)
+            forms=(json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
+            mode=mode, direction=direction, step=cell,
             # повтор = ХРАНИМЫЙ флаг mastered (слово было доведено до выученного и теперь на повторении),
             # а не эвристика. Слова в первом прохождении рампы повтором НЕ считаются.
-            "repeat": (e["row"].get("mastered") == 1),
-        }
+            repeat=(e["row"].get("mastered") == 1),
+        )
         if mode == "order":
             # игра «порядок слов»: показываем только УЗНАВАЕМЫЕ дистракторы (уровень ≤ юзера / выучено)
             raw = (data.get("game") or {}).get("distractors") or []
@@ -1136,15 +1137,16 @@ async def build_listen_session(user_id, size=20, lang="ru"):
     pending.sort(key=lambda rdm: rdm[0].get("last_seen") or "")   # дольше всех не виделись — первыми
     session = []
     for r, data, _modes in pending[:size]:
-        session.append({
-            "pool_id": r["pool_id"], "no": r["norwegian"],
-            "translate": data.get("translate", {}),
-            "part_of_speech": data.get("part_of_speech", ""),
-            "forms": (json.loads(r["forms"]) if r.get("forms") else None),
-            "mode": "choice", "direction": "no2int", "step": _AUDIO_CELL,
-            "listen": True,   # фронт: проигрывать аудио, текст скрыт (слуховое узнавание)
-            "repeat": (r.get("mastered") == 1),
-        })
+        session.append(_make_element(
+            pool_id=r["pool_id"], no=r["norwegian"],
+            translate=data.get("translate", {}),
+            part_of_speech=data.get("part_of_speech", ""),
+            gloss=data.get("gloss"), example=data.get("example"),  # union Этапа 6 (было только в дневной)
+            forms=(json.loads(r["forms"]) if r.get("forms") else None),
+            mode="choice", direction="no2int", step=_AUDIO_CELL,
+            listen=True,   # фронт: проигрывать аудио, текст скрыт (слуховое узнавание)
+            repeat=(r.get("mastered") == 1),
+        ))
     await _attach_choice_options(session, lang)
     return {"words": session, "composition": {"listen": len(session), "total": len(session)}}
 

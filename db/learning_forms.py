@@ -19,6 +19,7 @@ import os
 from datetime import datetime, timedelta
 
 from pos import normalize_pos
+from session.shape import make_element
 from .core import _conn, _release, _now
 from morphology import (
     strip_aux,
@@ -140,22 +141,22 @@ def form_element(row, forms, data, cell, stage):
     no = row["norwegian"]
     field, label = _FORM_FIELD.get(cell, (cell, cell))
     value = cell_value(pos, forms, cell)
-    base = {
-        "pool_id": row["pool_id"], "no": no, "translate": d.get("translate", {}),
-        # grammar:True — общий флаг тира ★ (фронт рендерит FormPrompt, _attach_choice_options не
-        # трогает варианты); form_track:True — ответ маршрутизируется в form_srs, не в overlay/base.
+    base = dict(
+        pool_id=row["pool_id"], no=no, translate=d.get("translate", {}),
+        # grammar+own_options — тир ★ (фронт рендерит FormPrompt, варианты СВОИ — патч
+        # дистракторов их не трогает); form_track:True — ответ идёт в form_srs, не в overlay/base.
         # repeat:False — слово-то выучено, но это НЕ повтор слова, а изучение формы (без бейджа).
-        "part_of_speech": pos, "forms": forms, "form_track": True, "grammar": True,
-        "step": cell, "stage": stage, "repeat": False,
-        "prompt": {"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
-    }
+        part_of_speech=pos, forms=forms, form_track=True, grammar=True, own_options=True,
+        step=cell, stage=stage, repeat=False,
+        prompt={"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
+    )
     if stage == "card":                       # показать форму (пассив, как карточка перевода)
         # род: «ei bok»; женское слово валидно и как общего рода (реформа 2005) → учим «ei/en»
         reveal = value
         if cell == "gender":
             reveal = f"ei/en {no}" if value == "ei" else f"{value} {no}"
-        return {**base, "mode": "study", "direction": cell,
-                "target": {"field": field, "value": value}, "reveal": reveal}
+        return make_element(**base, mode="study", direction=cell,
+                            target={"field": field, "value": value}, reveal=reveal)
     # gender: и choose, и produce — ВЫБОР артикля (артикль не «печатают»; produce-ступень
     # остаётся в SRS-рампе, но UI тот же выбор — различение en/ei/et и есть продукция рода).
     if stage == "choose" or cell == "gender":
@@ -166,15 +167,15 @@ def form_element(row, forms, data, cell, stage):
             target = {"field": field, "value": correct}
             if cell == "gender" and correct == "ei":
                 target["accept"] = ["en"]     # ei-слово: выбор «en» тоже верен (не наказываем)
-            return {**base, "mode": "choice", "direction": cell,
-                    "target": target,
-                    "options": [{"w": w, "alt": None} for w in [correct] + dis],
-                    "distractors": dis}
+            return make_element(**base, mode="choice", direction=cell,
+                                target=target,
+                                options=[{"w": w, "alt": None} for w in [correct] + dis],
+                                distractors=dis)
         # дистракторов не собрать (все правдоподобные варианты — валидные формы слова):
         # однокнопочный «выбор» бессмыслен — отдаём ВВОД, ступень choose всё равно продвинется
     # produce — набрать форму самому
-    return {**base, "mode": "input", "direction": cell,
-            "target": {"field": field, "value": value}, "scoring": {"typoForgive": False}}
+    return make_element(**base, mode="input", direction=cell,
+                        target={"field": field, "value": value}, scoring={"typoForgive": False})
 
 
 def schedule_form(stage, ease, interval_days, correct, elapsed=None):

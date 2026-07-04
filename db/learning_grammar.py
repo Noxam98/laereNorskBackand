@@ -9,6 +9,7 @@ import json
 import unicodedata
 
 from pos import normalize_pos
+from session.shape import make_element
 from morphology import (
     is_irregular_noun, regular_indef_pl,                                          # сущ.
     predict_present, all_weak_pasts, all_weak_perfects, strip_aux,                # глаг.
@@ -148,22 +149,22 @@ def _grammar_element(row, cell, forms, data):
     grammar:True — фронт рендерит FormPrompt, а _attach_choice_options НЕ трогает его варианты."""
     no = row["norwegian"]
     pos = normalize_pos((data or {}).get("part_of_speech")) or "noun"
-    base = {
-        "pool_id": row["pool_id"], "no": no, "translate": (data or {}).get("translate", {}),
-        "part_of_speech": pos, "forms": forms,
-        "step": cell, "grammar": True, "repeat": (row.get("mastered") == 1),
-    }
+    base = dict(
+        pool_id=row["pool_id"], no=no, translate=(data or {}).get("translate", {}),
+        part_of_speech=pos, forms=forms,
+        step=cell, grammar=True, own_options=True, repeat=(row.get("mastered") == 1),
+    )
     if cell == "choice_gender":
         g = (forms.get("gender") or "").strip()
-        return {**base, "mode": "choice", "direction": "gender",
-                "target": {"field": "gender", "value": g},
-                "prompt": {"kind": "lemma+formLabel", "formLabel": "gender", "lemma": no},
-                "options": [{"w": a, "alt": None} for a in _GENDERS],   # порядок перемешает фронт
-                "distractors": [a for a in _GENDERS if a != g]}
+        return make_element(**base, mode="choice", direction="gender",
+                            target={"field": "gender", "value": g},
+                            prompt={"kind": "lemma+formLabel", "formLabel": "gender", "lemma": no},
+                            options=[{"w": a, "alt": None} for a in _GENDERS],   # порядок перемешает фронт
+                            distractors=[a for a in _GENDERS if a != g])
     if cell in _INPUT_FORM_CELLS:   # все input-формы (сущ./глаг./прил./местоим.): ввод формы
         field, label = _INPUT_FORM_CELLS[cell]
-        return {**base, "mode": "input", "direction": cell.split("_", 1)[1],
-                "target": {"field": field, "value": (forms.get(field) or "").strip()},
-                "prompt": {"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
-                "scoring": {"typoForgive": False}}
+        return make_element(**base, mode="input", direction=cell.split("_", 1)[1],
+                            target={"field": field, "value": (forms.get(field) or "").strip()},
+                            prompt={"kind": "lemma+formLabel", "formLabel": label, "lemma": no},
+                            scoring={"typoForgive": False})
     return None
