@@ -132,6 +132,26 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
                     if ni < len(cand):
                         merged.append(cand[ni]); ni += 1
             cand = merged
+    # Компаунд-приоритет (session/compounds): рычажные корни раньше собранных из них слов,
+    # композиты мягко придержаны, комплементы известных основ — вперёд. Только ПЕРЕупорядочивает
+    # (ничего не выбрасывает); индекс пуст / сбой → порядок как был (частотный).
+    try:
+        from session import compounds as _comp
+        from .compound_index import load_index, mastered_set as _mastered_set
+        index, feat, learnable = await load_index()
+        if index and cand:
+            dbm = await _conn()
+            try:
+                mastered = await _mastered_set(dbm, user_id)
+            finally:
+                await _release(dbm)
+            order = _comp.rank_new([(w["norwegian"], w.get("freq") or 0) for w in cand],
+                                   feat=feat, mastered=mastered, learnable=learnable)
+            rank = {w: i for i, w in enumerate(order)}
+            cand.sort(key=lambda w: rank.get(w["norwegian"], 1 << 30))
+    except Exception:
+        from config import logger as _lg
+        _lg.warning("suggest_words: компаунд-ранжирование пропущено", exc_info=True)
     added = []
     for w in cand:
         if len(added) >= count:
@@ -147,6 +167,68 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
             added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
             have.add(pid)
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
+
+
+COMPOUND_BUFFER = 6   # столько ОТКРЫТЫХ (из выученных основ) композитов держим доступными за раз
+
+
+async def suggest_compounds(user_id, count=COMPOUND_BUFFER):
+    """Подмешать составные слова, ОТКРЫТЫЕ выученными основами (обе части mastered, слова у юзера
+    ещё нет), в скрытый авто-словарь — зеркало suggest_phrases. Это ДОБАВКА к частотному потоку
+    (не гейт): унлок как награда за основы. Порядок — по частоте (употребимые раньше)."""
+    from .dictionaries import add_word_to_dict, get_or_create_hidden_dict
+    from session import compounds as _comp
+    from .compound_index import load_index
+    if await new_words_blocked(user_id):
+        return {"added": 0}
+    index, _feat, _learnable = await load_index()
+    if not index:
+        return {"added": 0}
+    db = await _conn()
+    try:
+        async with db.execute(
+                "SELECT w.norwegian FROM user_words uw JOIN word_pool w ON w.id = uw.pool_id "
+                "WHERE uw.user_id = ? AND uw.mastered = 1", (user_id,)) as cur:
+            mastered = {r["norwegian"] for r in await cur.fetchall()}
+        async with db.execute(
+                "SELECT w.norwegian FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                "JOIN word_pool w ON w.id = dw.pool_id WHERE d.user_id = ?", (user_id,)) as cur:
+            have = {r["norwegian"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    unlocked = _comp.eligible_unlocks(index, mastered, have)
+    if not unlocked:
+        return {"added": 0}
+    unlocked.sort(key=lambda c: -(c.get("freq") or 0))
+    hid = await get_or_create_hidden_dict(user_id)
+    added = 0
+    for c in unlocked[:count]:
+        res = await add_word_to_dict(user_id, hid, c["pool_id"])
+        if res.get("id") and not res.get("duplicate"):
+            added += 1
+    return {"added": added}
+
+
+async def unlocked_compounds_count(user_id):
+    """Сколько составных слов открыто выученными основами, но ещё не в словаре юзера (для «Сегодня»)."""
+    from session import compounds as _comp
+    from .compound_index import load_index
+    index, _feat, _learnable = await load_index()
+    if not index:
+        return 0
+    db = await _conn()
+    try:
+        async with db.execute(
+                "SELECT w.norwegian FROM user_words uw JOIN word_pool w ON w.id = uw.pool_id "
+                "WHERE uw.user_id = ? AND uw.mastered = 1", (user_id,)) as cur:
+            mastered = {r["norwegian"] for r in await cur.fetchall()}
+        async with db.execute(
+                "SELECT w.norwegian FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                "JOIN word_pool w ON w.id = dw.pool_id WHERE d.user_id = ?", (user_id,)) as cur:
+            have = {r["norwegian"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    return len(_comp.eligible_unlocks(index, mastered, have))
 
 
 async def _phrase_supply(db, user_id):

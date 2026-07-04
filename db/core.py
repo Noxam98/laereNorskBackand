@@ -314,6 +314,18 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON word_topics(topic)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_word_pool_level ON word_pool(level)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_word_pool_level_freq ON word_pool(level, freq)")
+        # Обратный индекс частей составных слов (заполняет compound_index_loop из ordbank): для
+        # разблокировки композитов по выученным основам (session/compounds + suggest_compounds).
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS word_pool_compounds (
+            pool_id   INTEGER PRIMARY KEY,
+            norwegian TEXT NOT NULL,
+            forledd   TEXT NOT NULL,
+            etterledd TEXT NOT NULL
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_wpc_forledd ON word_pool_compounds(forledd)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_wpc_etterledd ON word_pool_compounds(etterledd)")
 
         # Лексикон bokmål (полный частотный словарь) — для автодополнения словами, которых
         # ещё нет в нашем пуле. Сидинг один раз из data/nb_zipf.json. word PRIMARY KEY → префикс.

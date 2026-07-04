@@ -834,6 +834,15 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                     func_gate_ok = content_known >= FUNC_GATE
             _tm["phrases"] = time.monotonic() - _tp
 
+            # СОСТАВНЫЕ, ОТКРЫТЫЕ основами: тонкий ручеёк composite-слов, чьи обе части юзер выучил
+            # (session/compounds). Добавка к частотному потоку — «награда» за корни; grammar/CEFR
+            # не трогает. Идёт под тем же локом.
+            cres = await suggest_compounds(user_id)
+            if cres.get("added"):
+                enriched, in_work, gate_open = await _load()
+                content_known = _content_known(enriched)
+                func_gate_ok = content_known >= FUNC_GATE
+
     # пулы/отбор/кулдаун — чистые шаги session.pools (Этап 4); БД-специфика (предикаты,
     # степы ядра, настройки юзера) инжектится замыканиями
     def attempts(e):
@@ -1179,4 +1188,5 @@ from .exams import (  # noqa: E402,F401
 # ПОСЛЕДНИМ — зависит от exams/placement (импортит из них на верхнем уровне):
 from .learning_suggest import (  # noqa: E402,F401
     learning_stats, estimate_level, suggest_words, suggest_phrases, _phrase_supply, next_new_cards,
+    suggest_compounds, unlocked_compounds_count,
 )

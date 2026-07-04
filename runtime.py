@@ -14,6 +14,7 @@ PAUSED = {
     "pos": False,        # переразметка части речи у «прочее» (pos_loop)
     "dedup": False,      # фоновый дедуп пула: слияние слов-дублей (dedup_loop)
     "homograph": False,  # разбиение омонимов сущ./глаг./прил. на per-pos записи (homograph_loop)
+    "compound_index": False,  # обратный индекс частей композитов (compound_index_loop, без LLM)
 }
 
 _SETTING_KEY = "paused"

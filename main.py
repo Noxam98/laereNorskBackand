@@ -15,7 +15,7 @@ from routers.sets import router as sets_router
 from routers.changelog import router as changelog_router
 from autofill import (
     autofill_loop, describe_loop, translate_loop, reembed_loop, forms_loop, pos_loop, dedup_loop, freq_loop,
-    countability_loop,
+    countability_loop, compound_index_loop,
     yo_fix_loop,
     DEDUP_ENABLED,
 )
@@ -136,6 +136,10 @@ async def startup():
     # (был под if text_enabled() → без ключей частотность не проставлялась вовсе).
     asyncio.create_task(freq_loop())
     logger.info("freq queue enabled: простановка частотности слов (Zipf)")
+    # compound_index_loop — БЕЗ LLM (ordbank-lookup): обратный индекс частей композитов для
+    # разблокировки составных слов по выученным основам. Стартует всегда.
+    asyncio.create_task(compound_index_loop())
+    logger.info("compound index enabled: индекс частей составных слов (ordbank)")
     # Резидентный кеш эмбеддингов в RAM — дистракторы сессии считаем matvec'ом, без sqlite-KNN.
     # Источник правды — БД (/data); на старте кеш встаёт из неё, в рантайме синкается set_pool_embedding.
     try:

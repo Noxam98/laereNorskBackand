@@ -445,6 +445,33 @@ def _free_zipf():
     _NB_ZIPF = None
 
 
+async def compound_index_loop():
+    """Наполняет обратный индекс частей составных слов (word_pool_compounds) из ordbank: идём
+    по пулу ВПЕРЁД по id (курсор в app_settings), новые слова подхватываются на следующих кругах.
+    Без LLM/сети — ordbank.compound() локальный lookup. Нужен для разблокировки композитов по
+    выученным основам (session/compounds + suggest_compounds)."""
+    from db import get_setting, set_setting, ordbank
+    from db.compound_index import pool_batch_after, set_pool_compounds
+    await asyncio.sleep(30)
+    while True:
+        if runtime.PAUSED.get("compound_index"):
+            await asyncio.sleep(20); continue
+        try:
+            cursor = int(await get_setting("compound_idx_cursor") or 0)
+            batch = await pool_batch_after(cursor, 300)
+            if not batch:
+                await asyncio.sleep(6 * 3600)   # весь пул пройден — редкая проверка новых слов
+                continue
+            rows = [(pid, no, c["forledd"], c["etterledd"])
+                    for pid, no in batch if (c := ordbank.compound(no))]
+            await set_pool_compounds(rows)
+            await set_setting("compound_idx_cursor", str(batch[-1][0]))
+        except Exception as e:
+            errors.report(e, "compound_index_loop")
+            await asyncio.sleep(60)
+        await asyncio.sleep(2)
+
+
 async def freq_loop():
     """Проставляет частотность (Zipf 0..8) словам без неё из статического корпус-словаря.
     Без LLM/сети. Словарь грузится только когда есть работа и освобождается в простое —
