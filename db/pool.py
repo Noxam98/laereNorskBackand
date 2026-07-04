@@ -651,11 +651,20 @@ async def get_pool_meta(word: str, user_id: int = None):
                 compound = {"forledd": lc["forledd"], "fuge": lc.get("fuge") or "",
                             "etterledd": lc["etterledd"], "marked": None,
                             "parts": [lc["forledd"], lc["etterledd"]]}
+        # формы: сущ./глаг./прил. — из word_pool.forms (ordbank); местоимения/притяжательные форм в
+        # колонке не имеют → берём курируемую парадигму (obj для личных, neuter/plural для притяж.),
+        # чтобы карточка показывала формы ВСЕХ частей речи, у которых они есть в системе.
+        forms = json.loads(row["forms"]) if row["forms"] else None
+        if not forms:
+            from db.learning import PRONOUN_PARADIGM
+            para = PRONOUN_PARADIGM.get(key)
+            if para:
+                forms = {"pos": "pronoun", **para}
         return {
             "level": row["level"], "topics": topics, "pool_id": row["id"],
             "part_of_speech": d.get("part_of_speech", ""),
             "translate": d.get("translate", {}),
-            "forms": json.loads(row["forms"]) if row["forms"] else None,
+            "forms": forms,
             "compound": compound,
             "hasTts": bool(row["has_tts"]),
             "freq": row["freq"], "freqBand": freq_band(row["freq"]),
