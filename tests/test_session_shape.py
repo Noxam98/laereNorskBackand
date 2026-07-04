@@ -31,7 +31,7 @@ def test_base_keys_always_present_and_frozen():
                          "mode", "direction", "step", "repeat", "grammar", "own_options")
     assert EXTRA_KEYS == frozenset((
         "gloss", "example", "listen", "cloze", "options", "distractors",
-        "form_track", "stage", "prompt", "target", "reveal", "scoring"))
+        "form_track", "stage", "prompt", "target", "reveal", "scoring", "compound"))
 
 
 def test_unknown_extra_key_rejected():

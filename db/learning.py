@@ -1000,6 +1000,13 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             # а не эвристика. Слова в первом прохождении рампы повтором НЕ считаются.
             repeat=(e["row"].get("mastered") == 1),
         )
+        if mode == "study":
+            # карточка-знакомство: если слово составное — доносим разбор для «ага»-момента
+            # (barn + hage), фронт покажет его на флешкарте. Локальный lookup банка, <1мс.
+            from db import ordbank
+            cw = ordbank.compound(e["row"]["norwegian"])
+            if cw:
+                el["compound"] = cw
         if mode == "order":
             # игра «порядок слов»: показываем только УЗНАВАЕМЫЕ дистракторы (уровень ≤ юзера / выучено)
             raw = (data.get("game") or {}).get("distractors") or []
