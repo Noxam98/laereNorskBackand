@@ -7,6 +7,19 @@ import json
 from .core import _conn, _release, normalize_word, vec_upsert
 
 
+def has_tts_expr(alias: str = "word_pool") -> str:
+    """ЕДИНСТВЕННЫЙ источник правды «у слова есть озвучка» (Этап 1 decoupling-плана).
+    Озвучка живёт в word_tts по НАПИСАНИЮ (омонимы делят клип) — см. set_pool_tts.
+    Все SELECT'ы обязаны использовать это выражение, а не инлайнить EXISTS:
+    инцидент 3.07 — вынос tts-колонки правился в 10 местах по отдельности."""
+    return f"EXISTS(SELECT 1 FROM word_tts t WHERE t.word = {alias}.norwegian)"
+
+
+def no_tts_expr(alias: str = "word_pool") -> str:
+    """Отрицание has_tts_expr — для очередей «ещё не озвучено»."""
+    return f"NOT {has_tts_expr(alias)}"
+
+
 async def get_pool_tts(norwegian: str):
     key = normalize_word(norwegian)
     if not key:
@@ -87,9 +100,8 @@ async def pool_missing_tts(limit: int = 1):
     db = await _conn()
     try:
         async with db.execute(
-                "SELECT DISTINCT norwegian FROM word_pool "
-                "WHERE NOT EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) "
-                "LIMIT ?", (limit,)) as cur:
+                f"SELECT DISTINCT norwegian FROM word_pool WHERE {no_tts_expr()} LIMIT ?",
+                (limit,)) as cur:
             return [r["norwegian"] for r in await cur.fetchall()]
     finally:
         await _release(db)

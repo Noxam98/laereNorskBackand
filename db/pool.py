@@ -7,6 +7,7 @@ import numpy as np
 from rapidfuzz.process import cdist as rf_cdist
 from rapidfuzz.distance import OSA
 from .core import _conn, _release, _now, normalize_word, vec_upsert, vec_delete, vec_nearest_rows
+from .pool_queues import has_tts_expr, no_tts_expr   # единый источник правды «есть озвучка»
 from langs import LANG_SET
 from pos import normalize_pos, POS_KEYS
 
@@ -563,7 +564,7 @@ async def get_pool_stats():
     db = await _conn()
     try:
         async with db.execute(
-            "SELECT COUNT(*) AS t, SUM(embedding IS NOT NULL) AS e, SUM(EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian)) AS a, "
+            f"SELECT COUNT(*) AS t, SUM(embedding IS NOT NULL) AS e, SUM({has_tts_expr()}) AS a, "
             "SUM(description IS NOT NULL) AS d, SUM(level IS NOT NULL) AS c FROM word_pool") as cur:
             r = await cur.fetchone()
             total, emb, tts_n, descr, classified = (r[k] or 0 for k in ("t", "e", "a", "d", "c"))
@@ -626,7 +627,8 @@ async def get_pool_meta(word: str, user_id: int = None):
         return None
     db = await _conn()
     try:
-        async with db.execute("SELECT id, level, data, forms, freq, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) AS has_tts FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+        async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
+                              "FROM word_pool WHERE norwegian = ?", (key,)) as cur:
             row = await cur.fetchone()
             if not row:
                 return None
@@ -992,7 +994,7 @@ _POOL_SORTS = {
 _MISSING_SQL = {
     "embedding": "embedding IS NULL",
     "description": "description IS NULL",
-    "tts": "NOT EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian)",
+    "tts": no_tts_expr(),
     "meta": "level IS NULL",
     "forms": "forms IS NULL",
 }
@@ -1073,7 +1075,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             # релевантность: тянем все совпадения (с потолком), считаем score в питоне, сортируем,
             # пагинируем — точное/префиксное/перевод-целиком выше похожих и подстрок-в-середине.
             async with db.execute(
-                f"SELECT id, norwegian, data, freq, level, forms, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) AS has_tts, "
+                f"SELECT id, norwegian, data, freq, level, forms, {has_tts_expr()} AS has_tts,"
                 f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
                 f"FROM word_pool {where} LIMIT 800", params,
             ) as cur:
@@ -1086,7 +1088,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             rows = ranked[offset:offset + limit]
         else:
             async with db.execute(
-                f"SELECT id, norwegian, data, level, forms, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) AS has_tts, "
+                f"SELECT id, norwegian, data, level, forms, {has_tts_expr()} AS has_tts,"
                 f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
                 f"FROM word_pool {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
                 (*params, limit, offset),
@@ -1100,7 +1102,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             if fids:
                 marks = ",".join("?" for _ in fids)
                 async with db.execute(
-                    f"SELECT id, norwegian, data, level, forms, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) AS has_tts, "
+                    f"SELECT id, norwegian, data, level, forms, {has_tts_expr()} AS has_tts,"
                     f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
                     f"FROM word_pool WHERE id IN ({marks})", fids,
                 ) as cur:
@@ -1128,7 +1130,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         vis = " AND (COALESCE(approved,1) = 1 OR created_by = ?)"
                         vparams = [user_id]
                     async with db.execute(
-                        f"SELECT id, norwegian, data, level, forms, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = word_pool.norwegian) AS has_tts, "
+                        f"SELECT id, norwegian, data, level, forms, {has_tts_expr()} AS has_tts,"
                         f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
                         f"FROM word_pool WHERE id IN ({marks}){vis}", (*sids, *vparams),
                     ) as cur:

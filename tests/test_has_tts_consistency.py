@@ -69,3 +69,19 @@ async def test_has_tts_same_everywhere(fresh_db):
     assert after["learning_rows"] is True
     assert after["user_data"] is True
     assert after["admin_stats_n"] == n0 + 1
+
+
+def test_word_tts_sql_single_source():
+    """ЛИНТ (Этап 1): SQL по word_tts живёт ТОЛЬКО в pool_queues (has_tts_expr/аксессоры).
+    Инлайн-копия в любом другом модуле = возврат инцидента #1."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+    for p in root.rglob("*.py"):
+        rel = p.relative_to(root).as_posix()
+        if rel.startswith((".venv", "tests/", "scripts/")) or "pool_queues" in rel:
+            continue
+        if "FROM word_tts" in p.read_text(encoding="utf-8", errors="ignore"):
+            offenders.append(rel)
+    assert offenders == ["db/core.py"] or offenders == [], offenders
+    # db/core.py допустим только миграцией (INSERT ... SELECT при переносе) — если и он чист, тоже ок

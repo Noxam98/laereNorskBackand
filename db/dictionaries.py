@@ -2,6 +2,7 @@ import json
 import aiosqlite
 from .core import _conn, _release, _now
 from .pool import freq_band
+from .pool_queues import has_tts_expr
 
 
 async def get_user_quiz_words(user_id: int, dict_id=None, limit: int = 80):
@@ -300,9 +301,9 @@ async def get_user_data(user_id: int):
             dicts = [dict(r) for r in await cur.fetchall()]
         result = []
         for d in dicts:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT dw.id AS dw_id, dw.pool_id, dw.override, dw.correct, dw.incorrect,
-                       wp.data, wp.description, wp.forms, wp.freq, EXISTS(SELECT 1 FROM word_tts t WHERE t.word = wp.norwegian) AS has_tts
+                       wp.data, wp.description, wp.forms, wp.freq, {has_tts_expr("wp")} AS has_tts
                 FROM dict_words dw
                 JOIN word_pool wp ON wp.id = dw.pool_id
                 WHERE dw.dict_id = ?
