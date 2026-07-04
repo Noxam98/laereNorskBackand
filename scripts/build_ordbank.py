@@ -33,12 +33,15 @@ def read_dump(src: str):
         tf = tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz")
     else:
         tf = tarfile.open(src, mode="r:gz")
+    # leddanalyse.txt — разбор составных слов (sammensetning), опционально: старые дампы без
+    # него собираются по-прежнему (просто без таблицы compounds).
+    want = {"lemma.txt", "fullformsliste.txt", "leddanalyse.txt"}
     files = {}
     for m in tf.getmembers():
         name = m.name.rsplit("/", 1)[-1]
-        if name in ("lemma.txt", "fullformsliste.txt"):
+        if name in want:
             files[name] = tf.extractfile(m).read().decode("latin-1")
-    assert set(files) == {"lemma.txt", "fullformsliste.txt"}, f"в дампе не хватает файлов: {files.keys()}"
+    assert {"lemma.txt", "fullformsliste.txt"} <= set(files), f"в дампе не хватает файлов: {sorted(files)}"
     return files
 
 
@@ -163,6 +166,32 @@ def variant_sets(cls, rr):
     return {k: sorted(v) for k, v in vs.items()}
 
 
+# ── составные слова (sammensetning): leddanalyse.txt даёт ГОТОВЫЙ авторитетный разбор ──
+# Колонки (tab): 2=OPPSLAG, 4=FORLEDD, 6=FUGE, 7=ETTERLEDD, 11=OPPSLAG_LEDD_MARKERT.
+# forledd (первый элемент, лемма) + fuge (соединитель -s-/-e-/пусто) + etterledd (голова).
+# Разбор бинарный и рекурсивный: barnehagelærer=barnehage+lærer, а barnehage=barn+e+hage —
+# части сами леммы, кликаются в карточке. Части в поле FORLEDD иногда с дефисом шва (kjøle-) →
+# срезаем. Пропускаем: simplex (не композит, пустые части — universitet/telefon), имена
+# собственные (капитал → мусор Andalucia=Anda+lucia) и не-словарные ключи (1. mai-tog,
+# 14C-datering, A-avis). Строки задублированы по роду → PRIMARY KEY гасит (первый выигрывает).
+def build_compounds(out, text):
+    for line in text.splitlines()[1:]:
+        p = line.split("\t")
+        if len(p) < 12:
+            continue
+        oppslag = p[2].strip()
+        forledd, fuge, etterledd = p[4].strip().strip("-"), p[6].strip(), p[7].strip().strip("-")
+        marked = p[11].strip()
+        if not forledd or not etterledd:                     # simplex — не составное
+            continue
+        key = oppslag.lower()
+        if not key.isalpha() or not oppslag[:1].islower():   # имя собственное / не-слово — мимо
+            continue
+        out.execute("INSERT OR IGNORE INTO compounds VALUES (?,?,?,?,?)",
+                    (key, forledd, fuge, etterledd, marked))
+    return out.execute("SELECT COUNT(*) FROM compounds").fetchone()[0]
+
+
 def main():
     src, dst = sys.argv[1], sys.argv[2]
     files = read_dump(src)
@@ -187,6 +216,9 @@ def main():
     # обратный индекс словоформ: gikk → gå/verb (поиск по любой форме)
     out.execute("CREATE TABLE formindex (form TEXT NOT NULL, norwegian TEXT NOT NULL, pos TEXT NOT NULL, "
                 "PRIMARY KEY (form, norwegian, pos)) WITHOUT ROWID")
+    # разбор составных слов (leddanalyse) — forledd (+fuge) + etterledd; marked = «barne-hage»
+    out.execute("CREATE TABLE compounds (norwegian TEXT PRIMARY KEY, forledd TEXT NOT NULL, "
+                "fuge TEXT, etterledd TEXT NOT NULL, marked TEXT) WITHOUT ROWID")
     build = {"subst": build_noun, "verb": build_verb, "adj": build_adj}
     n = 0
     for (lemma, cls), rr in rows.items():
@@ -200,11 +232,15 @@ def main():
         out.executemany("INSERT OR IGNORE INTO formindex VALUES (?,?,?)",
                         [(form, lemma, POS[cls]) for form, _tag in rr])
         n += 1
+    nc = build_compounds(out, files["leddanalyse.txt"]) if "leddanalyse.txt" in files else 0
     out.commit()
-    print(f"ordbank.db: {n} парадигм → {dst}")
+    print(f"ordbank.db: {n} парадигм, {nc} составных слов → {dst}")
     for w in ("liv", "skap", "kraft", "potet"):
         r = out.execute("SELECT forms FROM forms WHERE norwegian=? AND pos='noun'", (w,)).fetchone()
         print(f"  {w}: {r[0][:80] if r else 'НЕТ'}")
+    for w in ("barnehage", "arbeidsplass", "barnehagelærer", "universitet"):
+        r = out.execute("SELECT forledd, fuge, etterledd FROM compounds WHERE norwegian=?", (w,)).fetchone()
+        print(f"  сост. {w}: {r if r else 'simplex/нет'}")
 
 
 if __name__ == "__main__":

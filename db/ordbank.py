@@ -211,3 +211,20 @@ def prefix_lemmas(prefix: str, limit: int = 20):
         return []
     return _q("SELECT norwegian, pos FROM forms WHERE norwegian LIKE ? LIMIT ?",
               (key + "%", limit))
+
+
+def compound(norwegian: str):
+    """Разбор составного слова (sammensetning) из банка (leddanalyse): {forledd, fuge,
+    etterledd, marked, parts:[forledd, etterledd]} или None, если слово не составное.
+    forledd/etterledd — самостоятельные леммы (кликаются/ищутся в пуле); разбор
+    рекурсивный (голова/первый элемент могут сами быть составными). marked — поверхность
+    со швом («barne-hage»). Старый ordbank.db без таблицы compounds → None (_q гасит)."""
+    key = (norwegian or "").strip().lower()
+    if not key:
+        return None
+    rows = _q("SELECT forledd, fuge, etterledd, marked FROM compounds WHERE norwegian = ?", (key,))
+    if not rows:
+        return None
+    forledd, fuge, etterledd, marked = rows[0]
+    return {"forledd": forledd, "fuge": fuge or "", "etterledd": etterledd,
+            "marked": marked, "parts": [forledd, etterledd]}

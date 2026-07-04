@@ -641,11 +641,13 @@ async def get_pool_meta(word: str, user_id: int = None):
                 (row["id"], user_id)) as cur:
                 in_learning = (await cur.fetchone()) is not None
         d = json.loads(row["data"]) if row["data"] else {}
+        from db import ordbank
         return {
             "level": row["level"], "topics": topics, "pool_id": row["id"],
             "part_of_speech": d.get("part_of_speech", ""),
             "translate": d.get("translate", {}),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
+            "compound": ordbank.compound(key),   # разбор составного слова (или None) — leddanalyse банка
             "hasTts": bool(row["has_tts"]),
             "freq": row["freq"], "freqBand": freq_band(row["freq"]),
             "inLearning": in_learning,
