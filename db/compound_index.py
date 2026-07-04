@@ -72,3 +72,29 @@ async def mastered_set(db, user_id):
             "SELECT w.norwegian FROM user_words uw JOIN word_pool w ON w.id = uw.pool_id "
             "WHERE uw.user_id = ? AND uw.mastered = 1", (user_id,)) as cur:
         return {r["norwegian"] for r in await cur.fetchall()}
+
+
+async def compounds_unlocked_by(db, user_id, norwegian):
+    """Сколько составных слов НОВО открылось тем, что выучили ИМЕННО это слово-основу: оно —
+    часть композита, ВТОРАЯ часть уже mastered, а самого композита у юзера ещё нет. Для
+    маленького празднования в apply_result — тем же соединением (в транзакции)."""
+    key = (norwegian or "").strip().lower()
+    if not key:
+        return 0
+    async with db.execute(
+            "SELECT pool_id, forledd, etterledd FROM word_pool_compounds "
+            "WHERE forledd = ? OR etterledd = ?", (key, key)) as cur:
+        rows = await cur.fetchall()
+    if not rows:
+        return 0
+    mastered = await mastered_set(db, user_id)
+    async with db.execute(
+            "SELECT dw.pool_id FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+            "WHERE d.user_id = ?", (user_id,)) as cur:
+        have = {r["pool_id"] for r in await cur.fetchall()}
+    n = 0
+    for r in rows:
+        other = r["etterledd"] if r["forledd"] == key else r["forledd"]
+        if other in mastered and r["pool_id"] not in have:
+            n += 1
+    return n

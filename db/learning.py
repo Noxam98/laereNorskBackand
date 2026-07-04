@@ -443,15 +443,22 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
                 (_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id, pool_id))
         # Цикл «слова↔формы»: свежевыученное ФОРМО-способное слово — в копилку партии
         # (10 шт. → фаза форм, см. build_session/note_cycle_mastered).
-        if mastered_now and not (st.get("mastered") or 0) and wp and wp["forms"]:
-            try:
-                d0 = json.loads(wp["data"]) if wp["data"] else {}
-            except Exception:
-                d0 = {}
-            pos0 = normalize_pos(d0.get("part_of_speech"))
-            from .learning_forms import note_cycle_mastered, is_formable
-            if is_formable(pos0, wp["forms"], wp["norwegian"]):
-                await note_cycle_mastered(db, user_id, pool_id)
+        unlocked = 0
+        if mastered_now and not (st.get("mastered") or 0):
+            # только что выучили слово-основу → сколько составных ОТКРЫЛОСЬ (вторая часть уже
+            # выучена, композита у юзера ещё нет) — фронт покажет маленькое празднование
+            from .compound_index import compounds_unlocked_by
+            unlocked = await compounds_unlocked_by(db, user_id, wp["norwegian"] if wp else "")
+            # цикл «слова↔формы»: формо-способное свежевыученное — в копилку партии
+            if wp and wp["forms"]:
+                try:
+                    d0 = json.loads(wp["data"]) if wp["data"] else {}
+                except Exception:
+                    d0 = {}
+                pos0 = normalize_pos(d0.get("part_of_speech"))
+                from .learning_forms import note_cycle_mastered, is_formable
+                if is_formable(pos0, wp["forms"], wp["norwegian"]):
+                    await note_cycle_mastered(db, user_id, pool_id)
         # дневная активность (для стрика/цели/точности/хитмапа)
         day = _now()[:10]
         await db.execute("""
@@ -459,7 +466,8 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
             ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
         """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
         await db.commit()
-        return {"ok": True, "strength": strength, "due_at": due, "modes": modes, "mastered": bool(mastered_now)}
+        return {"ok": True, "strength": strength, "due_at": due, "modes": modes,
+                "mastered": bool(mastered_now), "unlockedCompounds": unlocked}
     finally:
         await _release(db)
 

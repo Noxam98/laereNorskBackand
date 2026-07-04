@@ -59,3 +59,21 @@ async def test_unlocked_count_before_learning(fresh_db):
     assert await unlocked_compounds_count(uid) == 1           # открыт, но ещё не в словаре
     await suggest_compounds(uid)
     assert await unlocked_compounds_count(uid) == 0          # добавлен → больше не «ожидает»
+
+
+async def test_compounds_unlocked_by_root_for_celebration(fresh_db):
+    """Празднование: выучив основу, считаем НОВО открытые композиты (вторая часть уже выучена)."""
+    from db.compound_index import compounds_unlocked_by
+    uid, cpid = await _setup(both_mastered=True)   # kjøle+skap mastered, kjøleskap не в словаре
+    dbc = await _conn()
+    try:
+        assert await compounds_unlocked_by(dbc, uid, "skap") == 1    # выучил skap → открыл kjøleskap
+        assert await compounds_unlocked_by(dbc, uid, "kjøle") == 1
+        assert await compounds_unlocked_by(dbc, uid, "annet") == 0   # не часть композита
+        # композит уже в словаре юзера → не «новый»
+        await dbc.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) "
+                          "SELECT id, ?, datetime('now') FROM dictionaries WHERE user_id=? LIMIT 1", (cpid, uid))
+        await dbc.commit()
+        assert await compounds_unlocked_by(dbc, uid, "skap") == 0
+    finally:
+        await _release(dbc)
