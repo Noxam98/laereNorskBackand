@@ -1,15 +1,19 @@
 """Статусы слова: выучено / ждёт слух / рабочий статус. Чистые функции от (kind, modes, …)."""
-from .cells import CONTENT, FUNC_CLOZE, AUDIO_CELL, REQUIRED_CELLS, cells_of
+from .cells import CONTENT, FUNC_CLOZE, AUDIO_CELL, REQUIRED_CELLS, FUNC_CELLS_CHOICE, cells_of
 
 
 def is_mastered(kind: str, modes: dict | None) -> bool:
-    """Выучено: все клетки рампы == '1'. Grandfathering ОДНОНАПРАВЛЕННЫЙ: служебное,
-    выученное старой контентной рампой (choice/build/input до перехода на cloze),
-    остаётся выученным; обратный флип (cloze выкл→вкл) ничего не грандфазирует."""
+    """Выучено: все клетки рампы == '1'. Grandfathering служебных ПРИ ВКЛЮЧЕНИИ cloze:
+    слово, уже доведённое ЛЮБОЙ прежней рампой — старой контентной (choice/build/input) ИЛИ
+    упрощённой «только выбор» (FUNC_CHOICE при выключенном cloze) — остаётся выученным, включение
+    cloze не воскрешает «доученные» служебные (иначе у активного юзера всплыла бы куча слов).
+    choice-клетки ⊂ REQUIRED_CELLS, поэтому один их чек покрывает и старую контентную рампу.
+    Обратно НЕ грандфазируем: cloze-прогресс не засчитывается за choice-клетки (FUNC_CHOICE
+    считается только по своим клеткам — см. тест no_reverse_grandfather)."""
     m = modes or {}
     if all(m.get(c, "") == "1" for c in cells_of(kind)):
         return True
-    if kind == FUNC_CLOZE and all(m.get(c, "") == "1" for c in REQUIRED_CELLS):
+    if kind == FUNC_CLOZE and all(m.get(c, "") == "1" for c in FUNC_CELLS_CHOICE):
         return True
     return False
 

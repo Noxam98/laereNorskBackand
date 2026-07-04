@@ -1,0 +1,3330 @@
+{
+ "version": 1,
+ "source": "sonnet-swarm gen+adversarial-validate, core-vocab A1-A2",
+ "note": "служебные слова A1-A2; items: {blank(с ___), answer, distractors(другого типа связи)}",
+ "words": [
+  {
+   "no": "viss",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ du vil, kan vi gå.",
+     "answer": "viss",
+     "distractors": [
+      "men",
+      "og",
+      "at"
+     ]
+    },
+    {
+     "blank": "___ jeg får tid, kommer jeg.",
+     "answer": "viss",
+     "distractors": [
+      "men",
+      "eller",
+      "og"
+     ]
+    },
+    {
+     "blank": "___ du kommer, blir jeg glad.",
+     "answer": "viss",
+     "distractors": [
+      "og",
+      "at",
+      "eller"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "dit",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi skal reise ___ i morgen.",
+     "answer": "dit",
+     "distractors": [
+      "her",
+      "hjemme",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Kan du følge meg ___?",
+     "answer": "dit",
+     "distractors": [
+      "her",
+      "der",
+      "hjemme"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hit",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Kom ___ til meg nå.",
+     "answer": "hit",
+     "distractors": [
+      "der",
+      "ute",
+      "hjemme"
+     ]
+    },
+    {
+     "blank": "Kan du komme ___?",
+     "answer": "hit",
+     "distractors": [
+      "inne",
+      "oppe",
+      "nede"
+     ]
+    },
+    {
+     "blank": "Alle kom ___ i dag.",
+     "answer": "hit",
+     "distractors": [
+      "der",
+      "borte",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "nede",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Far er ___ nå.",
+     "answer": "nede",
+     "distractors": [
+      "ned",
+      "opp",
+      "bort"
+     ]
+    },
+    {
+     "blank": "Vi bor ___ i byen.",
+     "answer": "nede",
+     "distractors": [
+      "ned",
+      "opp",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "Bilen står ___ ved huset.",
+     "answer": "nede",
+     "distractors": [
+      "ned",
+      "inn",
+      "opp"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "oppe",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Katten er ___ i treet.",
+     "answer": "oppe",
+     "distractors": [
+      "nede",
+      "ute",
+      "hjemme"
+     ]
+    },
+    {
+     "blank": "Sola er høyt ___ på himmelen.",
+     "answer": "oppe",
+     "distractors": [
+      "nede",
+      "inne",
+      "hjemme"
+     ]
+    },
+    {
+     "blank": "Flyet er ___ i lufta.",
+     "answer": "oppe",
+     "distractors": [
+      "nede",
+      "hjemme",
+      "inne"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ene",
+   "pos": "determiner",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Den ___ dagen var god.",
+     "answer": "ene",
+     "distractors": [
+      "mange",
+      "flere",
+      "alle"
+     ]
+    },
+    {
+     "blank": "Jeg tar den ___ boka.",
+     "answer": "ene",
+     "distractors": [
+      "mange",
+      "flere",
+      "disse"
+     ]
+    },
+    {
+     "blank": "Den ___ mannen snakker norsk.",
+     "answer": "ene",
+     "distractors": [
+      "mange",
+      "alle",
+      "disse"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ifølge",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ mor er det kaldt ute.",
+     "answer": "ifølge",
+     "distractors": [
+      "mot",
+      "under",
+      "ved"
+     ]
+    },
+    {
+     "blank": "___ boka er dette riktig.",
+     "answer": "ifølge",
+     "distractors": [
+      "mellom",
+      "mot",
+      "under"
+     ]
+    },
+    {
+     "blank": "___ far skal vi reise nå.",
+     "answer": "ifølge",
+     "distractors": [
+      "over",
+      "ved",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "borte",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Pappa er ___ i dag.",
+     "answer": "borte",
+     "distractors": [
+      "snart",
+      "bare",
+      "litt"
+     ]
+    },
+    {
+     "blank": "Nå er kaffen ___.",
+     "answer": "borte",
+     "distractors": [
+      "snart",
+      "helt",
+      "litt"
+     ]
+    },
+    {
+     "blank": "Hunden var ___ hele dagen.",
+     "answer": "borte",
+     "distractors": [
+      "bare",
+      "snart",
+      "litt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "innenfor",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Skoene står ___ døra.",
+     "answer": "innenfor",
+     "distractors": [
+      "til",
+      "fra",
+      "om"
+     ]
+    },
+    {
+     "blank": "Bilen står ___ porten.",
+     "answer": "innenfor",
+     "distractors": [
+      "om",
+      "av",
+      "med"
+     ]
+    },
+    {
+     "blank": "Hunden er ___ gjerdet.",
+     "answer": "innenfor",
+     "distractors": [
+      "til",
+      "med",
+      "av"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "tross",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ regnet gikk vi hjem.",
+     "answer": "tross",
+     "distractors": [
+      "hos",
+      "til",
+      "om"
+     ]
+    },
+    {
+     "blank": "___ kulden var vi ute.",
+     "answer": "tross",
+     "distractors": [
+      "hos",
+      "fra",
+      "med"
+     ]
+    },
+    {
+     "blank": "___ alt er han glad.",
+     "answer": "tross",
+     "distractors": [
+      "hos",
+      "til",
+      "ved"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "imot",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg er ___ dette.",
+     "answer": "imot",
+     "distractors": [
+      "ved",
+      "hos",
+      "om"
+     ]
+    },
+    {
+     "blank": "Har du noe ___ det?",
+     "answer": "imot",
+     "distractors": [
+      "hos",
+      "ved",
+      "mellom"
+     ]
+    },
+    {
+     "blank": "Vinden var ___ oss.",
+     "answer": "imot",
+     "distractors": [
+      "om",
+      "hos",
+      "ved"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "foran",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Bilen står ___ huset.",
+     "answer": "foran",
+     "distractors": [
+      "til",
+      "om",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Han sitter ___ meg.",
+     "answer": "foran",
+     "distractors": [
+      "til",
+      "om",
+      "av"
+     ]
+    },
+    {
+     "blank": "Vi møtes ___ skolen.",
+     "answer": "foran",
+     "distractors": [
+      "til",
+      "mot",
+      "av"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "inne",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Det er kaldt, så vi er ___.",
+     "answer": "inne",
+     "distractors": [
+      "ute",
+      "inn",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "Vi spiser ___ i dag.",
+     "answer": "inne",
+     "distractors": [
+      "inn",
+      "ut",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "Barna er ___ nå.",
+     "answer": "inne",
+     "distractors": [
+      "inn",
+      "opp",
+      "ned"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "unna",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Butikken er ikke langt ___.",
+     "answer": "unna",
+     "distractors": [
+      "med",
+      "om",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Han bor bare litt ___.",
+     "answer": "unna",
+     "distractors": [
+      "med",
+      "ved",
+      "om"
+     ]
+    },
+    {
+     "blank": "Kan du gå litt ___?",
+     "answer": "unna",
+     "distractors": [
+      "mot",
+      "om",
+      "ved"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hvilken",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ bil er din?",
+     "answer": "hvilken",
+     "distractors": [
+      "hvilket",
+      "hvilke",
+      "hvem"
+     ]
+    },
+    {
+     "blank": "___ bok skal du lese?",
+     "answer": "hvilken",
+     "distractors": [
+      "hvilket",
+      "hvilke",
+      "hva"
+     ]
+    },
+    {
+     "blank": "___ dag kommer du?",
+     "answer": "hvilken",
+     "distractors": [
+      "hvilket",
+      "hvilke",
+      "hvem"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "innen",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg må være hjemme ___ fem.",
+     "answer": "innen",
+     "distractors": [
+      "av",
+      "på",
+      "for"
+     ]
+    },
+    {
+     "blank": "Vi kommer ___ en time.",
+     "answer": "innen",
+     "distractors": [
+      "av",
+      "for",
+      "med"
+     ]
+    },
+    {
+     "blank": "Du må komme ___ i morgen.",
+     "answer": "innen",
+     "distractors": [
+      "av",
+      "på",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hjemme",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg er ___ i dag.",
+     "answer": "hjemme",
+     "distractors": [
+      "hjem",
+      "litt",
+      "nå"
+     ]
+    },
+    {
+     "blank": "Er du ___ nå?",
+     "answer": "hjemme",
+     "distractors": [
+      "hjem",
+      "så",
+      "bare"
+     ]
+    },
+    {
+     "blank": "Mor er ___ i kveld.",
+     "answer": "hjemme",
+     "distractors": [
+      "hjem",
+      "i morgen",
+      "så"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "fram",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi kom ___ til slutt.",
+     "answer": "fram",
+     "distractors": [
+      "der",
+      "ute",
+      "hjemme"
+     ]
+    },
+    {
+     "blank": "Jeg ser ___ til i morgen.",
+     "answer": "fram",
+     "distractors": [
+      "der",
+      "ute",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "Kom ___ nå!",
+     "answer": "fram",
+     "distractors": [
+      "inne",
+      "der",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "utenfor",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Bilen står ___ huset.",
+     "answer": "utenfor",
+     "distractors": [
+      "om",
+      "med",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Jeg venter ___ skolen.",
+     "answer": "utenfor",
+     "distractors": [
+      "om",
+      "mot",
+      "under"
+     ]
+    },
+    {
+     "blank": "Han bor ___ byen.",
+     "answer": "utenfor",
+     "distractors": [
+      "om",
+      "med",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "dersom",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ du vil, kan vi gå.",
+     "answer": "dersom",
+     "distractors": [
+      "og",
+      "men",
+      "eller"
+     ]
+    },
+    {
+     "blank": "___ det er varmt, går vi ut.",
+     "answer": "dersom",
+     "distractors": [
+      "og",
+      "men",
+      "at"
+     ]
+    },
+    {
+     "blank": "___ du har tid, kan vi snakke.",
+     "answer": "dersom",
+     "distractors": [
+      "men",
+      "eller",
+      "og"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "per",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker to kopper kaffe ___ dag.",
+     "answer": "per",
+     "distractors": [
+      "med",
+      "om",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Vi reiser to ganger ___ år.",
+     "answer": "per",
+     "distractors": [
+      "til",
+      "mot",
+      "for"
+     ]
+    },
+    {
+     "blank": "Han jobber fem dager ___ uke.",
+     "answer": "per",
+     "distractors": [
+      "på",
+      "om",
+      "til"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "bort",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg skal reise ___ i dag.",
+     "answer": "bort",
+     "distractors": [
+      "hjemme",
+      "ute",
+      "inne"
+     ]
+    },
+    {
+     "blank": "Kan du ta ___ dette?",
+     "answer": "bort",
+     "distractors": [
+      "hjemme",
+      "oppe",
+      "nede"
+     ]
+    },
+    {
+     "blank": "Han flyttet ___ i fjor.",
+     "answer": "bort",
+     "distractors": [
+      "hjemme",
+      "ute",
+      "inne"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "bak",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Bilen står ___ huset.",
+     "answer": "bak",
+     "distractors": [
+      "om",
+      "til",
+      "for"
+     ]
+    },
+    {
+     "blank": "Boka ligger ___ deg.",
+     "answer": "bak",
+     "distractors": [
+      "til",
+      "for",
+      "om"
+     ]
+    },
+    {
+     "blank": "Vennen min bor ___ skolen.",
+     "answer": "bak",
+     "distractors": [
+      "om",
+      "med",
+      "til"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hjem",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg skal ___ nå.",
+     "answer": "hjem",
+     "distractors": [
+      "hjemme",
+      "her",
+      "der"
+     ]
+    },
+    {
+     "blank": "Vi reiser ___ i dag.",
+     "answer": "hjem",
+     "distractors": [
+      "hjemme",
+      "ute",
+      "der"
+     ]
+    },
+    {
+     "blank": "Når kommer du ___?",
+     "answer": "hjem",
+     "distractors": [
+      "hjemme",
+      "her",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "begge",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ barna er hjemme.",
+     "answer": "begge",
+     "distractors": [
+      "hun",
+      "han",
+      "meg"
+     ]
+    },
+    {
+     "blank": "Jeg liker ___ bøkene.",
+     "answer": "begge",
+     "distractors": [
+      "deg",
+      "oss",
+      "henne"
+     ]
+    },
+    {
+     "blank": "___ er norske.",
+     "answer": "begge",
+     "distractors": [
+      "han",
+      "hun",
+      "jeg"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "uansett",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg kommer ___.",
+     "answer": "uansett",
+     "distractors": [
+      "mot",
+      "ved",
+      "under"
+     ]
+    },
+    {
+     "blank": "Vi drar hjem ___.",
+     "answer": "uansett",
+     "distractors": [
+      "mot",
+      "om",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Hun er glad ___.",
+     "answer": "uansett",
+     "distractors": [
+      "mot",
+      "under",
+      "om"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ute",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Barna er ___ nå.",
+     "answer": "ute",
+     "distractors": [
+      "hjem",
+      "inn",
+      "i morgen"
+     ]
+    },
+    {
+     "blank": "Vi spiser ___ i kveld.",
+     "answer": "ute",
+     "distractors": [
+      "hjem",
+      "ned",
+      "i morgen"
+     ]
+    },
+    {
+     "blank": "Det er kaldt ___ i dag.",
+     "answer": "ute",
+     "distractors": [
+      "hjem",
+      "opp",
+      "i morgen"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "deres",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Dette er ___ hus.",
+     "answer": "deres",
+     "distractors": [
+      "min",
+      "din",
+      "vår"
+     ]
+    },
+    {
+     "blank": "Barna ___ er glade.",
+     "answer": "deres",
+     "distractors": [
+      "min",
+      "din",
+      "vår"
+     ]
+    },
+    {
+     "blank": "Jeg liker ___ nye bil.",
+     "answer": "deres",
+     "distractors": [
+      "mitt",
+      "ditt",
+      "vårt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "mens",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker kaffe ___ jeg leser.",
+     "answer": "mens",
+     "distractors": [
+      "at",
+      "enn",
+      "som"
+     ]
+    },
+    {
+     "blank": "Han sover ___ jeg lager mat.",
+     "answer": "mens",
+     "distractors": [
+      "enn",
+      "at",
+      "om"
+     ]
+    },
+    {
+     "blank": "Vi snakker ___ vi går hjem.",
+     "answer": "mens",
+     "distractors": [
+      "at",
+      "enn",
+      "som"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hver",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker kaffe ___ dag.",
+     "answer": "hver",
+     "distractors": [
+      "mange",
+      "flere",
+      "alle"
+     ]
+    },
+    {
+     "blank": "___ kveld leser jeg en bok.",
+     "answer": "hver",
+     "distractors": [
+      "disse",
+      "mange",
+      "alle"
+     ]
+    },
+    {
+     "blank": "Det går bra ___ gang.",
+     "answer": "hver",
+     "distractors": [
+      "mange",
+      "flere",
+      "disse"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hos",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg bor ___ mor.",
+     "answer": "hos",
+     "distractors": [
+      "til",
+      "om",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Vi var ___ en venn.",
+     "answer": "hos",
+     "distractors": [
+      "til",
+      "om",
+      "under"
+     ]
+    },
+    {
+     "blank": "Hun er ___ far i dag.",
+     "answer": "hos",
+     "distractors": [
+      "til",
+      "om",
+      "ved"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "både",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg liker ___ kaffe og te.",
+     "answer": "både",
+     "distractors": [
+      "enten",
+      "eller",
+      "verken"
+     ]
+    },
+    {
+     "blank": "Vi har ___ bil og hus.",
+     "answer": "både",
+     "distractors": [
+      "enten",
+      "verken",
+      "heller"
+     ]
+    },
+    {
+     "blank": "Barn liker ___ melk og vann.",
+     "answer": "både",
+     "distractors": [
+      "eller",
+      "verken",
+      "enten"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "blant",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Han var ___ vennene sine.",
+     "answer": "blant",
+     "distractors": [
+      "til",
+      "for",
+      "om"
+     ]
+    },
+    {
+     "blank": "Jeg fant boka ___ tingene mine.",
+     "answer": "blant",
+     "distractors": [
+      "til",
+      "for",
+      "av"
+     ]
+    },
+    {
+     "blank": "Hun var ___ de siste.",
+     "answer": "blant",
+     "distractors": [
+      "mot",
+      "om",
+      "på"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "alltid",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker ___ kaffe.",
+     "answer": "alltid",
+     "distractors": [
+      "hjem",
+      "her",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Han er ___ glad.",
+     "answer": "alltid",
+     "distractors": [
+      "hjemme",
+      "der",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "De snakker ___ norsk.",
+     "answer": "alltid",
+     "distractors": [
+      "her",
+      "ute",
+      "hjem"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "gjennom",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi gikk ___ byen.",
+     "answer": "gjennom",
+     "distractors": [
+      "under",
+      "med",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Han reiste ___ landet.",
+     "answer": "gjennom",
+     "distractors": [
+      "under",
+      "hos",
+      "med"
+     ]
+    },
+    {
+     "blank": "Jeg leste ___ boka.",
+     "answer": "gjennom",
+     "distractors": [
+      "med",
+      "under",
+      "mot"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ned",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Legg deg ___ nå.",
+     "answer": "ned",
+     "distractors": [
+      "opp",
+      "ut",
+      "hjem"
+     ]
+    },
+    {
+     "blank": "Vi går ___ til byen.",
+     "answer": "ned",
+     "distractors": [
+      "her",
+      "der",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Sett deg ___ her.",
+     "answer": "ned",
+     "distractors": [
+      "hjem",
+      "ut",
+      "så"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "fordi",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg er glad ___ du kom.",
+     "answer": "fordi",
+     "distractors": [
+      "eller",
+      "men",
+      "og"
+     ]
+    },
+    {
+     "blank": "Han er hjemme ___ han er dårlig.",
+     "answer": "fordi",
+     "distractors": [
+      "at",
+      "som",
+      "å"
+     ]
+    },
+    {
+     "blank": "Vi går hjem ___ det er kveld.",
+     "answer": "fordi",
+     "distractors": [
+      "at",
+      "som",
+      "på"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "rundt",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi går ___ huset.",
+     "answer": "rundt",
+     "distractors": [
+      "hos",
+      "av",
+      "og"
+     ]
+    },
+    {
+     "blank": "Barna satt ___ bordet.",
+     "answer": "rundt",
+     "distractors": [
+      "av",
+      "som",
+      "og"
+     ]
+    },
+    {
+     "blank": "Hun reiste ___ i landet.",
+     "answer": "rundt",
+     "distractors": [
+      "og",
+      "at",
+      "men"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "mellom",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Han sitter ___ mor og far.",
+     "answer": "mellom",
+     "distractors": [
+      "under",
+      "mot",
+      "om"
+     ]
+    },
+    {
+     "blank": "Skolen ligger ___ to hus.",
+     "answer": "mellom",
+     "distractors": [
+      "under",
+      "mot",
+      "om"
+     ]
+    },
+    {
+     "blank": "Vi deler kaffen ___ oss.",
+     "answer": "mellom",
+     "distractors": [
+      "uten",
+      "mot",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "aldri",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker ___ kaffe.",
+     "answer": "aldri",
+     "distractors": [
+      "hjemme",
+      "ute",
+      "her"
+     ]
+    },
+    {
+     "blank": "Han er ___ hjemme.",
+     "answer": "aldri",
+     "distractors": [
+      "litt",
+      "helt",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Vi reiser ___ hjem.",
+     "answer": "aldri",
+     "distractors": [
+      "her",
+      "der",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "under",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Boka ligger ___ bordet.",
+     "answer": "under",
+     "distractors": [
+      "med",
+      "om",
+      "men"
+     ]
+    },
+    {
+     "blank": "Bilen står ___ et tre.",
+     "answer": "under",
+     "distractors": [
+      "med",
+      "om",
+      "så"
+     ]
+    },
+    {
+     "blank": "Vi sov ___ møtet.",
+     "answer": "under",
+     "distractors": [
+      "med",
+      "om",
+      "mens"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "dem",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg så ___ i går.",
+     "answer": "dem",
+     "distractors": [
+      "de",
+      "vi",
+      "seg"
+     ]
+    },
+    {
+     "blank": "Jeg ga boka til ___.",
+     "answer": "dem",
+     "distractors": [
+      "de",
+      "vi",
+      "seg"
+     ]
+    },
+    {
+     "blank": "Vi hjelper ___ hjemme.",
+     "answer": "dem",
+     "distractors": [
+      "de",
+      "seg",
+      "jeg"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "kanskje",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ vi kan gå hjem nå.",
+     "answer": "kanskje",
+     "distractors": [
+      "alltid",
+      "aldri",
+      "snart"
+     ]
+    },
+    {
+     "blank": "Han kommer ___ i morgen.",
+     "answer": "kanskje",
+     "distractors": [
+      "veldig",
+      "ganske",
+      "helt"
+     ]
+    },
+    {
+     "blank": "Vi skal ___ reise til byen.",
+     "answer": "kanskje",
+     "distractors": [
+      "litt",
+      "altfor",
+      "svært"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "uten",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker te ___ melk.",
+     "answer": "uten",
+     "distractors": [
+      "om",
+      "mot",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Han reiste ___ penger.",
+     "answer": "uten",
+     "distractors": [
+      "mot",
+      "ved",
+      "under"
+     ]
+    },
+    {
+     "blank": "Hun klarte det ___ hjelp.",
+     "answer": "uten",
+     "distractors": [
+      "om",
+      "mot",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "min",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Dette er bilen ___.",
+     "answer": "min",
+     "distractors": [
+      "mitt",
+      "mine",
+      "meg"
+     ]
+    },
+    {
+     "blank": "___ far bor her.",
+     "answer": "min",
+     "distractors": [
+      "mitt",
+      "mine",
+      "deg"
+     ]
+    },
+    {
+     "blank": "Kaffen ___ er varm.",
+     "answer": "min",
+     "distractors": [
+      "mitt",
+      "mine",
+      "seg"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "før",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg spiser ___ skolen.",
+     "answer": "før",
+     "distractors": [
+      "mot",
+      "om",
+      "med"
+     ]
+    },
+    {
+     "blank": "Han kom hjem ___ meg.",
+     "answer": "før",
+     "distractors": [
+      "mot",
+      "om",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Vi drikker kaffe ___ jobb.",
+     "answer": "før",
+     "distractors": [
+      "med",
+      "om",
+      "mot"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "før",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi spiser ___ vi går.",
+     "answer": "før",
+     "distractors": [
+      "at",
+      "enn",
+      "som"
+     ]
+    },
+    {
+     "blank": "Ring meg ___ du kommer.",
+     "answer": "før",
+     "distractors": [
+      "at",
+      "som",
+      "enn"
+     ]
+    },
+    {
+     "blank": "Jeg leser litt ___ jeg sover.",
+     "answer": "før",
+     "distractors": [
+      "som",
+      "at",
+      "enn"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "hvis",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi kan gå ___ du vil.",
+     "answer": "hvis",
+     "distractors": [
+      "men",
+      "eller",
+      "og"
+     ]
+    },
+    {
+     "blank": "Jeg blir glad ___ du kommer.",
+     "answer": "hvis",
+     "distractors": [
+      "men",
+      "eller",
+      "som"
+     ]
+    },
+    {
+     "blank": "Ta med kaffe ___ du kan.",
+     "answer": "hvis",
+     "distractors": [
+      "men",
+      "og",
+      "som"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "mot",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi går ___ skolen nå.",
+     "answer": "mot",
+     "distractors": [
+      "med",
+      "om",
+      "under"
+     ]
+    },
+    {
+     "blank": "Han er snill ___ barn.",
+     "answer": "mot",
+     "distractors": [
+      "ved",
+      "under",
+      "om"
+     ]
+    },
+    {
+     "blank": "Vi er ___ dette.",
+     "answer": "mot",
+     "distractors": [
+      "ved",
+      "om",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "der",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Se, ___ er bilen min!",
+     "answer": "der",
+     "distractors": [
+      "så",
+      "hjem",
+      "litt"
+     ]
+    },
+    {
+     "blank": "Vi bodde ___ i tre år.",
+     "answer": "der",
+     "distractors": [
+      "hjem",
+      "i morgen",
+      "nå"
+     ]
+    },
+    {
+     "blank": "Sett deg ___!",
+     "answer": "der",
+     "distractors": [
+      "hjem",
+      "så",
+      "helt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "denne",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg vil kjøpe ___ boka.",
+     "answer": "denne",
+     "distractors": [
+      "dette",
+      "disse",
+      "de"
+     ]
+    },
+    {
+     "blank": "___ kaffen er kald.",
+     "answer": "denne",
+     "distractors": [
+      "dette",
+      "disse",
+      "de"
+     ]
+    },
+    {
+     "blank": "Jeg liker ___ bilen.",
+     "answer": "denne",
+     "distractors": [
+      "dette",
+      "disse",
+      "de"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "inn",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Kom ___, det er kaldt ute.",
+     "answer": "inn",
+     "distractors": [
+      "ut",
+      "opp",
+      "her"
+     ]
+    },
+    {
+     "blank": "Vi går ___ i huset.",
+     "answer": "inn",
+     "distractors": [
+      "ut",
+      "hjem",
+      "der"
+     ]
+    },
+    {
+     "blank": "Læreren kom ___ i klasserommet.",
+     "answer": "inn",
+     "distractors": [
+      "ut",
+      "opp",
+      "hjem"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ved",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi møtes ___ skolen.",
+     "answer": "ved",
+     "distractors": [
+      "med",
+      "mot",
+      "under"
+     ]
+    },
+    {
+     "blank": "Huset ligger ___ vannet.",
+     "answer": "ved",
+     "distractors": [
+      "om",
+      "med",
+      "for"
+     ]
+    },
+    {
+     "blank": "Bilen står ___ huset.",
+     "answer": "ved",
+     "distractors": [
+      "med",
+      "om",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "over",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi går ___ veien.",
+     "answer": "over",
+     "distractors": [
+      "av",
+      "om",
+      "for"
+     ]
+    },
+    {
+     "blank": "Klokka er ___ tolv.",
+     "answer": "over",
+     "distractors": [
+      "med",
+      "om",
+      "av"
+     ]
+    },
+    {
+     "blank": "Vi har ___ hundre bøker.",
+     "answer": "over",
+     "distractors": [
+      "av",
+      "om",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "opp",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg står ___ tidlig hver dag.",
+     "answer": "opp",
+     "distractors": [
+      "ned",
+      "inn",
+      "ut"
+     ]
+    },
+    {
+     "blank": "Barna spiser ___ maten.",
+     "answer": "opp",
+     "distractors": [
+      "ned",
+      "inn",
+      "bort"
+     ]
+    },
+    {
+     "blank": "Ikke gi ___ nå!",
+     "answer": "opp",
+     "distractors": [
+      "ned",
+      "inn",
+      "hjem"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "man",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Her kan ___ kjøpe god kaffe.",
+     "answer": "man",
+     "distractors": [
+      "meg",
+      "deg",
+      "seg"
+     ]
+    },
+    {
+     "blank": "Nå må ___ gå hjem.",
+     "answer": "man",
+     "distractors": [
+      "ham",
+      "henne",
+      "seg"
+     ]
+    },
+    {
+     "blank": "Slik gjør ___ det.",
+     "answer": "man",
+     "distractors": [
+      "oss",
+      "deg",
+      "meg"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "her",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg bor ___ nå.",
+     "answer": "her",
+     "distractors": [
+      "veldig",
+      "helt",
+      "altfor"
+     ]
+    },
+    {
+     "blank": "Vi spiser ___ i dag.",
+     "answer": "her",
+     "distractors": [
+      "veldig",
+      "altfor",
+      "ganske"
+     ]
+    },
+    {
+     "blank": "Det er kaldt ___.",
+     "answer": "her",
+     "distractors": [
+      "veldig",
+      "svært",
+      "litt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "eller",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vil du ha kaffe ___ te?",
+     "answer": "eller",
+     "distractors": [
+      "men",
+      "så",
+      "om"
+     ]
+    },
+    {
+     "blank": "Skal vi gå ___ ta bilen?",
+     "answer": "eller",
+     "distractors": [
+      "men",
+      "mens",
+      "om"
+     ]
+    },
+    {
+     "blank": "Vi kan spise hjemme ___ ute.",
+     "answer": "eller",
+     "distractors": [
+      "men",
+      "så",
+      "at"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "etter",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi drikker kaffe ___ maten.",
+     "answer": "etter",
+     "distractors": [
+      "om",
+      "mot",
+      "av"
+     ]
+    },
+    {
+     "blank": "Jeg går hjem ___ jobb.",
+     "answer": "etter",
+     "distractors": [
+      "på",
+      "om",
+      "med"
+     ]
+    },
+    {
+     "blank": "Vi ses ___ skolen.",
+     "answer": "etter",
+     "distractors": [
+      "om",
+      "med",
+      "mot"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "da",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi bodde i byen ___.",
+     "answer": "da",
+     "distractors": [
+      "nå",
+      "snart",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Jeg var glad ___.",
+     "answer": "da",
+     "distractors": [
+      "veldig",
+      "aldri",
+      "ganske"
+     ]
+    },
+    {
+     "blank": "Ha det, ___!",
+     "answer": "da",
+     "distractors": [
+      "her",
+      "ute",
+      "sammen"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "da",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ jeg var liten, bodde jeg her.",
+     "answer": "da",
+     "distractors": [
+      "og",
+      "men",
+      "at"
+     ]
+    },
+    {
+     "blank": "Jeg sov ___ du kom hjem.",
+     "answer": "da",
+     "distractors": [
+      "at",
+      "om",
+      "eller"
+     ]
+    },
+    {
+     "blank": "___ vi kom, var det kaldt.",
+     "answer": "da",
+     "distractors": [
+      "og",
+      "men",
+      "eller"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "nå",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg må gå ___.",
+     "answer": "nå",
+     "distractors": [
+      "hjemme",
+      "helt",
+      "heller"
+     ]
+    },
+    {
+     "blank": "Kan du komme ___?",
+     "answer": "nå",
+     "distractors": [
+      "helt",
+      "hjemme",
+      "bare"
+     ]
+    },
+    {
+     "blank": "Vi drikker kaffe ___.",
+     "answer": "nå",
+     "distractors": [
+      "helt",
+      "bare",
+      "heller"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ut",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi går ___ nå.",
+     "answer": "ut",
+     "distractors": [
+      "helt",
+      "veldig",
+      "ganske"
+     ]
+    },
+    {
+     "blank": "Kom ___, så spiser vi.",
+     "answer": "ut",
+     "distractors": [
+      "hjemme",
+      "ute",
+      "litt"
+     ]
+    },
+    {
+     "blank": "Vi skal ___ i dag.",
+     "answer": "ut",
+     "distractors": [
+      "her",
+      "hjemme",
+      "helt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "også",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker kaffe ___.",
+     "answer": "også",
+     "distractors": [
+      "ikke",
+      "veldig",
+      "hvorfor"
+     ]
+    },
+    {
+     "blank": "Vi spiser brød ___.",
+     "answer": "også",
+     "distractors": [
+      "ikke",
+      "ganske",
+      "hvordan"
+     ]
+    },
+    {
+     "blank": "Han snakker norsk ___.",
+     "answer": "også",
+     "distractors": [
+      "ikke",
+      "veldig",
+      "hvor"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "noen",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Er det ___ hjemme?",
+     "answer": "noen",
+     "distractors": [
+      "meg",
+      "deg",
+      "henne"
+     ]
+    },
+    {
+     "blank": "Jeg vil snakke med ___.",
+     "answer": "noen",
+     "distractors": [
+      "de",
+      "vi",
+      "du"
+     ]
+    },
+    {
+     "blank": "Har du ___ penger?",
+     "answer": "noen",
+     "distractors": [
+      "meg",
+      "seg",
+      "henne"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "noe",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg vil ha ___ å spise.",
+     "answer": "noe",
+     "distractors": [
+      "seg",
+      "hverandre",
+      "hvem"
+     ]
+    },
+    {
+     "blank": "Han sa ___ til meg.",
+     "answer": "noe",
+     "distractors": [
+      "seg",
+      "oss",
+      "hvem"
+     ]
+    },
+    {
+     "blank": "Har du ___ å drikke?",
+     "answer": "noe",
+     "distractors": [
+      "deg",
+      "seg",
+      "hverandre"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "noe",
+   "pos": "determiner",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg vil ha ___ å spise.",
+     "answer": "noe",
+     "distractors": [
+      "hver",
+      "min",
+      "din"
+     ]
+    },
+    {
+     "blank": "Vil du ha ___ å drikke?",
+     "answer": "noe",
+     "distractors": [
+      "hans",
+      "denne",
+      "all"
+     ]
+    },
+    {
+     "blank": "Jeg må gjøre ___ i dag.",
+     "answer": "noe",
+     "distractors": [
+      "hver",
+      "min",
+      "hans"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "men",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg vil, ___ kan ikke.",
+     "answer": "men",
+     "distractors": [
+      "at",
+      "som",
+      "fordi"
+     ]
+    },
+    {
+     "blank": "Kaffen er god, ___ kald.",
+     "answer": "men",
+     "distractors": [
+      "at",
+      "som",
+      "hvis"
+     ]
+    },
+    {
+     "blank": "Jeg er trøtt, ___ glad.",
+     "answer": "men",
+     "distractors": [
+      "at",
+      "som",
+      "fordi"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "fra",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg kommer ___ Norge.",
+     "answer": "fra",
+     "distractors": [
+      "med",
+      "på",
+      "om"
+     ]
+    },
+    {
+     "blank": "Dette brevet er ___ mor.",
+     "answer": "fra",
+     "distractors": [
+      "med",
+      "ved",
+      "under"
+     ]
+    },
+    {
+     "blank": "Han er ___ en annen by.",
+     "answer": "fra",
+     "distractors": [
+      "med",
+      "mot",
+      "om"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "så",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Det var kaldt, ___ jeg gikk hjem.",
+     "answer": "så",
+     "distractors": [
+      "om",
+      "at",
+      "enn"
+     ]
+    },
+    {
+     "blank": "Jeg var sulten, ___ jeg spiste.",
+     "answer": "så",
+     "distractors": [
+      "hvis",
+      "at",
+      "enn"
+     ]
+    },
+    {
+     "blank": "Vi hadde tid, ___ vi gikk ut.",
+     "answer": "så",
+     "distractors": [
+      "om",
+      "enn",
+      "hvis"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "den",
+   "pos": "determiner",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ bilen er ny.",
+     "answer": "den",
+     "distractors": [
+      "det",
+      "de",
+      "dette"
+     ]
+    },
+    {
+     "blank": "Jeg liker ___ boka.",
+     "answer": "den",
+     "distractors": [
+      "det",
+      "disse",
+      "de"
+     ]
+    },
+    {
+     "blank": "___ maten var god.",
+     "answer": "den",
+     "distractors": [
+      "det",
+      "de",
+      "dette"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "om",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi snakker ___ mat.",
+     "answer": "om",
+     "distractors": [
+      "på",
+      "til",
+      "av"
+     ]
+    },
+    {
+     "blank": "Han skriver ___ familien.",
+     "answer": "om",
+     "distractors": [
+      "av",
+      "ved",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Vi reiser ___ tre dager.",
+     "answer": "om",
+     "distractors": [
+      "for",
+      "av",
+      "ved"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "de",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ bor i Norge nå.",
+     "answer": "de",
+     "distractors": [
+      "dem",
+      "meg",
+      "deg"
+     ]
+    },
+    {
+     "blank": "___ er gode venner.",
+     "answer": "de",
+     "distractors": [
+      "han",
+      "hun",
+      "jeg"
+     ]
+    },
+    {
+     "blank": "___ snakker norsk hjemme.",
+     "answer": "de",
+     "distractors": [
+      "dem",
+      "oss",
+      "henne"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "jeg",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ drikker kaffe nå.",
+     "answer": "jeg",
+     "distractors": [
+      "meg",
+      "deg",
+      "seg"
+     ]
+    },
+    {
+     "blank": "___ leser en bok.",
+     "answer": "jeg",
+     "distractors": [
+      "meg",
+      "oss",
+      "dem"
+     ]
+    },
+    {
+     "blank": "___ spiser brød hjemme.",
+     "answer": "jeg",
+     "distractors": [
+      "meg",
+      "deg",
+      "oss"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "med",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg drikker kaffe ___ melk.",
+     "answer": "med",
+     "distractors": [
+      "på",
+      "til",
+      "av"
+     ]
+    },
+    {
+     "blank": "Jeg snakker ___ mor i dag.",
+     "answer": "med",
+     "distractors": [
+      "på",
+      "av",
+      "fra"
+     ]
+    },
+    {
+     "blank": "Jeg reiser hjem ___ bil.",
+     "answer": "med",
+     "distractors": [
+      "på",
+      "om",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ikke",
+   "pos": "adverb",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg liker ___ kaffe.",
+     "answer": "ikke",
+     "distractors": [
+      "helt",
+      "her",
+      "der"
+     ]
+    },
+    {
+     "blank": "Han kommer ___ i dag.",
+     "answer": "ikke",
+     "distractors": [
+      "helt",
+      "godt",
+      "ute"
+     ]
+    },
+    {
+     "blank": "Det er ___ lett.",
+     "answer": "ikke",
+     "distractors": [
+      "her",
+      "der",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "av",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Huset er laget ___ tre.",
+     "answer": "av",
+     "distractors": [
+      "om",
+      "mot",
+      "under"
+     ]
+    },
+    {
+     "blank": "En ___ vennene mine er her.",
+     "answer": "av",
+     "distractors": [
+      "til",
+      "om",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Jeg vil ha litt ___ brødet.",
+     "answer": "av",
+     "distractors": [
+      "om",
+      "ved",
+      "mot"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "for",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Takk ___ maten.",
+     "answer": "for",
+     "distractors": [
+      "med",
+      "på",
+      "om"
+     ]
+    },
+    {
+     "blank": "Melk er godt ___ barn.",
+     "answer": "for",
+     "distractors": [
+      "med",
+      "om",
+      "av"
+     ]
+    },
+    {
+     "blank": "Jeg er glad ___ dette.",
+     "answer": "for",
+     "distractors": [
+      "med",
+      "om",
+      "på"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "for",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg er glad, ___ det er varmt.",
+     "answer": "for",
+     "distractors": [
+      "enn",
+      "som",
+      "eller"
+     ]
+    },
+    {
+     "blank": "Vi går hjem, ___ det er kaldt.",
+     "answer": "for",
+     "distractors": [
+      "at",
+      "som",
+      "enn"
+     ]
+    },
+    {
+     "blank": "Hun leser boka, ___ den er god.",
+     "answer": "for",
+     "distractors": [
+      "enn",
+      "at",
+      "eller"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "en",
+   "pos": "determiner",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg vil ha ___ kaffe.",
+     "answer": "en",
+     "distractors": [
+      "et",
+      "ei",
+      "mitt"
+     ]
+    },
+    {
+     "blank": "Han kjøpte ___ bil.",
+     "answer": "en",
+     "distractors": [
+      "et",
+      "ei",
+      "ditt"
+     ]
+    },
+    {
+     "blank": "Jeg møtte ___ venn.",
+     "answer": "en",
+     "distractors": [
+      "et",
+      "ei",
+      "sitt"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "en",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vil du ha ___?",
+     "answer": "en",
+     "distractors": [
+      "man",
+      "seg",
+      "hver"
+     ]
+    },
+    {
+     "blank": "Kan jeg få ___ til?",
+     "answer": "en",
+     "distractors": [
+      "hver",
+      "seg",
+      "enhver"
+     ]
+    },
+    {
+     "blank": "Jeg tar ___.",
+     "answer": "en",
+     "distractors": [
+      "man",
+      "seg",
+      "hver"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "til",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Vi skal reise ___ Norge.",
+     "answer": "til",
+     "distractors": [
+      "under",
+      "ved",
+      "med"
+     ]
+    },
+    {
+     "blank": "Jeg går ___ skolen i dag.",
+     "answer": "til",
+     "distractors": [
+      "om",
+      "med",
+      "under"
+     ]
+    },
+    {
+     "blank": "Jeg gir boka ___ mor.",
+     "answer": "til",
+     "distractors": [
+      "på",
+      "med",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "på",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Boka ligger ___ bordet.",
+     "answer": "på",
+     "distractors": [
+      "av",
+      "om",
+      "til"
+     ]
+    },
+    {
+     "blank": "Jeg venter ___ bussen.",
+     "answer": "på",
+     "distractors": [
+      "av",
+      "om",
+      "for"
+     ]
+    },
+    {
+     "blank": "Vi snakker norsk ___ skolen.",
+     "answer": "på",
+     "distractors": [
+      "av",
+      "til",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "å",
+   "pos": "infinitivsmerke",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg liker ___ lese bøker.",
+     "answer": "å",
+     "distractors": [
+      "og",
+      "at",
+      "på"
+     ]
+    },
+    {
+     "blank": "Det er godt ___ drikke kaffe.",
+     "answer": "å",
+     "distractors": [
+      "og",
+      "som",
+      "for"
+     ]
+    },
+    {
+     "blank": "Jeg vil lære ___ snakke norsk.",
+     "answer": "å",
+     "distractors": [
+      "og",
+      "at",
+      "til"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "det",
+   "pos": "pronoun",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "___ er kaldt i dag.",
+     "answer": "det",
+     "distractors": [
+      "han",
+      "hun",
+      "de"
+     ]
+    },
+    {
+     "blank": "Jeg liker ___.",
+     "answer": "det",
+     "distractors": [
+      "seg",
+      "man",
+      "vi"
+     ]
+    },
+    {
+     "blank": "___ var en god bok.",
+     "answer": "det",
+     "distractors": [
+      "han",
+      "vi",
+      "man"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "og",
+   "pos": "conjunction",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg spiser brød ___ drikker melk.",
+     "answer": "og",
+     "distractors": [
+      "at",
+      "om",
+      "når"
+     ]
+    },
+    {
+     "blank": "Mor ___ far er hjemme.",
+     "answer": "og",
+     "distractors": [
+      "fordi",
+      "som",
+      "enn"
+     ]
+    },
+    {
+     "blank": "Vi leser ___ skriver på skolen.",
+     "answer": "og",
+     "distractors": [
+      "hvis",
+      "at",
+      "når"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "i",
+   "pos": "preposition",
+   "lvl": "A1",
+   "items": [
+    {
+     "blank": "Jeg bor ___ Norge.",
+     "answer": "i",
+     "distractors": [
+      "til",
+      "av",
+      "om"
+     ]
+    },
+    {
+     "blank": "Mor er ___ huset.",
+     "answer": "i",
+     "distractors": [
+      "av",
+      "om",
+      "til"
+     ]
+    },
+    {
+     "blank": "Jeg har melk ___ kaffen.",
+     "answer": "i",
+     "distractors": [
+      "av",
+      "om",
+      "fra"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "oppå",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Boka ligger ___ bordet.",
+     "answer": "oppå",
+     "distractors": [
+      "til",
+      "om",
+      "av"
+     ]
+    },
+    {
+     "blank": "Katten sitter ___ bilen.",
+     "answer": "oppå",
+     "distractors": [
+      "med",
+      "for",
+      "om"
+     ]
+    },
+    {
+     "blank": "Snøen ligger ___ taket.",
+     "answer": "oppå",
+     "distractors": [
+      "av",
+      "til",
+      "for"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "oppover",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Vi går ___.",
+     "answer": "oppover",
+     "distractors": [
+      "med",
+      "om",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Veien går ___ mot skolen.",
+     "answer": "oppover",
+     "distractors": [
+      "med",
+      "under",
+      "om"
+     ]
+    },
+    {
+     "blank": "Prisene går ___ nå.",
+     "answer": "oppover",
+     "distractors": [
+      "ved",
+      "med",
+      "om"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "inni",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Det er kaldt ___ huset.",
+     "answer": "inni",
+     "distractors": [
+      "mot",
+      "om",
+      "med"
+     ]
+    },
+    {
+     "blank": "Boka er ___ bilen.",
+     "answer": "inni",
+     "distractors": [
+      "til",
+      "fra",
+      "mot"
+     ]
+    },
+    {
+     "blank": "Nøkkelen er ___ lomma.",
+     "answer": "inni",
+     "distractors": [
+      "til",
+      "fra",
+      "med"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "omkring",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Vi gikk ___ i byen.",
+     "answer": "omkring",
+     "distractors": [
+      "mot",
+      "under",
+      "ved"
+     ]
+    },
+    {
+     "blank": "Vi bodde der i ___ tre år.",
+     "answer": "omkring",
+     "distractors": [
+      "om",
+      "mot",
+      "med"
+     ]
+    },
+    {
+     "blank": "Han reiste ___ i landet.",
+     "answer": "omkring",
+     "distractors": [
+      "mot",
+      "ved",
+      "under"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "langs",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Vi gikk ___ veien hjem.",
+     "answer": "langs",
+     "distractors": [
+      "uten",
+      "hos",
+      "mellom"
+     ]
+    },
+    {
+     "blank": "Det er hus ___ vannet.",
+     "answer": "langs",
+     "distractors": [
+      "uten",
+      "hos",
+      "om"
+     ]
+    },
+    {
+     "blank": "Det bor mange folk ___ en stor vei.",
+     "answer": "langs",
+     "distractors": [
+      "hos",
+      "om",
+      "til"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "inntil",
+   "pos": "preposition",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Bilen står ___ huset.",
+     "answer": "inntil",
+     "distractors": [
+      "om",
+      "med",
+      "for"
+     ]
+    },
+    {
+     "blank": "Kom litt ___ meg.",
+     "answer": "inntil",
+     "distractors": [
+      "om",
+      "på",
+      "for"
+     ]
+    },
+    {
+     "blank": "Han jobbet her ___ nå.",
+     "answer": "inntil",
+     "distractors": [
+      "med",
+      "om",
+      "på"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "ettersom",
+   "pos": "conjunction",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Vi blir hjemme, ___ det er kaldt.",
+     "answer": "ettersom",
+     "distractors": [
+      "eller",
+      "enn",
+      "at"
+     ]
+    },
+    {
+     "blank": "Jeg leser boka, ___ jeg har tid.",
+     "answer": "ettersom",
+     "distractors": [
+      "eller",
+      "enn",
+      "at"
+     ]
+    },
+    {
+     "blank": "Vi spiser ute, ___ det er varmt.",
+     "answer": "ettersom",
+     "distractors": [
+      "enn",
+      "eller",
+      "at"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "enten",
+   "pos": "conjunction",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Vi kan ___ gå eller reise.",
+     "answer": "enten",
+     "distractors": [
+      "og",
+      "men",
+      "at"
+     ]
+    },
+    {
+     "blank": "Jeg vil ___ ha kaffe eller te.",
+     "answer": "enten",
+     "distractors": [
+      "og",
+      "men",
+      "for"
+     ]
+    },
+    {
+     "blank": "Han kommer ___ i dag eller i morgen.",
+     "answer": "enten",
+     "distractors": [
+      "og",
+      "men",
+      "hvis"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "samt",
+   "pos": "conjunction",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Jeg kjøpte brød ___ melk.",
+     "answer": "samt",
+     "distractors": [
+      "fordi",
+      "hvis",
+      "når"
+     ]
+    },
+    {
+     "blank": "Vi trenger vann ___ mat.",
+     "answer": "samt",
+     "distractors": [
+      "at",
+      "når",
+      "fordi"
+     ]
+    },
+    {
+     "blank": "Han liker kaffe ___ melk.",
+     "answer": "samt",
+     "distractors": [
+      "hvis",
+      "når",
+      "at"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "frem",
+   "pos": "adverb",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Kom ___ til meg.",
+     "answer": "frem",
+     "distractors": [
+      "ute",
+      "hjemme",
+      "borte"
+     ]
+    },
+    {
+     "blank": "Jeg ser ___ til i morgen.",
+     "answer": "frem",
+     "distractors": [
+      "hjem",
+      "ned",
+      "her"
+     ]
+    },
+    {
+     "blank": "Kjør bilen litt ___.",
+     "answer": "frem",
+     "distractors": [
+      "hjemme",
+      "inne",
+      "ute"
+     ]
+    }
+   ]
+  },
+  {
+   "no": "selv",
+   "pos": "pronoun",
+   "lvl": "A2",
+   "items": [
+    {
+     "blank": "Jeg gjør det ___.",
+     "answer": "selv",
+     "distractors": [
+      "meg",
+      "deg",
+      "seg"
+     ]
+    },
+    {
+     "blank": "Hun lager maten ___.",
+     "answer": "selv",
+     "distractors": [
+      "deg",
+      "oss",
+      "dem"
+     ]
+    },
+    {
+     "blank": "Han skriver brevet ___.",
+     "answer": "selv",
+     "distractors": [
+      "meg",
+      "oss",
+      "dere"
+     ]
+    }
+   ]
+  }
+ ]
+}

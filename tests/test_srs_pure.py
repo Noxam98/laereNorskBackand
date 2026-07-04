@@ -47,6 +47,17 @@ def test_no_reverse_grandfather_cloze_to_choice():
     assert status.is_mastered(FUNC_CHOICE, {c: "1" for c in cells.FUNC_CELLS_CHOICE}) is True
 
 
+def test_grandfather_func_word_mastered_by_choice_ramp():
+    """При ВКЛючении cloze служебное, доученное упрощённой рампой «только выбор» (FUNC_CHOICE,
+    cloze был выключен), остаётся выученным — включение банка не воскрешает доученные служебные
+    (иначе у активного юзера всплыла бы куча «готовых» слов). choice-клетки ⊂ REQUIRED_CELLS."""
+    choice_done = {c: "1" for c in cells.FUNC_CELLS_CHOICE}
+    assert status.is_mastered(FUNC_CLOZE, choice_done) is True
+    # частично сданная choice-рампа (только одна клетка) — ещё НЕ выучено
+    one_cell = {cells.FUNC_CELLS_CHOICE[0]: "1"}
+    assert status.is_mastered(FUNC_CLOZE, one_cell) is False
+
+
 # ── audio-pending и контракт review_step (инциденты #3/#4) ───────────────────
 AUDIO_PENDING = {c: "1" for c in cells.REQUIRED_CELLS if c != cells.AUDIO_CELL}
 

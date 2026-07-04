@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import fuzzy
 from config import logger
 from . import bg_tasks as _bg_tasks   # реестр fire-and-forget задач (Этап 9)
+from . import cloze_bank              # статический банк cloze A1-A2 (гейтит рампу FUNC_CLOZE)
 from .core import _conn, _release, _now
 from .pool_queues import has_tts_expr   # единый источник правды «есть озвучка» (Этап 1)
 
@@ -175,10 +176,14 @@ def ramp_kind_of(row):
     # data.game идут обычной рампой, чтобы не сломать учащиеся слова шагом order
     phrase_playable = (normalize_pos(d.get("part_of_speech")) == "phrase"
                        and len(((d.get("game") or {}).get("distractors")) or []) >= 2)
+    no = row.get("norwegian")
     return _srs_cells.ramp_kind(
         phrase_playable=phrase_playable,
-        function_word=bool(is_function_word(row.get("norwegian"), d)),
-        cloze_enabled=CLOZE_ENABLED)
+        function_word=bool(is_function_word(no, d)),
+        # cloze-рампу (3 предложения) служебное получает ТОЛЬКО если для него есть выверенный банк
+        # (A1-A2); прочие служебные (уровень >A2 / банк не покрыл) идут упрощённой FUNC_CHOICE.
+        # CLOZE_ENABLED — общий рубильник (kill-switch): 0 → все служебные на FUNC_CHOICE.
+        cloze_enabled=CLOZE_ENABLED and cloze_bank.has(no, d.get("part_of_speech")))
 
 
 def required_cells(row):
@@ -786,9 +791,18 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     func_gate_ok = content_known >= FUNC_GATE   # грубый общий гейт (для авто-добора служебных)
 
     def _func_locked(e):
-        """Новое служебное слово ещё рано вводить: выученных контентных < его пословного порога."""
-        return (is_function_word(e["row"]["norwegian"], e["data"])
-                and content_known < _cloze_min(e["row"]["norwegian"]))
+        """Новое служебное слово ещё рано/нельзя вводить. Причины: (1) выученных контентных <
+        его пословного порога (пейсинг); (2) при включённом cloze — служебного НЕТ в банке A1-A2
+        (level-гейт: cloze строим только для выверенных, генерации на лету больше нет — слово
+        уровня >A2 новым не вводим). Гейт (2) под CLOZE_ENABLED, чтобы при выключенном cloze
+        (kill-switch) прежнее поведение FUNC_CHOICE не менялось. Применяется только к НОВЫМ
+        (attempts==0, см. select_candidates) — уже учащиеся служебные не трогает."""
+        no, d = e["row"]["norwegian"], e["data"]
+        if not is_function_word(no, d):
+            return False
+        if CLOZE_ENABLED and not cloze_bank.has(no, d.get("part_of_speech")):
+            return True
+        return content_known < _cloze_min(no)
 
     # АВТО-ДОБОР: «Учёба» не должна пустеть сама собой, но и не навязывает «Базу».
     # Семантика — «закрыть ПУСТОТУ, когда пул НОВЫХ иссяк», а НЕ «добить до WIP_LIMIT».
@@ -1035,9 +1049,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             items = cloze_map.get(pid)
             idx = (int(direction) - 1) if str(direction).isdigit() else 0
             if not items or idx >= len(items):
-                # cloze ещё не сгенерён — запускаем фоном (реестр держит strong-ref + логирует
-                # падение; голый create_task GC мог убить на середине), слово сейчас пропускаем
-                _bg_tasks.spawn(generate_cloze(user_id, pid), name=f"cloze:{user_id}:{pid}")
+                # нет выверенного cloze для этого служебного (банк не покрыл) — слово на cloze-рампе
+                # оказаться не должно (ramp_kind_of гейтит FUNC_CLOZE наличием банка), но защитно
+                # пропускаем: генерации на лету больше нет (банк — единственный источник).
                 continue
             el["cloze"] = items[idx]
         session.append(el)
@@ -1180,9 +1194,10 @@ async def build_listen_session(user_id, size=20, lang="ru"):
     return {"words": session, "composition": {"listen": len(session), "total": len(session)}}
 
 
-# ---------------- cloze для служебных слов (A1) — вынесено в db/learning_cloze.py ----------------
-# get_cloze_map / generate_cloze / _blank_example реэкспортируются в конце файла
-# (ядро зовёт get_cloze_map/generate_cloze в рантайме; _blank_example нужен ещё exams.py).
+# ---------------- cloze для служебных слов (A1-A2) — вынесено в db/learning_cloze.py ----------------
+# get_cloze_map (из статического банка db.cloze_bank) / _blank_example реэкспортируются в конце файла
+# (ядро зовёт get_cloze_map в рантайме; _blank_example нужен ещё exams.py). Пер-юзерной LLM-генерации
+# (generate_cloze) больше нет — cloze берётся из выверенного банка data/cloze-bank.json.
 
 
 # Зачётный экзамен-ворота и аудит забывания вынесены в db/exams.py (реэкспорт в конце файла).
@@ -1194,7 +1209,7 @@ async def build_listen_session(user_id, size=20, lang="ru"):
 
 # --- Реэкспорт вынесенных модулей (чтобы `from db.learning import …` и db/__init__ не менялись) ---
 from .learning_grammar import _grammar_cells, _grammar_element  # noqa: E402,F401  (ядро зовёт в рантайме)
-from .learning_cloze import get_cloze_map, generate_cloze, _blank_example  # noqa: E402,F401  (_blank_example нужен exams)
+from .learning_cloze import get_cloze_map, _blank_example  # noqa: E402,F401  (_blank_example нужен exams)
 from .leaderboard import get_activity, learning_leaderboard  # noqa: E402,F401
 from .placement import (  # noqa: E402,F401
     get_start_level, set_start_level, build_placement, grade_placement, seed_starter,
