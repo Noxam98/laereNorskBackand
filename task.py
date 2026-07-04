@@ -18,7 +18,8 @@ __TRANSLATE_BLOCK__
         },
         "part_of_speech": "РОВНО ОДНА часть речи (один ключ): noun|verb|adjective|adverb|preposition|conjunction|pronoun|determiner|numeral|interjection|phrase",
         "level": "уровень CEFR: A1/A2/B1/B2/C1/C2",
-        "topics": ["1-3 темы из списка: family, food, home, work, school, travel, health, body, clothing, nature, animals, weather, city, transport, shopping, time, sport, hobby, technology, communication, emotions, holidays, society, other"]
+        "topics": ["1-3 темы из списка: family, food, home, work, school, travel, health, body, clothing, nature, animals, weather, city, transport, shopping, time, sport, hobby, technology, communication, emotions, holidays, society, other"],
+        "compound": {"forledd": "первая часть (лемма)", "fuge": "соединитель 's'/'e'/''", "etterledd": "вторая часть — голова (лемма)"}
     }
 ]
 Правила:
@@ -57,6 +58,13 @@ __TRANSLATE_BLOCK__
     Часть речи указывай ОДНИМ ключом из набора (англ., нижний регистр): noun, verb, adjective,
     adverb, preposition, conjunction, pronoun, determiner, numeral, interjection, phrase.
     НЕ перечисляй несколько через "/" или запятую — только одна часть речи.
+
+    СОСТАВНЫЕ СЛОВА (sammensetning): если норвежское слово составное — две основы, написанные
+    СЛИТНО (arbeidsplass, barnehage, tannlege, kjøleskap, fotball) — добавь поле "compound" с разбором:
+    forledd (первая часть, форма ЛЕММЫ, без соединителя), fuge (соединительная морфема: "s", "e" или
+    ""), etterledd (вторая часть — голова, форма ЛЕММЫ). ОБЯЗАТЕЛЬНО: forledd+fuge+etterledd
+    буква-в-букву = само слово. Части — самостоятельные словарные леммы. Для ПРОСТЫХ слов и
+    заимствований (universitet, telefon, informasjon, sentrum) поле "compound" НЕ добавляй.
 
     ОРФОГРАФИЯ ДЛЯ ОЗВУЧКИ (переводы идут в синтез речи — пиши орфографически точно, обязательно
     используя буквы/диакритику, которые часто опускают, но которые МЕНЯЮТ произношение):

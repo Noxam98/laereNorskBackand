@@ -19,6 +19,20 @@ def normalize_word_item(item):
         tr = item.setdefault("translate", {})
         if not tr.get("no"):
             tr["no"] = [w]
+    # разбор составного слова от LLM: валидируем — части ДОЛЖНЫ буква-в-букву складываться в слово
+    # (иначе разбор неверный → дропаем, чтобы не хранить мусор; для слов из банка используется
+    # авторитетный ordbank.compound, это только фолбэк для нюордов вне банка).
+    c = item.get("compound")
+    if isinstance(c, dict) and w:
+        fl = (c.get("forledd") or "").strip().lower()
+        fu = (c.get("fuge") or "").strip().lower()
+        el = (c.get("etterledd") or "").strip().lower()
+        if fl and el and (fl + fu + el) == w.strip().lower():
+            item["compound"] = {"forledd": fl, "fuge": fu, "etterledd": el}
+        else:
+            item.pop("compound", None)
+    elif "compound" in item:
+        item.pop("compound", None)
     return item
 
 

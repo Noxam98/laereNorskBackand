@@ -65,6 +65,24 @@ WORDS_SCHEMA = {
                         "part_of_speech": {"type": "string", "enum": POS_KEYS},
                         "level": {"type": "string", "enum": CEFR_LEVELS},
                         "topics": {"type": "array", "items": {"type": "string", "enum": TOPIC_KEYS}},
+                        "compound": {
+                            "type": "object",
+                            "description": (
+                                "ТОЛЬКО если слово СОСТАВНОЕ (sammensetning, две основы слитно). Разбор: "
+                                "forledd — первый элемент в форме ЛЕММЫ (без соединителя), fuge — соединительная "
+                                "морфема ('s', 'e' или пустая строка ''), etterledd — вторая часть (голова, лемма). "
+                                "ОБЯЗАТЕЛЬНО: forledd+fuge+etterledd = исходное слово буква-в-букву. Примеры: "
+                                "arbeidsplass→forledd 'arbeid'/fuge 's'/etterledd 'plass'; barnehage→'barn'/'e'/'hage'; "
+                                "fotball→'fot'/''/'ball'. Для ПРОСТЫХ слов и заимствований (universitet, telefon, "
+                                "informasjon) поле НЕ добавляй."
+                            ),
+                            "properties": {
+                                "forledd": {"type": "string"},
+                                "fuge": {"type": "string"},
+                                "etterledd": {"type": "string"},
+                            },
+                            "required": ["forledd", "etterledd"],
+                        },
                     },
                     "required": ["word", "translate", "part_of_speech"],
                 },

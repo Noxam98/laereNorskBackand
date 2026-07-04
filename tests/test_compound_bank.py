@@ -80,3 +80,42 @@ async def test_get_pool_meta_carries_compound_key(fresh_db):
         await _release(dbc)
     meta = await get_pool_meta("hus")
     assert "compound" in meta and meta["compound"] is None    # банка в тестах нет → None
+
+
+# ── разбор от LLM-генерации (нюорды вне банка) ────────────────────────────────
+def test_normalize_word_item_keeps_valid_compound():
+    from llm.words import normalize_word_item
+    it = normalize_word_item({"word": "Arbeidsplass", "part_of_speech": "noun",
+                              "compound": {"forledd": "Arbeid", "fuge": "s", "etterledd": "Plass"}})
+    assert it["compound"] == {"forledd": "arbeid", "fuge": "s", "etterledd": "plass"}  # нижний регистр
+
+
+def test_normalize_word_item_drops_inconsistent_compound():
+    from llm.words import normalize_word_item
+    # части НЕ складываются в слово буква-в-букву (LLM ошибся/галлюцинация) → поле убрано
+    it = normalize_word_item({"word": "telefon", "part_of_speech": "noun",
+                              "compound": {"forledd": "tele", "fuge": "", "etterledd": "gram"}})
+    assert "compound" not in it   # tele+gram != telefon → дроп
+    it2 = normalize_word_item({"word": "hus", "part_of_speech": "noun",
+                               "compound": {"forledd": "hu", "fuge": "", "etterledd": "set"}})
+    assert "compound" not in it2  # hu+set != hus → дроп
+
+
+async def test_get_pool_meta_llm_compound_fallback(fresh_db):
+    """Нюорд вне банка: get_pool_meta достраивает compound из data.compound (parts + fuge)."""
+    import json
+    from db.core import _conn, _release
+    from db.pool import get_pool_meta
+    dbc = await _conn()
+    try:
+        await dbc.execute(
+            "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+            ("nyordshus", json.dumps({"translate": {"ru": ["дом-новослово"]}, "part_of_speech": "noun",
+                                      "compound": {"forledd": "nyord", "fuge": "s", "etterledd": "hus"}}),
+             "noun", "B1"))
+        await dbc.commit()
+    finally:
+        await _release(dbc)
+    meta = await get_pool_meta("nyordshus")
+    assert meta["compound"]["parts"] == ["nyord", "hus"]
+    assert meta["compound"]["fuge"] == "s"

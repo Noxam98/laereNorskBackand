@@ -642,12 +642,21 @@ async def get_pool_meta(word: str, user_id: int = None):
                 in_learning = (await cur.fetchone()) is not None
         d = json.loads(row["data"]) if row["data"] else {}
         from db import ordbank
+        # разбор составного слова: авторитетно из банка (leddanalyse), а для нюордов вне банка —
+        # фолбэк на разбор от LLM-генерации (data.compound, уже провалидирован normalize_word_item).
+        compound = ordbank.compound(key)
+        if compound is None:
+            lc = d.get("compound")
+            if isinstance(lc, dict) and lc.get("forledd") and lc.get("etterledd"):
+                compound = {"forledd": lc["forledd"], "fuge": lc.get("fuge") or "",
+                            "etterledd": lc["etterledd"], "marked": None,
+                            "parts": [lc["forledd"], lc["etterledd"]]}
         return {
             "level": row["level"], "topics": topics, "pool_id": row["id"],
             "part_of_speech": d.get("part_of_speech", ""),
             "translate": d.get("translate", {}),
             "forms": json.loads(row["forms"]) if row["forms"] else None,
-            "compound": ordbank.compound(key),   # разбор составного слова (или None) — leddanalyse банка
+            "compound": compound,
             "hasTts": bool(row["has_tts"]),
             "freq": row["freq"], "freqBand": freq_band(row["freq"]),
             "inLearning": in_learning,
