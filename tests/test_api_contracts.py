@@ -42,7 +42,7 @@ def test_import_main_smoke():
     import main
     from db import learning
     # ключевые поздние реэкспорты должны быть резолвлены к моменту старта
-    for name in ("_is_certified", "suggest_words", "form_cells_for"):
+    for name in ("_is_certified", "suggest_words", "estimate_level"):
         assert hasattr(learning, name), name
     assert hasattr(main, "app")
 
