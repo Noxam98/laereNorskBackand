@@ -183,6 +183,20 @@ laereNorskBackand/
 
 **Новые тесты:** `tests/test_empty_reason.py` — табличный приоритет early_review/listen_pending/exam_pending/wip_full/all_done; golden-тест этапа 0 обязан пройти без изменений.
 
+**ФАКТИЧЕСКИ СДЕЛАНО (4.07, осознанное сужение):** извлечён ТОЛЬКО `session/reason.py`
+(чистая единая лестница `session_reason` — покрывает и early_review, и empty-ветки;
+дубль-дом `srs.gates.empty_session_reason` удалён). Переезд `build_session`→`daily.py`
+и `build_listen_session`/`listen_status`/`_audio_pending_rows`→`listen.py` **НЕ делаем**:
+(1) эти оркестраторы асинхронны и зависят от db-хелперов — вынос в `session/` дал бы
+ребро `session→db`, ломая инвариант «`session/*` чистые: без SQL/asyncio» (§ выше про
+целевую структуру) — пакет перестал бы быть однородно чистым; (2) хвостовые реэкспорты
+(`learning_suggest`/`learning_grammar`/`learning_cloze`) стоят внизу файла НЕ случайно —
+эти модули импортят `from .learning import …` на верхнем уровне, т.е. цикл реальный;
+подъём их в топ = `ImportError` (ровно та «хрупкость if/elif reason / ImportError хвоста»,
+что таблица рисков назвала риском Этапа 8). Реальная развязка ядра — чистые модули
+(pools/forms_phase/distractors/reason/shape), она достигнута; «какой db-файл держит
+build_listen_session» — косметика файловой раскладки, её отложили как техдолг.
+
 ---
 
 ### Этап 9. Побочные эффекты наружу + пер-юзер лок

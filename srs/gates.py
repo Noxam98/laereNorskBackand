@@ -32,15 +32,5 @@ def new_words_blocked(in_work: int, gate_open: bool, *, wip_limit: int = WIP_LIM
     """Приток новых слов заблокирован: лимит «в работе» ИЛИ ворота экзамена."""
     return in_work >= wip_limit or gate_open
 
-
-def empty_session_reason(*, has_audio_pending: bool, gate_open: bool, in_work: int,
-                         wip_limit: int = WIP_LIMIT) -> str:
-    """Честная причина пустой сессии для фронта (порядок приоритета фиксирован):
-    слуховая партия ждёт → экзамен пачки → перебор в работе → всё повторено."""
-    if has_audio_pending:
-        return "listen_pending"
-    if gate_open:
-        return "exam_pending"
-    if in_work >= wip_limit:
-        return "wip_full"
-    return "all_done"
+# Диагностика ПУСТОЙ/досрочной сессии (comp.reason) переехала в session/reason.py (Этап 8):
+# там она единой лестницей покрывает и early_review, и empty-ветки — один дом критериев.

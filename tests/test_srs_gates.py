@@ -38,20 +38,8 @@ def test_exam_gate_thresholds(pack_n, had_cert, throttled, expected):
     assert gates.exam_gate_open(pack_n, had_cert=had_cert, throttled=throttled) is expected
 
 
-# ── new_words_blocked / empty_session_reason ─────────────────────────────────
+# ── new_words_blocked (диагностика reason — в tests/test_empty_reason.py) ─────
 def test_new_words_blocked():
     assert gates.new_words_blocked(gates.WIP_LIMIT, False) is True
     assert gates.new_words_blocked(0, True) is True
     assert gates.new_words_blocked(gates.WIP_LIMIT - 1, False) is False
-
-
-def test_empty_reason_priority():
-    """Слух → экзамен → перебор → всё повторено; порядок фиксирован."""
-    assert gates.empty_session_reason(has_audio_pending=True, gate_open=True,
-                                      in_work=99) == "listen_pending"
-    assert gates.empty_session_reason(has_audio_pending=False, gate_open=True,
-                                      in_work=99) == "exam_pending"
-    assert gates.empty_session_reason(has_audio_pending=False, gate_open=False,
-                                      in_work=gates.WIP_LIMIT) == "wip_full"
-    assert gates.empty_session_reason(has_audio_pending=False, gate_open=False,
-                                      in_work=0) == "all_done"

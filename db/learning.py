@@ -48,7 +48,8 @@ from srs.cells import (REQUIRED_CELLS, FUNC_CELLS, FUNC_CELLS_CHOICE, PHRASE_CEL
                        ALL_CELLS, AUDIO_CELL as _AUDIO_CELL)
 from srs import cells as _srs_cells, status as _srs_status, steps as _srs_steps
 from srs import gates as _gates
-from session import pools as _pools, forms_phase as _forms_phase, distractors as _distractors
+from session import (pools as _pools, forms_phase as _forms_phase,
+                     distractors as _distractors, reason as _reason)
 from session.shape import make_element as _make_element
 # Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
 # (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
@@ -1037,15 +1038,16 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     await _attach_choice_options(session, lang)
     _tm["choice"] = time.monotonic() - _ta
     comp["total"] = len(session)
-    if early_review and session:
-        comp["reason"] = "early_review"          # сессия из досрочных повторов (тупик обойдён)
-    # ПУСТАЯ сессия у ветерана — не баг, а состояние: скажем фронту ПОЧЕМУ пусто
-    # (повторы не due; новые заперты пачкой на экзамен / WIP-лимитом; формы выключены).
-    if not session and not scoped:
-        comp["reason"] = _gates.empty_session_reason(
-            has_audio_pending=(audio_on and any(
-                _is_audio_pending(e["row"], e["modes"], e["data"]) for e in enriched)),
-            gate_open=gate_open, in_work=in_work, wip_limit=WIP_LIMIT)
+    # Диагностика comp.reason — единая лестница session.reason.session_reason (и «сессия из
+    # досрочных повторов» и ПУСТАЯ сессия ветерана: почему пусто — повторы не due; новые заперты
+    # пачкой/WIP; слух ждёт). has_audio_pending считаем лениво — только у пустой сессии.
+    reason = _reason.session_reason(
+        session_len=len(session), scoped=scoped, early_review=early_review,
+        has_audio_pending=(not session and audio_on and any(
+            _is_audio_pending(e["row"], e["modes"], e["data"]) for e in enriched)),
+        gate_open=gate_open, in_work=in_work, wip_limit=WIP_LIMIT)
+    if reason:
+        comp["reason"] = reason
     _tm["total"] = time.monotonic() - _t0
     if _tm["total"] > 1.0:   # канарейка: логируем ТОЛЬКО медленную сборку (>1с) с разбивкой фаз
         logger.warning("slow build_session uid=%s n=%d %s", user_id, len(session),
