@@ -130,10 +130,12 @@ async def startup():
         from homograph_split import homograph_loop
         asyncio.create_task(homograph_loop())
         logger.info("homograph queue enabled: разбиение омонимов на per-pos записи")
-        asyncio.create_task(freq_loop())
-        logger.info("freq queue enabled: простановка частотности слов (Zipf)")
         asyncio.create_task(yo_fix_loop())
         logger.info("yo-fix queue enabled: бэкилл буквы «ё» в русских переводах + переозвучка")
+    # freq_loop — БЕЗ LLM (Zipf из статического корпуса): стартует ВСЕГДА, даже без ключей
+    # (был под if text_enabled() → без ключей частотность не проставлялась вовсе).
+    asyncio.create_task(freq_loop())
+    logger.info("freq queue enabled: простановка частотности слов (Zipf)")
     # Резидентный кеш эмбеддингов в RAM — дистракторы сессии считаем matvec'ом, без sqlite-KNN.
     # Источник правды — БД (/data); на старте кеш встаёт из неё, в рантайме синкается set_pool_embedding.
     try:

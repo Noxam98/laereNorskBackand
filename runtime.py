@@ -10,6 +10,7 @@ PAUSED = {
     "embed": False,      # фоновые эмбеддинги (reembed_loop + досчёт в autofill)
     "describe": False,   # генерация описаний (describe_loop)
     "forms": False,      # грамматические формы по части речи (forms_loop)
+    "countability": False,  # бэкфилл исчисляемости нунов (countability_loop) — свой ключ, не алиас forms
     "pos": False,        # переразметка части речи у «прочее» (pos_loop)
     "dedup": False,      # фоновый дедуп пула: слияние слов-дублей (dedup_loop)
     "homograph": False,  # разбиение омонимов сущ./глаг./прил. на per-pos записи (homograph_loop)

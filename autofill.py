@@ -9,7 +9,7 @@ import notify
 import runtime  # рантайм-флаги паузы фоновых задач (с админ-страницы)
 from activity import seconds_idle
 from db import (
-    get_pool_id, get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
+    get_pool_by_id, set_pool_embedding, get_pool_tts, set_pool_tts,
     get_or_create_pool, set_pool_meta, set_pool_description,
     pool_missing_embedding, pool_missing_tts, pool_missing_meta, pool_missing_description,
     translate_pending, mark_translate_done, update_pool_translate, normalize_word,
@@ -62,55 +62,54 @@ def _is_night():
     return (s <= h < e) if s <= e else (h >= s or h < e)
 
 
-async def complete_batch(items):
-    """Доделать ПАЧКУ записей: эмбеддинги одним запросом (для тех, у кого вектора нет) +
-    озвучка каждого (edge, бесплатно). Ключ/модель эмбеддинга — внутри llm.embed_texts.
-    items — [(pid, norwegian)] ИЛИ [norwegian] (строки для совместимости: pid резолвится
-    по слову → старшая запись). embedding пишется по id (омонимы: у каждой записи свой
-    вектор), tts — по слову (set_pool_tts обновляет все записи этого написания).
-    Возвращает число посчитанных эмбеддингов."""
-    # нормализуем к [(pid, word)]
-    pairs = []
-    for it in items:
-        if isinstance(it, (tuple, list)):
-            pairs.append((it[0], it[1]))
-        else:
-            pid = await get_pool_id(it)
-            if pid:
-                pairs.append((pid, it))
-    pending, seen_emb = [], set()  # (pid, текст) — только у кого вектора ещё нет
-    if llm.embed_enabled() and not runtime.PAUSED["embed"]:
-        for pid, w in pairs:
-            if not pid or pid in seen_emb:
-                continue
-            seen_emb.add(pid)
-            p = await get_pool_by_id(pid)
-            if p and not p.get("embedding"):
-                pending.append((pid, semantic_embed_text(p["data"]) or w))
-    n = 0
-    if pending:
-        vecs = await embed_texts([t for _, t in pending])
-        if vecs and len(vecs) == len(pending):
-            for (pid, _), vec in zip(pending, vecs):
-                await set_pool_embedding(pid, encode_emb(vec))
-                await mark_sem_embed(pid)
-            n = len(pending)
-    seen_tts = set()
-    for _pid, w in pairs:  # озвучка — по слову (edge бесплатный, без квоты), один раз на написание
+async def tts_backfill(words):
+    """Озвучка (edge, бесплатно) — по СЛОВУ: один mp3 на написание, все омонимы делят его
+    (set_pool_tts обновляет все записи написания). pos не нужен — звучание от него не зависит.
+    words — [norwegian]. Возвращает число сгенерённых озвучек."""
+    made, seen = 0, set()
+    for w in words:
         key = normalize_word(w)
-        if key in seen_tts:
+        if key in seen:
             continue
-        seen_tts.add(key)
+        seen.add(key)
         if not await get_pool_tts(w):
             async with _tts_lock:
                 try:
                     mp3 = await synth_tts(w)
                 except Exception as e:
                     mp3 = None
-                    logger.warning(f"complete_batch tts '{w}': {e}")
+                    logger.warning(f"tts_backfill '{w}': {e}")
                 if mp3:
                     await set_pool_tts(w, mp3)
-    return n
+                    made += 1
+    return made
+
+
+async def embed_backfill(items):
+    """Эмбеддинги пачкой — строго по ID. Омонимы (один norwegian → несколько записей с разным
+    pos) имеют КАЖДЫЙ свой вектор: get_pool_id без pos попал бы в старшую запись, вектор нужной
+    остался бы NULL и запись переизбиралась бы вечно (инцидент autofill-homograph-requeue —
+    слив квоты). Поэтому items — ТОЛЬКО [(pid, norwegian)]; резолва по слову тут нет вовсе.
+    Возвращает число посчитанных векторов."""
+    if not (llm.embed_enabled() and not runtime.PAUSED["embed"]):
+        return 0
+    pending, seen = [], set()   # (pid, текст) — только у кого вектора ещё нет
+    for pid, w in items:
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        p = await get_pool_by_id(pid)
+        if p and not p.get("embedding"):
+            pending.append((pid, semantic_embed_text(p["data"]) or w))
+    if not pending:
+        return 0
+    vecs = await embed_texts([t for _, t in pending])
+    if vecs and len(vecs) == len(pending):
+        for (pid, _), vec in zip(pending, vecs):
+            await set_pool_embedding(pid, encode_emb(vec))
+            await mark_sem_embed(pid)
+        return len(pending)
+    return 0
 
 
 
@@ -582,7 +581,7 @@ async def countability_loop():
     сразу в forms_batch (countable в NOUN_FORMS_SCHEMA) — очередь исчерпается и луп заснёт."""
     await asyncio.sleep(45)
     while True:
-        if runtime.PAUSED.get("forms"):
+        if runtime.PAUSED.get("countability"):   # свой ключ: пауза forms больше не тормозит исчисляемость
             await asyncio.sleep(20); continue
         try:
             if llm.text_enabled() and llm.text_available("autofill"):
@@ -642,11 +641,13 @@ async def autofill_loop():
                     await asyncio.sleep(600)
                     continue
                 if emb_miss or tts_miss:
-                    # озвучка первой: она бесплатная (edge) и не зависит от квот; эмбеддинги при
-                    # выжатой квоте ловят 429 на одной и той же пачке и морили бы озвучку голодом
-                    words = tts_miss or emb_miss  # пачка до 10: озвучка + эмбеддинг одним запросом
-                    n = await complete_batch(words)
-                    logger.info(f"autofill: completed batch {len(words)} (emb +{n})")
+                    # два независимых бэкфила по своим типам: озвучка по СЛОВУ (bare strings из
+                    # pool_missing_tts), эмбеддинги строго по ID ((pid,word) из pool_missing_embedding).
+                    # Озвучка бесплатна (edge) и от квот не зависит; эмбеддинги при выжатой квоте
+                    # ловят 429 — их отдельность не морит озвучку голодом.
+                    m = await tts_backfill(tts_miss) if tts_miss else 0
+                    n = await embed_backfill(emb_miss) if emb_miss else 0
+                    logger.info(f"autofill: backfill tts {len(tts_miss)}(+{m}) emb {len(emb_miss)}(+{n})")
                 elif unclassified and not runtime.PAUSED["classify"]:
                     done = await classify_batch(unclassified)  # пачка: уровень + темы
                     logger.info(f"autofill: classified {done}/{len(unclassified)}")
