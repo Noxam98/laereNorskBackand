@@ -42,20 +42,16 @@ _FAST_SEC = 3.0   # быстрый верный ответ → слово «лё
 #                только после сдачи на слух;
 #   audio ВЫКЛ — choice_no2int идёт штатно на 2-м месте как ТЕКСТ (норв.→выбор перевода), слуховой
 #                сессии нет, слово выучивается полностью текстом.
-REQUIRED_CELLS = ["choice_int2no", "choice_no2int", "build_int2no", "input_int2no"]
-_AUDIO_CELL = "choice_no2int"   # аудио-подтверждение: при audio ВКЛ откладывается в слуховую сессию
-# Рампа служебных слов (A1): карточка → 3 разных cloze (направление = индекс предложения 1..3).
-FUNC_CELLS = ["cloze_1", "cloze_2", "cloze_3"]
-ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
+# Канонические наборы клеток живут в ЧИСТОМ ядре srs/ (Этап 2 decoupling-плана);
+# здесь — реэкспорт для обратной совместимости импортов (tests, exams, роутеры).
+from srs.cells import (REQUIRED_CELLS, FUNC_CELLS, FUNC_CELLS_CHOICE, PHRASE_CELLS,
+                       ALL_CELLS, AUDIO_CELL as _AUDIO_CELL)
+from srs import cells as _srs_cells, status as _srs_status, steps as _srs_steps
 # Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
 # (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
 # (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
 CLOZE_ENABLED = os.getenv("CLOZE_ENABLED", "0") == "1"
-FUNC_CELLS_CHOICE = ["choice_int2no", "choice_no2int"]   # рампа служебных при выключенном cloze
-# Рампа устойчивых выражений (pos='phrase'): карточка → выбор перевода (узнавание) → сборка
-# ПОРЯДКА слов (игра «order»: слова фразы + дистракторы) → набор по БУКВАМ (игра «cells»: пустые
-# клетки по числу букв каждого слова, набрать всю фразу с клавиатуры — продукция по памяти).
-PHRASE_CELLS = ["choice_no2int", "order_int2no", "cells_int2no"]
+# (наборы клеток FUNC_CELLS_CHOICE / PHRASE_CELLS реэкспортированы из srs.cells выше)
 # Грамматические клетки (overlay-тир ★): НЕ входят в base-рампу и в «выучено»/CEFR — отдельный слой
 # ПОВЕРХ уже выученных слов, проверяющий формы. Доля сессии × частотный приоритет, гейтится тумблером
 # профиля (gamePrefs.grammar). NOUN-срез (существительное):
@@ -161,35 +157,33 @@ def _cloze_min(norwegian):
     return CLOZE_MIN.get((norwegian or "").strip().lower(), FUNC_GATE)
 
 
-def required_cells(row):
-    """Клетки рампы для слова: служебные → 3 cloze; остальные → choice×2/build/input.
-    row — строка с norwegian + data (json-строка или dict)."""
+def ramp_kind_of(row):
+    """Вид рампы слова (srs.cells.CONTENT/FUNC_*/PHRASE): вся «грязная» классификация
+    (парсинг data, словарь служебных, наличие игры у фразы) — здесь, в фасаде;
+    чистое ядро srs/ получает готовые булевы."""
     try:
         d = row.get("data")
         d = json.loads(d) if isinstance(d, str) else (d or {})
     except Exception:
         d = {}
-    if normalize_pos(d.get("part_of_speech")) == "phrase":
-        # рампа «фразы» (выбор → порядок слов) — ТОЛЬКО если есть игровые дистракторы (≥2).
-        # Легаси/неполные phrase-записи без data.game падают на обычную рампу (как были) — чтобы
-        # не сломать уже учащиеся слова шагом order, для которого нет фронт-игры.
-        if len(((d.get("game") or {}).get("distractors")) or []) >= 2:
-            return PHRASE_CELLS
-    if is_function_word(row.get("norwegian"), d):
-        return FUNC_CELLS if CLOZE_ENABLED else FUNC_CELLS_CHOICE   # cloze выкл → служебные «только выбор»
-    return REQUIRED_CELLS
+    # рампа «фразы» — ТОЛЬКО если есть игровые дистракторы (≥2): легаси-фразы без
+    # data.game идут обычной рампой, чтобы не сломать учащиеся слова шагом order
+    phrase_playable = (normalize_pos(d.get("part_of_speech")) == "phrase"
+                       and len(((d.get("game") or {}).get("distractors")) or []) >= 2)
+    return _srs_cells.ramp_kind(
+        phrase_playable=phrase_playable,
+        function_word=bool(is_function_word(row.get("norwegian"), d)),
+        cloze_enabled=CLOZE_ENABLED)
+
+
+def required_cells(row):
+    """Клетки рампы для слова (кортеж-константа из srs.cells)."""
+    return _srs_cells.cells_of(ramp_kind_of(row))
 
 
 def _is_mastered(row, modes):
-    """Выучено: все клетки рампы слова == '1'. Grandfathering: служебное, выученное СТАРОЙ рампой
-    (choice/build/input до перехода на cloze), считаем выученным — прогресс не сбрасываем."""
-    m = modes or {}
-    cells = required_cells(row)
-    if all(m.get(c, "") == "1" for c in cells):
-        return True
-    if cells is FUNC_CELLS and all(m.get(c, "") == "1" for c in REQUIRED_CELLS):
-        return True
-    return False
+    """Выучено (делегат srs.status.is_mastered; grandfathering служебных — внутри ядра)."""
+    return _srs_status.is_mastered(ramp_kind_of(row), modes)
 
 
 # Грамм-overlay (тир ★: _grammar_cells/_grammar_element + per-POS хелперы) вынесён в learning_grammar.py;
@@ -251,62 +245,30 @@ def _due_str(days):
     return (datetime.utcnow() + timedelta(days=days)).isoformat()
 
 
-def _mastered_by_modes(modes):
-    """Выучено: все 4 клетки рампы пройдены (каждая == '1')."""
-    return all((modes or {}).get(c, "") == "1" for c in REQUIRED_CELLS)
-
-
 def _next_step(row, modes, audio_on=False):
-    """Следующая невыполненная ступень рампы для слова → (step, mode, direction).
-    Совсем новое (0 попыток) → пассивная карточка 'card' (study, без направления).
-    Иначе — первая клетка REQUIRED_CELLS со значением != '1', из имени выводим mode/direction.
-    audio_on=True → у КОНТЕНТНЫХ слов аудио-клетку (choice_no2int) ПРОПУСКАЕМ (откладываем в слуховую
-    сессию): когда остаётся только она — возвращаем None (слово «ждёт слух», не идёт в дневную сессию).
-    Фразы/служебные не трогаем — у них choice_no2int это текстовый выбор / свой путь. mastered → None."""
+    """Следующая ступень рампы (делегат srs.steps.next_step): карточка для нового,
+    первая несданная клетка, пропуск аудио у контентных при audio ВКЛ, mastered → None."""
     attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
-    if attempts == 0:
-        return ("card", "study", None)
-    if _is_mastered(row, modes):   # в т.ч. grandfathered служебные (не гоняем по cloze повторно)
-        return None
-    cells = required_cells(row)
-    content = cells is REQUIRED_CELLS   # аудио откладываем только у контентных слов
-    for cell in cells:
-        if audio_on and content and cell == _AUDIO_CELL:
-            continue
-        if (modes or {}).get(cell, "") != "1":
-            mode, direction = cell.split("_", 1)
-            return (cell, mode, direction)
-    return None
+    return _srs_steps.next_step(ramp_kind_of(row), modes, attempts=attempts, audio_on=audio_on)
 
 
-def _review_step(row):
-    """Шаг ПОВТОРА выученного слова, ставшего due: последняя ПРОДУКТИВНАЯ ступень (не аудио).
-    Для контентных это input_int2no (ввод с клавиатуры) — аудио-клетку из повтора исключаем, чтобы
-    повтор был текстовым. Верный ответ → интервал растёт (слово остаётся mastered); неверный →
-    apply_result сбросит input+build → откат в рампу."""
-    cells = [c for c in required_cells(row) if c != _AUDIO_CELL] or required_cells(row)
-    last = cells[-1]
-    mode, direction = last.split("_", 1)
-    return (last, mode, direction)
+def _review_step(row, modes=None, audio_on=False):
+    """Шаг ПОВТОРА (делегат srs.steps.review_step): последняя продуктивная ступень.
+    КОНТРАКТ ядра: слово, ждущее слуховой сдачи, на текстовый повтор не выдаётся (None) —
+    защита внутри ядра, а не в вызывающих (инцидент #4, 3.07)."""
+    return _srs_steps.review_step(ramp_kind_of(row), modes, audio_on=audio_on)
 
 
 def status_of(row, modes=None):
-    """Статус слова из его состояния."""
-    if row.get("known"):
-        return "known"     # «Уже знаю»: знакомое — вне ротации, НЕ «Выучено», прогресс не двигает
-    if row.get("archived"):
-        return "archived"
-    attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
-    strength = row.get("strength") or 0
-    if attempts == 0:
-        return "new"
-    if _is_mastered(row, modes):
-        return "mastered"
-    if strength < 40 and (row.get("incorrect") or 0) >= 2:
-        return "weak"
-    if (row.get("reps") or 0) >= 1:
-        return "review"
-    return "learning"
+    """Статус слова из его состояния (делегат srs.status.word_status)."""
+    return _srs_status.word_status(
+        ramp_kind_of(row), modes,
+        attempts=(row.get("correct") or 0) + (row.get("incorrect") or 0),
+        strength=row.get("strength") or 0,
+        incorrect=row.get("incorrect") or 0,
+        reps=row.get("reps") or 0,
+        known=bool(row.get("known")),
+        archived=bool(row.get("archived")))
 
 
 def _is_due(row):
@@ -931,7 +893,8 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             # новое служебное слово придерживаем, пока выученных контентных < его пословного порога
             if attempts(e) == 0 and _func_locked(e):
                 continue
-            step = _review_step(e["row"]) if review else _next_step(e["row"], e["modes"], audio_on)
+            step = (_review_step(e["row"], e["modes"], audio_on=audio_on) if review
+                    else _next_step(e["row"], e["modes"], audio_on))
             if not step:
                 continue
             seen.add(pid)
@@ -950,12 +913,12 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     if not ordered and not scoped:
         early = sorted(
             [e for e in enriched if e["status"] in ("learning", "review", "weak")
-             and attempts(e) > 0 and not e["row"].get("archived") and not e["row"].get("known")
-             # слова, ждущие слуховой сдачи, живут в СЛУХОВОЙ партии — сюда не тянем
-             and not (audio_on and _is_audio_pending(e["row"], e["modes"], e["data"]))],
+             and attempts(e) > 0 and not e["row"].get("archived") and not e["row"].get("known")],
             key=lambda e: e["row"].get("due_at") or "~")
         for e in early[:size]:
-            step = _review_step(e["row"])
+            # слуховые слова не утянет: review_step сам вернёт None для audio-pending
+            # (контракт srs.steps, Этап 2 — ручной фильтр здесь больше не нужен)
+            step = _review_step(e["row"], e["modes"], audio_on=audio_on)
             if step:
                 ordered.append((e, step))
         early_review = bool(ordered)
@@ -1289,14 +1252,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
 
 # ---------------- слуховая сессия (аудио-подтверждение выученного текстом) ----------------
 def _is_audio_pending(row, modes, data):
-    """Слово прошло ТЕКСТОВУЮ рампу, но не аудио → «ждёт слух». Контентное (REQUIRED_CELLS), все
-    текстовые клетки == '1', а choice_no2int ещё не пройдена. Только при включённых аудиозаданиях это
-    состояние вообще возникает (иначе choice_no2int идёт в дневной рампе текстом)."""
-    if required_cells({"norwegian": row.get("norwegian"), "data": data}) is not REQUIRED_CELLS:
-        return False   # фразы/служебные не «ждут слух» — у них choice_no2int это текстовый выбор / свой путь
-    m = modes or {}
-    return m.get(_AUDIO_CELL, "") != "1" and all(
-        m.get(c, "") == "1" for c in REQUIRED_CELLS if c != _AUDIO_CELL)
+    """«Ждёт слух» (делегат srs.status.is_audio_pending): текстовая рампа сдана,
+    аудио-клетка нет; только контентные слова."""
+    kind = ramp_kind_of({"norwegian": row.get("norwegian"), "data": data})
+    return _srs_status.is_audio_pending(kind, modes)
 
 
 async def _audio_pending_rows(user_id):

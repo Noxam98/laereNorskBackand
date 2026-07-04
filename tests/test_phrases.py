@@ -93,7 +93,7 @@ async def test_phrase_ramp_cells(fresh_db):
             row = dict(await cur.fetchone())
     finally:
         await _release(db)
-    assert required_cells(row) == PHRASE_CELLS == ["choice_no2int", "order_int2no", "cells_int2no"]
+    assert required_cells(row) == PHRASE_CELLS == ("choice_no2int", "order_int2no", "cells_int2no")
 
 
 @pytest.mark.asyncio

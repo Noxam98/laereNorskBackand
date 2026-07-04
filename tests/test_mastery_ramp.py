@@ -1,8 +1,15 @@
 """Мастери-рампа из 4 клеток: choice_no2int → choice_int2no → build_int2no → input_int2no.
 Каждая клетка хранит '1' (пройдена) / '' (сброс ошибкой); mastered = все 4 == '1'."""
 import pytest
-from db.learning import apply_result, REQUIRED_CELLS, CAPACITY, _mastered_by_modes, status_of
+from db.learning import apply_result, REQUIRED_CELLS, CAPACITY, status_of
+from srs.cells import CONTENT
+from srs.status import is_mastered
 from tests.conftest import seed_user, seed_word
+
+
+def _mastered_by_modes(modes):
+    """Шим на чистое ядро (Этап 2; db.learning._mastered_by_modes удалён как мёртвый)."""
+    return is_mastered(CONTENT, modes)
 
 
 async def _master_all(uid, pid):

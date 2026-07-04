@@ -1,0 +1,98 @@
+"""ЭТАП 2: чистое SRS-ядро (srs/) — матрица видов рампы, контракты шагов, паритет с фасадом.
+
+Ядро не знает про БД: всё тестируется значениями. Особые ветки (критика плана):
+grandfathering ОДНОНАПРАВЛЕННЫЙ (старая контентная рампа у служебного = выучено;
+обратный флип cloze выкл→вкл ничего не грандфазирует) — фикстуры явные, не случайные."""
+import pytest
+
+from srs import cells, status, steps
+from srs.cells import CONTENT, FUNC_CLOZE, FUNC_CHOICE, PHRASE
+
+
+# ── ramp_kind: полная матрица ────────────────────────────────────────────────
+@pytest.mark.parametrize("phrase,func,cloze,expected", [
+    (True, False, True, PHRASE),
+    (True, True, True, PHRASE),        # фраза побеждает всё
+    (False, True, True, FUNC_CLOZE),
+    (False, True, False, FUNC_CHOICE),
+    (False, False, True, CONTENT),
+    (False, False, False, CONTENT),
+])
+def test_ramp_kind_matrix(phrase, func, cloze, expected):
+    assert cells.ramp_kind(phrase_playable=phrase, function_word=func,
+                           cloze_enabled=cloze) == expected
+
+
+def test_cells_are_immutable_tuples():
+    """Раньше «вид рампы» держался на identity списков — теперь наборы иммутабельны,
+    и рефактор cells_of не может молча сломать классификацию."""
+    for kind in (CONTENT, FUNC_CLOZE, FUNC_CHOICE, PHRASE):
+        assert isinstance(cells.cells_of(kind), tuple)
+
+
+# ── grandfathering: однонаправленный ─────────────────────────────────────────
+OLD_CONTENT_DONE = {c: "1" for c in cells.REQUIRED_CELLS}
+CLOZE_DONE = {c: "1" for c in cells.FUNC_CELLS}
+
+
+def test_grandfather_func_word_mastered_by_old_content_ramp():
+    """Служебное, выученное СТАРОЙ контентной рампой, остаётся выученным при cloze ВКЛ."""
+    assert status.is_mastered(FUNC_CLOZE, OLD_CONTENT_DONE) is True
+
+
+def test_no_reverse_grandfather_cloze_to_choice():
+    """Обратный флип (слово сдало cloze, затем cloze выключили → рампа «только выбор»):
+    cloze-прогресс НЕ считается за choice-клетки — mastered только по своим клеткам."""
+    assert status.is_mastered(FUNC_CHOICE, CLOZE_DONE) is False
+    assert status.is_mastered(FUNC_CHOICE, {c: "1" for c in cells.FUNC_CELLS_CHOICE}) is True
+
+
+# ── audio-pending и контракт review_step (инциденты #3/#4) ───────────────────
+AUDIO_PENDING = {c: "1" for c in cells.REQUIRED_CELLS if c != cells.AUDIO_CELL}
+
+
+def test_audio_pending_only_for_content():
+    assert status.is_audio_pending(CONTENT, AUDIO_PENDING) is True
+    assert status.is_audio_pending(CONTENT, OLD_CONTENT_DONE) is False
+    for kind in (FUNC_CLOZE, FUNC_CHOICE, PHRASE):
+        assert status.is_audio_pending(kind, AUDIO_PENDING) is False
+
+
+def test_review_step_refuses_audio_pending_word():
+    """КОНТРАКТ: слуховое слово не выдаётся на текстовый повтор — guard внутри ядра,
+    любой будущий фолбэк-пул физически не может его утащить (инцидент #4)."""
+    assert steps.review_step(CONTENT, AUDIO_PENDING, audio_on=True) is None
+    # audio ВЫКЛ — слуховой партии нет, повтор штатный
+    assert steps.review_step(CONTENT, AUDIO_PENDING, audio_on=False) == \
+        ("input_int2no", "input", "int2no")
+    # выученное целиком — повтор штатный и при audio ВКЛ
+    assert steps.review_step(CONTENT, OLD_CONTENT_DONE, audio_on=True) == \
+        ("input_int2no", "input", "int2no")
+
+
+def test_next_step_defers_audio_cell():
+    """audio ВКЛ: текстовые ступени идут вперёд, осталась только аудио-клетка → None
+    («ждёт слух»); audio ВЫКЛ: аудио-клетка идёт текстом по порядку."""
+    m = {"choice_int2no": "1"}
+    assert steps.next_step(CONTENT, m, attempts=2, audio_on=True) == \
+        ("build_int2no", "build", "int2no")
+    assert steps.next_step(CONTENT, m, attempts=2, audio_on=False) == \
+        ("choice_no2int", "choice", "no2int")
+    assert steps.next_step(CONTENT, AUDIO_PENDING, attempts=5, audio_on=True) is None
+    assert steps.next_step(CONTENT, {}, attempts=0, audio_on=True) == ("card", "study", None)
+
+
+# ── паритет фасада db.learning со старым поведением ─────────────────────────
+async def test_facade_parity(fresh_db):
+    """Фасадные функции db.learning дают те же ответы, что и до выноса ядра."""
+    from db import learning as L
+    row = {"norwegian": "hus", "data": '{"part_of_speech": "noun"}',
+           "correct": 2, "incorrect": 0, "strength": 50, "reps": 2,
+           "known": None, "archived": None}
+    assert L.required_cells(row) == cells.REQUIRED_CELLS
+    assert L._is_mastered(row, OLD_CONTENT_DONE) is True
+    assert L.status_of(row, OLD_CONTENT_DONE) == "mastered"
+    assert L._next_step(row, {"choice_int2no": "1"}, audio_on=False) == \
+        ("choice_no2int", "choice", "no2int")
+    assert L._review_step(row, AUDIO_PENDING, audio_on=True) is None
+    assert L._is_audio_pending(row, AUDIO_PENDING, {"part_of_speech": "noun"}) is True

@@ -12,7 +12,7 @@ def test_function_word_choice_only_when_cloze_off():
     """Служебное слово («å») при выключенном cloze → рампа «только выбор», без cloze-ступеней."""
     cells = required_cells({"norwegian": "å", "data": "{}"})
     assert "cloze_1" not in cells
-    assert cells == ["choice_int2no", "choice_no2int"]
+    assert cells == ("choice_int2no", "choice_no2int")   # кортеж-константа из srs.cells (Этап 2)
 
 
 def test_conjunction_choice_only_when_cloze_off():
