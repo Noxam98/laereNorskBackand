@@ -87,6 +87,28 @@ async def test_replenish_when_pool_empty_and_base_available(fresh_db):
     assert len(res["words"]) >= 1
 
 
+@pytest.mark.asyncio
+async def test_no_replenish_until_placed(fresh_db):
+    """Новичок БЕЗ плейсмента (start_level=NULL) — авто-добор НЕ срабатывает: иначе досыпется A1
+    ДО выбора уровня (баг «B1-юзер получал å være»). После плейсмента — досыпает."""
+    uid, _did = await seed_user()
+    dbc = await _conn()
+    try:
+        await dbc.execute("UPDATE users SET start_level = NULL WHERE id = ?", (uid,))
+        await dbc.commit()
+    finally:
+        await _release(dbc)
+    await _seed_base(12, level="A1")
+
+    res = await build_session(uid, size=10)
+    assert res["words"] == [] and await _hidden_word_count(uid) == 0   # не досыпали до плейсмента
+
+    from db.placement import set_start_level
+    await set_start_level(uid, "A1")                                    # прошёл плейсмент
+    res2 = await build_session(uid, size=10)
+    assert len(res2["words"]) >= 1 and await _hidden_word_count(uid) >= 1
+
+
 # ---------------- (2) ворота закрыты → НЕ досыпает ----------------
 
 @pytest.mark.asyncio

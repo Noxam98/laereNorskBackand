@@ -34,10 +34,12 @@ async def fresh_db():
 
 
 async def seed_user(username="t"):
-    """Создать пользователя + дефолтный словарь, вернуть user_id, dict_id."""
+    """Создать пользователя + дефолтный словарь, вернуть user_id, dict_id.
+    start_level='A1' по умолчанию — юзер в сессии считается прошедшим плейсмент (иначе авто-добор
+    заблокирован гейтом «не досыпаем до выбора уровня», см. build_session)."""
     dbc = await _conn()
     try:
-        cur = await dbc.execute("INSERT INTO users (username,password) VALUES (?, 'x')", (username,))
+        cur = await dbc.execute("INSERT INTO users (username,password,start_level) VALUES (?, 'x', 'A1')", (username,))
         uid = cur.lastrowid
         cur = await dbc.execute("INSERT INTO dictionaries (user_id,name,created_at) VALUES (?, 'default', ?)", (uid, _now()))
         did = cur.lastrowid

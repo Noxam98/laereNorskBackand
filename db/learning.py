@@ -800,7 +800,12 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # Авто-добор — под ПЕР-ЮЗЕР локом (Этап 9): два таба одновременно видели бы new_avail==0 и
     # оба вызвали suggest_words → дубль-вставки в скрытый словарь. Секция короткая (suggest_* —
     # чистый SQL, без LLM/сети), лок держится НЕ на всю сборку. Тот же лок, что apply_result.
-    if not scoped and not gate_open:
+    # НЕ досыпаем, пока юзер не выбрал уровень (start_level). Иначе у нового аккаунта авто-добор
+    # срабатывает ДО плейсмента и estimate_level по умолчанию = A1 → в словарь падают A1-слова
+    # (å være и т.п.), даже если потом человек указал B1. Плейсмент (seed_starter) сам зовёт
+    # suggest_words с явным уровнем — этот гейт его не трогает.
+    placed = bool(await get_start_level(user_id))
+    if placed and not scoped and not gate_open:
         async with _user_lock(user_id):
             # СВЕЖИЙ снимок ПОД локом: конкурентный таб мог досыпать за время ожидания лока —
             # без перечитки оба увидели бы свой стейл new_avail==0 и досыпали дважды.
