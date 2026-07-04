@@ -9,6 +9,7 @@ import unicodedata
 from datetime import datetime, timedelta
 import fuzzy
 from config import logger
+from . import bg_tasks as _bg_tasks   # реестр fire-and-forget задач (Этап 9)
 from .core import _conn, _release, _now
 from .pool_queues import has_tts_expr   # единый источник правды «есть озвучка» (Этап 1)
 
@@ -300,14 +301,27 @@ def _display_status(row, st):
 
 # ---------------- запись результата ответа (SRS) ----------------
 
-_APPLY_LOCK = asyncio.Lock()   # сериализует read-modify-write одного ответа (двойной тап/ретрай/base×grammar)
+# ПЕР-ЮЗЕР лок (Этап 9): ЕДИНЫЙ реестр для ВСЕХ read-modify-write путей одного юзера —
+# apply_result (reps/клетки рампы/form_cycle через note_cycle_mastered), авто-добор
+# build_session (иначе два таба дважды досыпают) и запись form_cycle в build_session.
+# Один реестр, а не разные локи: гонка между note_cycle_mastered (apply) и save_form_cycle
+# (build) на form_cycle иначе осталась бы открытой. Разные юзеры не сериализуются друг с
+# другом (был один глобальный _APPLY_LOCK — все ответы всех юзеров в очередь).
+_USER_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _user_lock(user_id: int) -> asyncio.Lock:
+    lk = _USER_LOCKS.get(user_id)
+    if lk is None:
+        lk = _USER_LOCKS[user_id] = asyncio.Lock()
+    return lk
 
 
 async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
                        mode: str = None, direction: str = None):
-    """Обёртка под локом: иначе два почти-одновременных ответа читают одну старую строку и второй
-    commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock достаточно."""
-    async with _APPLY_LOCK:
+    """Обёртка под пер-юзер локом: иначе два почти-одновременных ответа читают одну старую строку
+    и второй commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock."""
+    async with _user_lock(user_id):
         return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction)
 
 
@@ -775,41 +789,50 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # «База» не подмешивается. Дополнительно: ворота не закрыты (не ждём экзамен / нет
     # тормоза аудита) И есть свободный слот в работе (in_work < WIP_LIMIT — иначе новые
     # всё равно не вводятся по лимиту). Сколько досыпать — до WIP_LIMIT по in_work.
+    # Авто-добор — под ПЕР-ЮЗЕР локом (Этап 9): два таба одновременно видели бы new_avail==0 и
+    # оба вызвали suggest_words → дубль-вставки в скрытый словарь. Секция короткая (suggest_* —
+    # чистый SQL, без LLM/сети), лок держится НЕ на всю сборку. Тот же лок, что apply_result.
     if not scoped and not gate_open:
-        # залоченные пословным порогом новые служебные не считаем «доступными новыми» — иначе они
-        # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются.
-        # Фразы тоже исключаем — у них свой ручеёк (suggest_phrases ниже), иначе они держали бы
-        # new_avail>0 и блокировали добор слов, когда свои слова у юзера кончились.
-        new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e)
-                        and (e["data"].get("part_of_speech") != "phrase"))
-        if new_avail == 0 and in_work < WIP_LIMIT:
-            _ts = time.monotonic()
-            level = await estimate_level(user_id)
-            res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level, allow_func=func_gate_ok)
-            if res.get("added"):
-                # перечитываем слова после добора и продолжаем обычную сборку
-                enriched, in_work, gate_open = await _load()
-                content_known = _content_known(enriched)
-                func_gate_ok = content_known >= FUNC_GATE
-            _tm["suggest"] = time.monotonic() - _ts
+        async with _user_lock(user_id):
+            # СВЕЖИЙ снимок ПОД локом: конкурентный таб мог досыпать за время ожидания лока —
+            # без перечитки оба увидели бы свой стейл new_avail==0 и досыпали дважды.
+            enriched, in_work, gate_open = await _load()
+            content_known = _content_known(enriched)
+            func_gate_ok = content_known >= FUNC_GATE
+            # залоченные пословным порогом новые служебные не считаем «доступными новыми» — иначе они
+            # держат new_avail>0 и блокируют добор контентных, которыми сами же и разблокируются.
+            # Фразы тоже исключаем — у них свой ручеёк (suggest_phrases ниже), иначе они держали бы
+            # new_avail>0 и блокировали добор слов, когда свои слова у юзера кончились.
+            new_avail = sum(1 for e in enriched if e["status"] == "new" and not _func_locked(e)
+                            and (e["data"].get("part_of_speech") != "phrase"))
+            if new_avail == 0 and in_work < WIP_LIMIT and not gate_open:
+                _ts = time.monotonic()
+                level = await estimate_level(user_id)
+                res = await suggest_words(user_id, count=WIP_LIMIT - in_work, level=level, allow_func=func_gate_ok)
+                if res.get("added"):
+                    # перечитываем слова после добора и продолжаем обычную сборку
+                    enriched, in_work, gate_open = await _load()
+                    content_known = _content_known(enriched)
+                    func_gate_ok = content_known >= FUNC_GATE
+                _tm["suggest"] = time.monotonic() - _ts
 
-    # УСТОЙЧИВЫЕ ВЫРАЖЕНИЯ: тонкий ручеёк НЕЗАВИСИМО от слов — держим PHRASE_BUFFER неначатых фраз
-    # доступными (кумулятивно по уровню). Подмешиваются новыми карточками наравне со словами, делят
-    # cap_new. ВАЖНО: после авто-добора слов выше (иначе фразы в new_avail подавили бы тот добор).
-    if not scoped and not gate_open:
-        _tp = time.monotonic()
-        dbp = await _conn()
-        try:
-            supply = await _phrase_supply(dbp, user_id)
-        finally:
-            await _release(dbp)
-        if supply < PHRASE_BUFFER:
-            pres = await suggest_phrases(user_id, count=PHRASE_BUFFER - supply)
-            if pres.get("added"):
-                enriched, in_work, gate_open = await _load()
-                content_known = _content_known(enriched)
-                func_gate_ok = content_known >= FUNC_GATE
-        _tm["phrases"] = time.monotonic() - _tp
+            # УСТОЙЧИВЫЕ ВЫРАЖЕНИЯ: тонкий ручеёк НЕЗАВИСИМО от слов — держим PHRASE_BUFFER неначатых
+            # фраз доступными (кумулятивно по уровню). Подмешиваются новыми карточками наравне со
+            # словами, делят cap_new. ВАЖНО: после авто-добора слов выше (иначе фразы в new_avail
+            # подавили бы тот добор).
+            _tp = time.monotonic()
+            dbp = await _conn()
+            try:
+                supply = await _phrase_supply(dbp, user_id)
+            finally:
+                await _release(dbp)
+            if supply < PHRASE_BUFFER:
+                pres = await suggest_phrases(user_id, count=PHRASE_BUFFER - supply)
+                if pres.get("added"):
+                    enriched, in_work, gate_open = await _load()
+                    content_known = _content_known(enriched)
+                    func_gate_ok = content_known >= FUNC_GATE
+            _tm["phrases"] = time.monotonic() - _tp
 
     # пулы/отбор/кулдаун — чистые шаги session.pools (Этап 4); БД-специфика (предикаты,
     # степы ядра, настройки юзера) инжектится замыканиями
@@ -917,14 +940,19 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             group_of=_group_of, pronoun_forms=PRONOUN_PARADIGM.get, cells_for=_cells_for)
         fstates = await load_form_states(user_id, list(finfo)) if finfo else {}
         blocked_new = _gates.new_words_blocked(in_work, gate_open, wip_limit=WIP_LIMIT)
-        fplan = _forms_phase.plan_forms_phase(
-            cands, finfo, fstates=fstates, cycle_state=await get_form_cycle(user_id),
-            now_s=_now(), cap_new=cap_new, size=size,
-            base_servable=sum(1 for e2, _s2 in ordered if attempts(e2) > 0 or not blocked_new),
-            batch_size=FORM_CYCLE_BATCH, session_share=FORMS_SESSION_SHARE,
-            overlay_pending=_overlay_pending)
-        if fplan["save_cycle"]:
-            await save_form_cycle(user_id, *fplan["save_cycle"])
+        # form_cycle: чтение+план+запись АТОМАРНО под пер-юзер локом (Этап 9). Иначе между нашим
+        # get_form_cycle и save_form_cycle apply_result.note_cycle_mastered (тот же лок!) допишет
+        # партию, а наш save её затрёт (lost update). План — чистый и без await, лок держится
+        # мгновение; load_form_states оставлен вне лока (form_srs не спорный ресурс, стейл ок).
+        async with _user_lock(user_id):
+            fplan = _forms_phase.plan_forms_phase(
+                cands, finfo, fstates=fstates, cycle_state=await get_form_cycle(user_id),
+                now_s=_now(), cap_new=cap_new, size=size,
+                base_servable=sum(1 for e2, _s2 in ordered if attempts(e2) > 0 or not blocked_new),
+                batch_size=FORM_CYCLE_BATCH, session_share=FORMS_SESSION_SHARE,
+                overlay_pending=_overlay_pending)
+            if fplan["save_cycle"]:
+                await save_form_cycle(user_id, *fplan["save_cycle"])
     grammar_picks = fplan["picks"]   # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]
     cycle_phase, cycle_left, cycle_cells = fplan["phase"], fplan["cycle_left"], fplan["cycle_cells"]
     cap_new = fplan["cap_new"]   # фаза forms новых слов не вводит: 0 приходит ПОЛЕМ плана, не мутацией
@@ -978,8 +1006,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             items = cloze_map.get(pid)
             idx = (int(direction) - 1) if str(direction).isdigit() else 0
             if not items or idx >= len(items):
-                # cloze ещё не сгенерён — запускаем фоном, это слово сейчас пропускаем (придёт позже)
-                asyncio.create_task(generate_cloze(user_id, pid))
+                # cloze ещё не сгенерён — запускаем фоном (реестр держит strong-ref + логирует
+                # падение; голый create_task GC мог убить на середине), слово сейчас пропускаем
+                _bg_tasks.spawn(generate_cloze(user_id, pid), name=f"cloze:{user_id}:{pid}")
                 continue
             el["cloze"] = items[idx]
         session.append(el)
