@@ -47,6 +47,7 @@ _FAST_SEC = 3.0   # быстрый верный ответ → слово «лё
 from srs.cells import (REQUIRED_CELLS, FUNC_CELLS, FUNC_CELLS_CHOICE, PHRASE_CELLS,
                        ALL_CELLS, AUDIO_CELL as _AUDIO_CELL)
 from srs import cells as _srs_cells, status as _srs_status, steps as _srs_steps
+from srs import gates as _gates
 # Тип задания «вставь пропущенное» (cloze) для служебных слов можно временно выключить
 # (CLOZE_ENABLED=0, дефолт — ВЫКЛ). Тогда служебные слова идут упрощённой рампой «только выбор»
 # (карточка → choice×2 → выучено), без cloze. Вернуть — Fly secret CLOZE_ENABLED=1.
@@ -191,8 +192,9 @@ def _is_mastered(row, modes):
 _LEVEL_ORDER = {lv: i for i, lv in enumerate(LEVELS)}
 
 # --- Зачётный экзамен-ворота (§2.4-A): пейсит приток новых слов ---
-PACK_FIRST = 50   # первый порог (до первой сертификации)
-PACK = 100        # порог последующих пачек
+# Пороги пачки живут в srs.gates (единый источник, Этап 3) — тут реэкспорт для
+# совместимости импортов (exams.py, тесты).
+from srs.gates import PACK_FIRST, PACK   # noqa: E402
 SAMPLE = 30       # сколько случайных вопросов в выборке экзамена
 PASS = 27         # сколько нужно верных, чтобы сдать
 
@@ -665,7 +667,7 @@ async def get_due(user_id, limit=20):
 
 # ---------------- движок сессии (систему ведёт сервер, режим не выбирает игрок) ----------------
 
-WIP_LIMIT = 20   # лимит слов одновременно-в-работе (new+learning); новые не вводим сверх него
+from srs.gates import WIP_LIMIT   # noqa: E402 — лимит «в работе»: единый источник srs.gates
 NEW_PER_SESSION = 6   # потолок НОВЫХ слов (карточек-знакомств) за одну сессию — остальное добиваем
                       # заданиями рампы. Состав растёт сам: 6 карт → 6+6 заданий → 6+12 → 2+18 (до size).
 PHRASE_BUFFER = 2     # сколько НЕначатых устойчивых выражений держим доступными в Учёбе (тонкий ручеёк):
@@ -769,18 +771,13 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             except Exception:
                 pdata = {}
             enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r), "data": pdata})
-        # сколько слов уже в работе (не mastered, не archived, не new) — для лимита притока новых.
-        # Слова, ждущие ТОЛЬКО слуховой сдачи (audio-pending), НЕ считаем «в работе»: они живут
-        # в параллельной слуховой партии и в дневной сессии клеток не получают — иначе 20+ таких
-        # слов душили WIP-лимит и дневная сессия ветерана приходила ПУСТОЙ (тупик 3.07).
-        in_work = sum(1 for e in enriched
-                      if e["status"] in ("learning", "review", "weak")
-                      and not (audio_on and _is_audio_pending(e["row"], e["modes"], e["data"])))
-        # ворота: пока несданная пачка открыта на экзамен — новые слова не вводим;
-        # мягкий тормоз аудита (>THROTTLE забытого) тоже временно замораживает приток новых
+        # бюджеты/ворота — чистые именованные правила srs.gates (Этап 3): слуховые
+        # слова слот «в работе» не занимают; критерий пачки/тормоза — в одном месте
+        in_work = sum(1 for e in enriched if _gates.counts_toward_wip(
+            e["status"], ramp_kind_of(e["row"]), e["modes"], audio_on=audio_on))
         pack_n = sum(1 for e in enriched if e["status"] == "mastered" and not _is_certified(e["row"]))
         had_cert = any(_is_certified(e["row"]) for e in enriched)
-        gate_open = pack_n >= (PACK if had_cert else PACK_FIRST) or throttled
+        gate_open = _gates.exam_gate_open(pack_n, had_cert=had_cert, throttled=throttled)
         return enriched, in_work, gate_open
 
     enriched, in_work, gate_open = await _load()
@@ -1049,7 +1046,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         # опустеть: переключаемся на формы, добирая партию из бэклога. Иначе юзер, выучивший
         # всё до появления цикла, никогда не наполнит копилку и застрянет с пустыми сессиями. ──
         if phase == "words":
-            blocked_new = in_work >= WIP_LIMIT or gate_open
+            blocked_new = _gates.new_words_blocked(in_work, gate_open, wip_limit=WIP_LIMIT)
             base_servable = sum(1 for e2, _s2 in ordered if attempts(e2) > 0 or not blocked_new)
             has_form_work = any(_pending(p) for p in info) or any(
                 pid0 in info and c0 in info[pid0]["cells"]
@@ -1235,14 +1232,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # ПУСТАЯ сессия у ветерана — не баг, а состояние: скажем фронту ПОЧЕМУ пусто
     # (повторы не due; новые заперты пачкой на экзамен / WIP-лимитом; формы выключены).
     if not session and not scoped:
-        if audio_on and any(_is_audio_pending(e["row"], e["modes"], e["data"]) for e in enriched):
-            comp["reason"] = "listen_pending"    # слова ждут слуховой сдачи — жми «Слушать»
-        elif gate_open:
-            comp["reason"] = "exam_pending"      # сдай экзамен пачки → откроются новые
-        elif in_work >= WIP_LIMIT:
-            comp["reason"] = "wip_full"          # слишком много слов в работе — доучи текущие
-        else:
-            comp["reason"] = "all_done"          # всё повторено, ждём due
+        comp["reason"] = _gates.empty_session_reason(
+            has_audio_pending=(audio_on and any(
+                _is_audio_pending(e["row"], e["modes"], e["data"]) for e in enriched)),
+            gate_open=gate_open, in_work=in_work, wip_limit=WIP_LIMIT)
     _tm["total"] = time.monotonic() - _t0
     if _tm["total"] > 1.0:   # канарейка: логируем ТОЛЬКО медленную сборку (>1с) с разбивкой фаз
         logger.warning("slow build_session uid=%s n=%d %s", user_id, len(session),
