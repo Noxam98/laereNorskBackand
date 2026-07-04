@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 
 # Лимиты полей — defense-in-depth: не пускаем гигантский фритекст в LLM-промпты и огромные списки
@@ -140,6 +140,14 @@ class LearningAnswer(BaseModel):
     form: bool = False                                   # трек ФОРМ: ответ идёт в form_srs (не в base/overlay)
     cell: str | None = Field(None, max_length=16)        # клетка формы (past | def_sg | gender | …)
     stage: str | None = Field(None, max_length=8)        # ступень рампы форм (card | choose | produce)
+
+    @model_validator(mode="after")
+    def _form_requires_cell_stage(self):
+        # form=True без cell/stage раньше ТИХО проваливался в base-рампу (learning_answer_route:
+        # `if body.form and body.cell`) — ответ формы портил базовый SRS слова. Теперь это 422.
+        if self.form and (not self.cell or not self.stage):
+            raise ValueError("form=True требует cell и stage (иначе ответ формы утёк бы в base-рампу)")
+        return self
 
 
 class ChangelogEntry(BaseModel):

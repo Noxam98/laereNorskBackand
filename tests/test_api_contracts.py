@@ -87,6 +87,35 @@ async def test_pool_meta_both_outcomes(client):
     assert len(missing) <= max(2, len(found) - 3), (found, missing)
 
 
+async def test_answer_form_without_cell_rejected(client):
+    """ЭТАП 11: form=True без cell/stage раньше ТИХО писал в base-рампу (портил SRS слова).
+    Теперь валидатор LearningAnswer отклоняет → 422, а не молчаливая порча."""
+    c, uid, did = client
+    dbc = await _conn()
+    try:
+        cur = await dbc.execute(
+            "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+            ("ord", json.dumps({"translate": {"no": ["ord"], "ru": ["слово"]},
+                                "part_of_speech": "noun"}), "noun", "A1"))
+        pid = cur.lastrowid
+        await dbc.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?,?,datetime('now'))",
+                          (did, pid))
+        await dbc.commit()
+    finally:
+        await _release(dbc)
+    # form без cell/stage — отвергнуто ДО БД (валидатор модели)
+    r = await c.post("/learning/answer", json={"pool_id": pid, "correct": True, "form": True})
+    assert r.status_code == 422, r.text
+    # form с cell, но без stage — тоже отвергнуто
+    r2 = await c.post("/learning/answer",
+                      json={"pool_id": pid, "correct": True, "form": True, "cell": "def_sg"})
+    assert r2.status_code == 422, r2.text
+    # base-ответ (form не задан) — cell не нужен, проходит валидацию
+    r3 = await c.post("/learning/answer",
+                      json={"pool_id": pid, "correct": True, "mode": "choice", "direction": "int2no"})
+    assert r3.status_code == 200, r3.text
+
+
 async def test_answer_branches_form_vs_base(client):
     c, uid, did = client
     dbc = await _conn()

@@ -179,6 +179,27 @@ async def test_scoped_drill_portions_new_and_bypasses_wip(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_scoped_composition_shape_matches_normal_and_has_no_reason(fresh_db):
+    """ЭТАП 11 (характеризация вместо рискового response_model): composition ДРИЛЛА несёт тот же
+    базовый набор ключей, что и обычная сессия, и НИКОГДА не ставит reason (session_reason для
+    scoped → None — на этот контракт опирается фронт-кнопка старта). Единая строгая Pydantic-модель
+    для «обычной» и scoped сессии либо потребовала бы Optional везде, либо 422-ила бы прод (см.
+    docs/decoupling-plan.md, критика Этапа 11) — поэтому форму фиксируем ТЕСТОМ, а не моделью."""
+    uid, did = await seed_user()
+    sid = (await create_dictionary(uid, "Форма"))["id"]
+    words = [await _add_pool_word(f"s{i}") for i in range(3)]
+    await add_words_to_set(uid, sid, words)
+
+    BASE = {"fresh", "review", "weak", "progress", "phrases", "grammar", "phase", "total"}
+    normal = (await build_session(uid, size=20, lang="ru"))["composition"]
+    scoped = (await build_session(uid, size=20, lang="ru", set_id=sid))["composition"]
+    assert BASE <= set(normal) and BASE <= set(scoped)      # общий базовый контракт
+    assert "reason" not in scoped                            # дрилл причину пустоты не диагностирует
+    # scoped не тянет лишних ключей мимо union базы+опциональных (formsLeft/reason/formsCellsLeft)
+    assert set(scoped) <= BASE | {"reason", "formsLeft", "formsCellsLeft"}
+
+
+@pytest.mark.asyncio
 async def test_new_per_session_setting_overrides_cap(fresh_db):
     """Настройка профиля gamePrefs.newPerSession переопределяет потолок новых карточек за сессию."""
     from db.users import set_user_game_prefs
