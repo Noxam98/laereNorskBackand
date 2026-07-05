@@ -100,6 +100,29 @@ async def test_get_cloze_map_pads_to_three(fresh_db, fake_bank):
 
 
 @pytest.mark.asyncio
+async def test_get_cloze_map_surfaces_translations(fresh_db, monkeypatch):
+    """Если в банке есть переводы (tr/answer_tr/distractor_tr) — get_cloze_map доносит optionsTr
+    (значение каждого варианта) и sentTr (перевод предложения) для показа на разборе."""
+    monkeypatch.setattr(cloze_bank, "_BY_NO", {"på": [{"pos": "preposition", "lvl": "A1", "items": [
+        {"blank": "Boka ligger ___ bordet.", "answer": "på", "distractors": ["av", "om", "til"],
+         "tr": {"ru": "Книга лежит на столе.", "en": "The book is on the table."},
+         "answer_tr": {"ru": "на", "en": "on"},
+         "distractor_tr": [{"ru": "из/от"}, {"ru": "о/об"}, {"ru": "к/до"}]}]}]})
+    monkeypatch.setattr(cloze_bank, "_LOADED", True)
+    pid = await _seed_pool("på", "preposition")
+    db = await _conn()
+    try:
+        cmap = await get_cloze_map(db, 1, [pid])
+    finally:
+        await _release(db)
+    it = cmap[pid][0]
+    assert set(it["options"]) == {"på", "av", "om", "til"}       # варианты не тронуты
+    assert it["sentTr"]["ru"].startswith("Книга") and it["sentTr"]["en"].endswith("table.")
+    assert it["optionsTr"]["på"]["ru"] == "на"                    # ответ — контекстно
+    assert it["optionsTr"]["av"]["ru"] == "из/от"                 # дистрактор — общее значение
+
+
+@pytest.mark.asyncio
 async def test_get_cloze_map_skips_unbanked(fresh_db, fake_bank):
     """Служебное вне банка → в карте его нет (на cloze-рампе оно и не окажется)."""
     pid = await _seed_pool("hos", "preposition")

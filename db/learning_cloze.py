@@ -18,11 +18,29 @@ CLOZE_N = 3   # клеток cloze в рампе (srs.cells.FUNC_CELLS) — до
 
 
 def _with_options(it):
-    """Item банка {blank, answer, distractors} → item сессии {blank, answer, options}: options —
-    перемешанные answer + до 3 дистракторов (фронт показывает как «выбор из 4»)."""
-    opts = [it["answer"], *(it.get("distractors") or [])[:3]]
+    """Item банка {blank, answer, distractors[, tr, answer_tr, distractor_tr]} → item сессии
+    {blank, answer, options[, optionsTr, sentTr]}. options — перемешанные answer + до 3 дистракторов
+    («выбор из 4»). Если в банке есть переводы (7 языков), доносим их для показа НА РАЗБОРЕ:
+    optionsTr[слово] = {lang: значение} (ответ — контекстно, дистракторы — общее значение),
+    sentTr = {lang: перевод всего предложения}. Нет переводов в банке → поля не добавляем (фронт
+    их игнорирует) — код совместим со старым банком без tr."""
+    ans = it["answer"]
+    ds = (it.get("distractors") or [])[:3]
+    opts = [ans, *ds]
     random.shuffle(opts)
-    return {"blank": it["blank"], "answer": it["answer"], "options": opts}
+    out = {"blank": it["blank"], "answer": ans, "options": opts}
+    tr_by_word = {}
+    if it.get("answer_tr"):
+        tr_by_word[ans] = it["answer_tr"]
+    dtr = it.get("distractor_tr") or []
+    for i, d in enumerate(ds):
+        if i < len(dtr) and dtr[i]:
+            tr_by_word[d] = dtr[i]
+    if tr_by_word:
+        out["optionsTr"] = tr_by_word
+    if it.get("tr"):
+        out["sentTr"] = it["tr"]
+    return out
 
 
 async def get_cloze_map(db, user_id, pool_ids):
