@@ -362,9 +362,10 @@ async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
 
 
 @router.get("/pool/{word}/description")
-async def pool_description(word: str, model: str = None, user=Depends(get_current_user)):
-    """Описание слова из общего пула (как в личном словаре): есть — отдаём, нет — генерим и кэшируем."""
-    pid = await get_pool_id(word)
+async def pool_description(word: str, model: str = None, pool_id: int = None, user=Depends(get_current_user)):
+    """Описание слова из общего пула (как в личном словаре): есть — отдаём, нет — генерим и кэшируем.
+    pool_id — точная запись омонима (напр. `ro` сущ./глаг.), иначе первая по norwegian."""
+    pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
     p = await get_pool_by_id(pid)
@@ -481,9 +482,10 @@ async def pool_edit(word: str, body: PoolEditBody, user=Depends(llm_rate_limit))
 
 
 @router.get("/pool/{word}/synonyms")
-async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", user=Depends(get_current_user)):
-    """Близкие по смыслу слова из пула (по эмбеддингам). Без эмбеддинга — пусто."""
-    pid = await get_pool_id(word)
+async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", pool_id: int = None, user=Depends(get_current_user)):
+    """Близкие по смыслу слова из пула (по эмбеддингам). Без эмбеддинга — пусто.
+    pool_id — точная запись омонима, иначе первая по norwegian."""
+    pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
     p = await get_pool_by_id(pid)

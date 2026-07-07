@@ -87,6 +87,33 @@ async def test_pool_meta_both_outcomes(client):
     assert len(missing) <= max(2, len(found) - 3), (found, missing)
 
 
+async def test_pool_description_homograph_by_pool_id(client):
+    """Омоним `ro` (сущ./глаг.): /pool/ro/description?pool_id=<точный> отдаёт описание ИМЕННО той
+    записи, а не первой по norwegian (баг: у глагола в Базе показывалось «описание недоступно»/чужое)."""
+    c, uid, did = client
+    from db.pool import set_pool_description
+    dbc = await _conn()
+    try:
+        cur = await dbc.execute(
+            "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+            ("ro", json.dumps({"translate": {"no": ["ro"], "ru": ["покой"]}, "part_of_speech": "noun"}), "noun", "A1"))
+        noun = cur.lastrowid
+        cur = await dbc.execute(
+            "INSERT INTO word_pool (norwegian, data, pos, level, created_at) VALUES (?,?,?,?,datetime('now'))",
+            ("ro", json.dumps({"translate": {"no": ["ro"], "ru": ["грести"]}, "part_of_speech": "verb"}), "verb", "A1"))
+        verb = cur.lastrowid
+        await dbc.commit()
+    finally:
+        await _release(dbc)
+    await set_pool_description(noun, {"ru": "существительное — покой"})
+    await set_pool_description(verb, {"ru": "глагол — грести"})
+    d_verb = (await c.get(f"/pool/ro/description?pool_id={verb}")).json()
+    d_noun = (await c.get(f"/pool/ro/description?pool_id={noun}")).json()
+    assert d_verb.get("description") and d_noun.get("description")
+    assert d_verb["description"] != d_noun["description"]                       # точная запись, не первая
+    assert "глагол" in json.dumps(d_verb, ensure_ascii=False)
+
+
 async def test_answer_form_without_cell_rejected(client):
     """ЭТАП 11: form=True без cell/stage раньше ТИХО писал в base-рампу (портил SRS слова).
     Теперь валидатор LearningAnswer отклоняет → 422, а не молчаливая порча."""
