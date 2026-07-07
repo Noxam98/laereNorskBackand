@@ -40,6 +40,20 @@ async def test_search_and_facets(fresh_db):
         await _release(db)
 
 
+async def test_get_pool_meta_homograph_by_pool_id(fresh_db):
+    """Омоним `ro` (сущ. + глаг.) — get_pool_meta по norwegian даёт ПЕРВУЮ запись, а по pool_id —
+    ИМЕННО ту (баг: клик по глаголу в выдаче Базы открывал карточку существительного)."""
+    noun = await _seed("ro", "покой", pos="noun")
+    verb = await _seed("ro", "грести", pos="verb")
+    assert noun and verb and noun != verb                       # омонимы = разные записи пула
+    m_noun = await P.get_pool_meta("ro", pool_id=noun)
+    m_verb = await P.get_pool_meta("ro", pool_id=verb)
+    assert m_noun["pool_id"] == noun and m_noun["part_of_speech"] == "noun"
+    assert m_verb["pool_id"] == verb and m_verb["part_of_speech"] == "verb"
+    # без pool_id — первая по norwegian (обратная совместимость для навигации по лемме)
+    assert (await P.get_pool_meta("ro"))["pool_id"] in (noun, verb)
+
+
 async def test_queries(fresh_db):
     p1 = await _seed("vann", "вода")
     await _seed("brød", "хлеб")

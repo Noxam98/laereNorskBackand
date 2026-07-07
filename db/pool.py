@@ -619,19 +619,28 @@ async def get_pool_topics_counts():
         await _release(db)
 
 
-async def get_pool_meta(word: str, user_id: int = None):
+async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
     """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле.
-    inLearning — есть ли слово в Учёбе пользователя (в любом его словаре)."""
+    inLearning — есть ли слово в Учёбе пользователя (в любом его словаре).
+    ОМОНИМЫ: пул хранит отдельную запись на (norwegian, pos), поэтому по одному norwegian их бывает
+    несколько (напр. `ro` — сущ. и глаг.). Если передан pool_id (клик по конкретной строке выдачи) —
+    берём ИМЕННО ту запись; иначе первую по norwegian (навигация по лемме: синонимы/части композита)."""
     key = normalize_word(word)
     if not key:
         return None
     db = await _conn()
     try:
-        async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
-                              "FROM word_pool WHERE norwegian = ?", (key,)) as cur:
-            row = await cur.fetchone()
-            if not row:
-                return None
+        row = None
+        if pool_id:
+            async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
+                                  "FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
+                                  "FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
         async with db.execute("SELECT topic FROM word_topics WHERE pool_id = ?", (row["id"],)) as cur:
             topics = [r["topic"] for r in await cur.fetchall()]
         in_learning = False
