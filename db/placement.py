@@ -6,8 +6,10 @@ from .core import _conn, _release
 from .learning import LEVELS, PLACEMENT_INPUT_LEVELS, _fold_loose
 
 # Калибровка входного теста — консервативная (тест НЕ должен завышать уровень):
-PLACEMENT_PASS = 0.8     # порог сдачи уровня: >= 80% верных
-PLACEMENT_MIN = 4        # минимум отвеченных вопросов на уровне, иначе уровень не «сдан»
+PLACEMENT_PASS = 0.8     # (легаси, реэкспорт) — сдача считается по PLACEMENT_MAX_MISS, см. grade_placement
+PLACEMENT_MIN = 4         # минимум отвеченных вопросов на уровне, иначе уровень не «сдан» (надёжность)
+PLACEMENT_MAX_MISS = 5    # допускаем 1 ошибку на каждые N вопросов уровня. Фронт шлёт per=4 → 1 осечка
+                          # (3/4) не должна ронять уровень; прежний жёсткий 0.8 требовал идеальный 4/4.
 STARTER_GOAL = 20        # сколько слов гарантируем новичку после калибровки, чтобы было что учить
 
 
@@ -94,8 +96,8 @@ async def build_placement(lang="ru", per=8):
 async def grade_placement(user_id, lang, answers):
     """answers: [{no, level, answer, type}]. Оцениваем долю верных по уровням и КОНСЕРВАТИВНО
     оцениваем стартовый уровень: идём снизу вверх и засчитываем уровень только если на нём
-    отвечено достаточно (>= PLACEMENT_MIN) и доля верных >= PLACEMENT_PASS; останавливаемся
-    на ПЕРВОМ уровне со сдачей ниже порога (округление вниз). Проверка ответов — по пулу.
+    отвечено достаточно (>= PLACEMENT_MIN) и ошибок не больше 1 на каждые PLACEMENT_MAX_MISS вопросов
+    (одна осечка при per=4 не роняет уровень); останавливаемся на ПЕРВОМ несданном. Проверка — по пулу.
     Сверка по типу вопроса:
       • type=="choice": верно если answer ∈ переводам слова no на язык lang (узнавание);
       • type=="input": верно если введённое совпало с НОРВЕЖСКОЙ леммой no (или любым из
@@ -132,7 +134,7 @@ async def grade_placement(user_id, lang, answers):
     level = "A1"
     for lv in LEVELS:
         d = per_lvl[lv]
-        passed = d["total"] >= PLACEMENT_MIN and (d["ok"] / d["total"]) >= PLACEMENT_PASS
+        passed = d["total"] >= PLACEMENT_MIN and (d["total"] - d["ok"]) <= max(1, d["total"] // PLACEMENT_MAX_MISS)
         if passed:
             level = lv
         else:
@@ -157,5 +159,7 @@ async def seed_starter(user_id, level, target=STARTER_GOAL):
     if need <= 0:
         return {"seeded": 0, "had": have}
     from .learning import suggest_words   # ленивый: suggest_words вынесен в learning_suggest (грузится позже placement)
-    res = await suggest_words(user_id, count=need, level=level)
+    # allow_func=False: стартовый набор — только контентные слова; служебные вводит build_session со
+    # своим пословным гейтом (иначе в «20 стартовых» попадали og/i/ikke, которые A1-гейт не пускает).
+    res = await suggest_words(user_id, count=need, level=level, allow_func=False)
     return {"seeded": res.get("added", 0), "had": have}
