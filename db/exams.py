@@ -4,6 +4,7 @@
 они определены здесь и реэкспортируются обратно в learning (см. конец learning.py).
 """
 import json
+import math
 from .core import _conn, _release, _now
 from .learning import (
     ALL_CELLS, AUDIT_CAP, FIRST_AUDIT_DAYS, PACK, PACK_FIRST, PASS, REQUIRED_CELLS, SAMPLE,
@@ -83,11 +84,20 @@ async def new_words_blocked(user_id):
         await _release(db)
 
 
+def _load_data(r):
+    """Безопасный разбор JSON-колонки data строки пула: одна битая строка не должна ронять
+    сборку/грейд всего экзамена (try/except → {}, как в остальных местах кодовой базы)."""
+    try:
+        return json.loads(r["data"]) if r.get("data") else {}
+    except Exception:
+        return {}
+
+
 def _exam_pools(rows, lang):
     """Пулы дистракторов: переводы (no2int), норвежские слова (int2no), норвежские служебные (cloze)."""
     tr_pool, no_pool, func_pool = [], [], []
     for r in rows:
-        data = json.loads(r["data"]) if r.get("data") else {}
+        data = _load_data(r)
         t = (data.get("translate", {}).get(lang) or [None])[0]
         if t:
             tr_pool.append(t)
@@ -118,7 +128,7 @@ def _exam_question(r, lang, tr_pool, no_pool, func_pool):
     """Типизированный вопрос: cloze (служебные с примером) | int2no | no2int — все «выбор из 4».
     Ответ сверяется типонезависимо (_exam_answer_ok: перевод ИЛИ норвежское слово)."""
     import random
-    data = json.loads(r["data"]) if r.get("data") else {}
+    data = _load_data(r)
     no = r["norwegian"]
     tr = data.get("translate", {}).get(lang) or []
     corr_tr = tr[0] if tr else None
@@ -147,12 +157,44 @@ def _exam_question(r, lang, tr_pool, no_pool, func_pool):
         if len(distract) == 3:
             opts = distract + [no]; random.shuffle(opts)
             return {"type": "int2no", "prompt": corr_tr, "pool_id": r["pool_id"], "options": opts}
+        # мало норв. дистракторов → откатываемся на другой формат (см. ниже)
     # no2int: норв. слово (видимый вопрос) → выбрать перевод
     distract = _pick_distract(tr_pool, {corr_tr}, 3)
-    if len(distract) < 3:
-        return None
-    opts = distract + [corr_tr]; random.shuffle(opts)
-    return {"type": "no2int", "no": no, "pool_id": r["pool_id"], "options": opts}
+    if len(distract) == 3:
+        opts = distract + [corr_tr]; random.shuffle(opts)
+        return {"type": "no2int", "no": no, "pool_id": r["pool_id"], "options": opts}
+    # последний резерв — ввод (нужна только подсказка-перевод, дистракторы не требуются). Так слово
+    # с переводом ВСЕГДА даёт вопрос → выборка не «худеет» из-за нехватки дистракторов, и порог
+    # сдачи (см. _pass_threshold) детерминирован и совпадает у build и grade (_question_buildable).
+    return {"type": "input", "prompt": corr_tr, "pool_id": r["pool_id"]}
+
+
+def _question_buildable(r, lang, func_pool):
+    """Детерминированно (без random-roll): даст ли слово вопрос в _exam_question.
+    Годится, если есть перевод (тогда input-резерв возможен всегда) ИЛИ слово cloze-пригодно
+    (служебное с примером и 3 служебными дистракторами). Нужно, чтобы grade знал реальный размер
+    выборки и не требовал недостижимый фикс-PASS, когда вопросов сгенерилось меньше SAMPLE."""
+    data = _load_data(r)
+    tr = data.get("translate", {}).get(lang) or []
+    if tr and tr[0]:
+        return True
+    no = r["norwegian"]
+    ex = data.get("example") or {}
+    ex_no = (ex.get("no") or "").strip() if isinstance(ex, dict) else ""
+    if is_function_word(no, data) and ex_no:
+        if _blank_example(ex_no, no) and len(_pick_distract(func_pool, {no}, 3)) == 3:
+            return True
+    return False
+
+
+def _pass_threshold(n):
+    """Эффективный порог сдачи ворот для выборки из n вопросов: держим долю ~90% (как штатное
+    PASS/SAMPLE = 27/30), но не выше PASS. Если из пачки строится < SAMPLE вопросов, фикс-PASS
+    делал ворота непроходимыми (приток новых заперт навсегда) — здесь порог масштабируется.
+    n<=0 → 1 (недостижимо: correct_n=0 < 1, пачку не сертифицируем на пустом экзамене)."""
+    if n <= 0:
+        return 1
+    return min(PASS, max(1, math.ceil(0.9 * n)))
 
 
 _KNOWN_VOCAB = None
@@ -168,16 +210,20 @@ async def _known_vocab(db):
     return _KNOWN_VOCAB
 
 
-def _exam_answer_ok(r, lang, ans, known=None):
-    """Нечёткая типонезависимая сверка (fuzzy.py): ответ достаточно близок к любой «своей» форме —
-    перевод(ы) на lang, норвежское слово ИЛИ его словоформы. Со словарём-стражем (known) ввод,
-    равный ДРУГОМУ известному слову, отклоняется (это не опечатка)."""
-    data = json.loads(r["data"]) if r.get("data") else {}
+def _exam_answer_ok(r, lang, ans, known=None, accept_translation=True):
+    """Нечёткая сверка (fuzzy.py): ответ достаточно близок к «своей» форме слова. Со словарём-стражем
+    (known) ввод, равный ДРУГОМУ известному слову, отклоняется (это не опечатка).
+
+    accept_translation=False (тип input) — принимаем ТОЛЬКО норвежское слово и его словоформы, НЕ
+    показанный перевод: иначе юзер печатает показанную ему подсказку-перевод и получает «верно».
+    accept_translation=True (типы-выбор no2int/int2no/cloze) — варианты без подписей, ответом может
+    быть перевод ИЛИ норвежское слово, поэтому сверка остаётся типонезависимой."""
+    data = _load_data(r)
     try:
         fcol = json.loads(r["forms"]) if r.get("forms") else None
     except Exception:
         fcol = None
-    acc = list(data.get("translate", {}).get(lang) or [])
+    acc = list(data.get("translate", {}).get(lang) or []) if accept_translation else []
     acc += fuzzy.word_forms(r["norwegian"], fcol)
     return fuzzy.fuzzy_match(ans, acc, known=known)
 
@@ -201,7 +247,9 @@ async def build_gate_exam(user_id, lang="ru"):
         q = _exam_question(r, lang, tr_pool, no_pool, func_pool)
         if q:
             questions.append(q)
-    return {"questions": questions, "sample": SAMPLE, "pass": PASS}
+    # порог сдачи масштабируем под фактический размер выборки (см. _pass_threshold): если из пачки
+    # построилось < SAMPLE вопросов, фикс-PASS сделал бы ворота непроходимыми.
+    return {"questions": questions, "sample": SAMPLE, "pass": _pass_threshold(len(questions))}
 
 
 def _demote_fields(modes, cells=REQUIRED_CELLS):
@@ -237,17 +285,25 @@ async def _demote(db, user_id, r):
 
 
 async def grade_gate_exam(user_id, answers, lang="ru"):
-    """Оценить зачётный экзамен. answers: [{pool_id, answer}].
-    Верных ≥ PASS → сертифицировать всю текущую несданную пачку (certified=1), {passed:True}.
+    """Оценить зачётный экзамен. answers: [{pool_id, answer, type?}].
+    Верных ≥ эффективного порога (_pass_threshold от реального размера выборки, ≤ PASS) →
+    сертифицировать всю текущую несданную пачку (certified=1), {passed:True}.
     Иначе провал: демоут каждого промаха (mastered→review) + столько же самых слабых слов
-    пачки по strength (штраф ×2 промаха). {passed:False, demoted:N}."""
+    пачки по strength (штраф ×2 промаха). {passed:False, demoted:N}.
+    type (опц.): для type=='input' показанный перевод НЕ засчитывается (только норв. формы)."""
     db = await _conn()
     try:
         rows = await _fetch_user_words(db, user_id)
         pack = _pack_rows(rows)
         by_pid = {r["pool_id"]: r for r in pack}
         known = await _known_vocab(db)
-        # сверка ответов — нечётко, по любой «своей» форме слова (перевод/норв./словоформы)
+        # эффективный порог = ~90% от реально построимой выборки (капнутой SAMPLE), но не выше PASS.
+        # _question_buildable детерминирует размер выборки так же, как её строит build_gate_exam,
+        # поэтому порог совпадает у build и grade и всегда достижим (иначе фикс-PASS запирал ворота).
+        _, _, func_pool = _exam_pools(rows, lang)
+        buildable = sum(1 for r in pack if _question_buildable(r, lang, func_pool))
+        need = _pass_threshold(min(SAMPLE, buildable))
+        # сверка ответов — нечётко, по «своей» форме слова (для input перевод-подсказку не принимаем)
         correct_n = 0
         missed_pids = []
         seen = set()   # дедуп по pool_id: одна карточка засчитывается ОДИН раз. Иначе повтор верного
@@ -257,12 +313,13 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
             if not r or pid in seen:
                 continue
             seen.add(pid)
-            if _exam_answer_ok(r, lang, a.get("answer"), known):
+            accept_tr = a.get("type") != "input"   # input: показанный перевод НЕ засчитываем
+            if _exam_answer_ok(r, lang, a.get("answer"), known, accept_translation=accept_tr):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
 
-        if correct_n >= PASS:
+        if correct_n >= need:
             if pack:
                 marks = ",".join("?" for _ in pack)
                 # сертифицируем пачку и сразу назначаем первый аудит забывания (now + FIRST_AUDIT_DAYS).
@@ -332,7 +389,10 @@ async def grade_audit(user_id, answers, lang="ru"):
     db = await _conn()
     try:
         rows = await _fetch_user_words(db, user_id)
-        by_pid = {r["pool_id"]: r for r in rows if _is_certified(r)}
+        # грейдим ТОЛЬКО реально выданный набор (те же самые просроченные до AUDIT_CAP, что вернул
+        # build_audit) — иначе клиент мог бы прислать pool_id любого сертифицированного слова и
+        # двигать его audit_due / де-сертифицировать не-due слово (клиентские id не сверялись с выданными).
+        by_pid = {r["pool_id"]: r for r in _audit_rows(rows)[:AUDIT_CAP]}
         known = await _known_vocab(db)
         checked = refreshed = forgot = 0
         seen = set()   # дедуп по pool_id: дубль не накручивает checked/refreshed и не разбавляет долю forgot
@@ -343,7 +403,8 @@ async def grade_audit(user_id, answers, lang="ru"):
                 continue
             seen.add(pid)
             checked += 1
-            ok = _exam_answer_ok(r, lang, a.get("answer"), known)
+            accept_tr = a.get("type") != "input"   # input: показанный перевод НЕ засчитываем
+            ok = _exam_answer_ok(r, lang, a.get("answer"), known, accept_translation=accept_tr)
             if ok:
                 # срок растёт между успешными аудитами: новый интервал = прежний × рост.
                 # Прежний интервал помним в audit_interval (на сертификации = FIRST_AUDIT_DAYS),
