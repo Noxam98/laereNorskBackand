@@ -81,18 +81,27 @@ def phrase_close(a, b):
 # Держать в синхроне с фронтом (src/components/ui/pos.js FORMS_META_KEYS) и со схемами форм.
 FORMS_META_KEYS = ("pos", "gender")
 
+# Мусор-маркеры LLM-заполнения («формы нет»): «n/a», «-», «ingen»… Не поверхностные формы —
+# без фильтра «na» и т.п. утекали бы в множество принимаемых ответов экзамена.
+# Держать в синхроне с db/learning_forms._JUNK_FORMS и morphology._common._plausible.
+_JUNK_FORMS = {"n/a", "na", "-", "–", "—", "none", "null", "ingen"}
+
 
 def word_forms(norwegian, forms):
     """Все поверхностные формы слова для приёма ответа: лемма + словоформы из колонки forms
     (сущ.: def_sg/indef_pl/def_pl; глаг.: present/past/perfect; прил.: neuter/plural/...).
-    Исключаем служебные ключи (FORMS_META_KEYS). Уникальные, с сохранением порядка."""
+    Исключаем служебные ключи (FORMS_META_KEYS) и мусор-маркеры (_JUNK_FORMS: «n/a»/«-»/«ingen»).
+    Уникальные, с сохранением порядка."""
     out = [norwegian] if norwegian else []
     if isinstance(forms, dict):
         for k, v in forms.items():
             if k in FORMS_META_KEYS:
                 continue
             if isinstance(v, str) and v.strip():
-                out.append(v.strip())
+                sv = v.strip()
+                if sv.lower() in _JUNK_FORMS:   # «n/a»/«-»/«ingen» — не принимаем как ответ
+                    continue
+                out.append(sv)
     seen, res = set(), []
     for w in out:
         lw = w.lower()

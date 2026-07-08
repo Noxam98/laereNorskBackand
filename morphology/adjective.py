@@ -1,5 +1,5 @@
 """Морфология прилагательных (bokmål): согласование (нейтрум/мн.), степени, детектор, дистракторы."""
-from ._common import VOWELS, _norm, _syllables, _degeminate_tail, _plausible
+from ._common import VOWELS, _norm, _syllables, _degeminate_tail, _ends_double_cons, _plausible
 
 
 # Супплетив/умлаут степеней — НЕ выводим правилом, всегда нерегулярны.
@@ -40,8 +40,12 @@ ADJ_INDECLINABLE = {
 # norsk, svensk, dansk... + они же часто несравнимы морфологически.
 ADJ_SK_NO_T = {
     "norsk", "svensk", "dansk", "tysk", "fransk", "engelsk", "spansk",
-    "russisk", "finsk", "polsk", "gresk", "barnslig",  # barnslig — на -ig, дубль ок
+    "russisk", "finsk", "polsk", "gresk",
 }
+
+# Прил. на удвоенный согласный, где нейтрум СОХРАНЯЕТ удвоение перед -t
+# (исключение из общей дегеминации): full→fullt (не *fult). (Språkrådet.)
+ADJ_KEEP_DOUBLE_NEUTER = {"full"}
 
 # Синкопирующие основы -el/-en/-er (plural/comp/sup с выпадением -e-, дегеминацией).
 # Нейтрум — БЕЗ синкопы (gammel→gammelt, vakker→vakkert).
@@ -80,8 +84,16 @@ def regular_neuter(adj):
     # уже на -t: без +t (svart, kort)
     if w.endswith("t"):
         return w
-    # упрощение -nn→-nt (grønn→grønt, tynn→tynt, sann→sant) — почти 100% регулярно
-    if w.endswith("nn"):
+    # основа на -dd: нейтрум = лемме, +t не добавляем (redd→redd)
+    if w.endswith("dd"):
+        return w
+    # дегеминация финального удвоенного согласного перед -t (общий регуляр bokmål):
+    #   -nn→-nt (grønn→grønt, tynn→tynt, sann→sant), -gg→-gt (stygg→stygt, trygg→trygt),
+    #   -ll→-lt (snill→snilt, vill→vilt), -ff→-ft (tøff→tøft), -kk→-kt (frekk→frekt).
+    # Исключения — удвоение сохраняется: full→fullt.
+    if _ends_double_cons(w):
+        if w in ADJ_KEEP_DOUBLE_NEUTER:
+            return w + "t"
         return w[:-1] + "t"
     # удвоение -tt у односложных на ОДИНОЧНЫЙ ударный долгий гласный
     # (ny→nytt, blå→blått, fri→fritt). НЕ срабатывает на дифтонге (grei→greit):

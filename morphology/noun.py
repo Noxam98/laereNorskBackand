@@ -25,14 +25,16 @@ ZERO_PLURAL_NEUTER = {
 # Эвристика по суффиксу ненадёжна (våpen→våpen, lærer→lærere), держим список.
 SYNCOPE_NOUNS = {
     "sykkel", "nøkkel", "regel", "seddel", "vinter", "sommer", "finger",
-    "teater", "mønster", "vær", "alder", "åker", "fanger",
-    "muskel", "tittel", "artikkel", "onkel", "tabell",  # часть с дегеминацией
+    "teater", "mønster", "alder", "åker",
+    "muskel", "tittel", "artikkel", "onkel",  # часть с дегеминацией
 }
 
 # Агентивы на -er: мн. -ere (НЕ синкопа). lærer→lærere, arbeider→arbeidere.
+# ВАЖНО: только реальные основы на -er. Слова на -ing/-ling (utlending→utlendinger)
+# сюда НЕ входят — дефолт +er уже верен, иначе получим *utlendinge.
 AGENTIVE_ER = {
     "lærer", "arbeider", "baker", "tysker", "danser", "spiller", "leser",
-    "forsker", "maler", "kelner", "borger", "innbygger", "utlending",
+    "forsker", "maler", "kelner", "borger", "innbygger",
     "fisker", "jeger",
 }
 
@@ -53,7 +55,9 @@ PLURALIA_TANTUM = {
 UNCOUNTABLE_NOUNS = {
     "bruk", "vann", "melk", "luft", "mat", "musikk", "informasjon", "snø", "regn",
     "sukker", "salt", "smør", "kjøtt", "kaffe", "te", "søvn", "støy", "trafikk",
-    "vær", "ris", "mel", "honning", "bensin", "strøm", "helse", "kunnskap", "frihet",
+    "ris", "mel", "honning", "bensin", "strøm", "helse", "kunnskap", "frihet",
+    # NB: «vær» убрано — омоним: погода (неисч.) vs. баран «en vær» (исчисляемое,
+    # мн. værer). Ложная неисчисляемость гасила бы дриллы мн.ч. у барана.
 }
 
 

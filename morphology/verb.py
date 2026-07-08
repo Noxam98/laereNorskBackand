@@ -40,6 +40,16 @@ SHORT_VOWEL_STEM = {
 }
 SHORT_VOWEL_STEM.pop("g:", None)
 
+# Односложные глаголы на -e с основой, кончающейся на гласную: класс-4-подобные
+# (претерит -dde / перфект -dd), но огласовка основы нерегулярна — _weak_stem даёт
+# кривизну (*tite/*skjet/*klet). Держим явные формы: значение = претерит, перфект = past[:-1].
+VOWEL_STEM_E = {
+    "tie": "tidde",     # tier, tidde, tidd
+    "skje": "skjedde",  # skjer, skjedde, skjedd
+    "kle": "kledde",    # kler, kledde, kledd
+    "gre": "gredde",    # grer, gredde, gredd
+}
+
 
 def predict_present(inf):
     """Презенс регулярного глагола = инфинитив + 'r'. Спецслучаи — по спискам."""
@@ -87,6 +97,11 @@ def predict_weak_class(inf):
     inf = _norm(inf)
     if not inf:
         return (None, None, None)
+
+    # Односложные на -e с гласной основой (tie→tidde): класс-4-подобные, явные формы.
+    if inf in VOWEL_STEM_E:
+        past = VOWEL_STEM_E[inf]
+        return (4, past, "har " + past[:-1])  # tidde→tidd
 
     # CLASS 4 — короткие на гласный.
     if _is_short_vowel_inf(inf):
@@ -142,6 +157,9 @@ def all_weak_pasts(inf):
     """
     inf = _norm(inf)
     out = set()
+    if inf in VOWEL_STEM_E:
+        out.add(VOWEL_STEM_E[inf])
+        return out
     if _is_short_vowel_inf(inf):
         if inf in SHORT_VOWEL_STEM:
             out.add(SHORT_VOWEL_STEM[inf])
@@ -163,6 +181,9 @@ def all_weak_perfects(inf):
     """Множество допустимых слабых причастий (для перфекта, без 'har')."""
     inf = _norm(inf)
     out = set()
+    if inf in VOWEL_STEM_E:
+        out.add(VOWEL_STEM_E[inf][:-1])  # tidde→tidd
+        return out
     if _is_short_vowel_inf(inf):
         if inf in SHORT_VOWEL_STEM:
             out.add(SHORT_VOWEL_STEM[inf][:-1])  # bodde→bodd
