@@ -196,8 +196,9 @@ def schedule_form(stage, ease, interval_days, correct, elapsed=None):
         ease = min(_EASE_MAX, ease + (0.08 if fast else 0.04))
         if idx < len(FORM_STAGES) - 1:         # choose→produce: ещё в этой сессии
             return (FORM_STAGES[idx + 1], ease, interval_days, 0)
+        was_new = interval_days < 1                 # запоминаем ДО присваивания (иначе бонус недостижим)
         interval = 1 if interval_days < 1 else min(_INTERVAL_CAP, round(interval_days * ease))
-        if fast and interval < 1:
+        if fast and was_new:                        # быстрый верный на НОВОЙ клетке → сразу +2 дня
             interval = 2
         return ("produce", ease, interval, interval)   # клетка отработана → повтор через interval дней
 

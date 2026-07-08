@@ -78,8 +78,10 @@ def early_review_pool(enriched, *, review_step, size: int):
          and attempts_of(e) > 0 and not e["row"].get("archived") and not e["row"].get("known")],
         key=lambda e: e["row"].get("due_at") or "~")
     out = []
-    for e in early[:size]:
-        step = review_step(e)
-        if step:
+    for e in early:                      # ФИЛЬТРУЕМ (review_step) → ПОТОМ режем: у audio-юзера
+        step = review_step(e)            # слуховые слова дают None, а срез early[:size] ДО фильтра
+        if step:                         # оставлял бы пул пустым (анти-тупик не срабатывал).
             out.append((e, step))
+            if len(out) >= size:
+                break
     return out

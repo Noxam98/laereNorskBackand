@@ -33,7 +33,9 @@ def review_step(kind: str, modes: dict | None = None, *, audio_on: bool = False)
     это контракт функции, а не фильтр вызывающего."""
     if audio_on and is_audio_pending(kind, modes):
         return None
-    cells = tuple(c for c in cells_of(kind) if c != AUDIO_CELL) or cells_of(kind)
-    last = cells[-1]
+    cells = cells_of(kind)
+    if kind == CONTENT:                  # AUDIO_CELL (choice_no2int) — «слух» ТОЛЬКО у контентных;
+        cells = tuple(c for c in cells if c != AUDIO_CELL) or cells   # у FUNC_CHOICE/фраз это ТЕКСТ,
+    last = cells[-1]                     # его нельзя срезать, иначе повтор скатывается в лёгкий int2no
     mode, direction = last.split("_", 1)
     return (last, mode, direction)

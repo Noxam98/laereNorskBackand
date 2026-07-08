@@ -323,15 +323,18 @@ def _user_lock(user_id: int) -> asyncio.Lock:
 
 
 async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
-                       mode: str = None, direction: str = None):
+                       mode: str = None, direction: str = None, audio_on: bool = None):
     """Обёртка под пер-юзер локом: иначе два почти-одновременных ответа читают одну старую строку
-    и второй commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock."""
+    и второй commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock.
+    audio_on — эффективная настройка аудио (для КОРРЕКТНОГО отката ступени у контентных слов);
+    None → берём из профиля лениво (только когда реально нужен откат). Опционален, чтобы не менять
+    сигнатуру у вызывающих вне этой полосы (routers/learning, dictionaries)."""
     async with _user_lock(user_id):
-        return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction)
+        return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction, audio_on)
 
 
 async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
-                              mode: str = None, direction: str = None):
+                              mode: str = None, direction: str = None, audio_on: bool = None):
     """Обновить состояние слова после ответа (создаёт строку при первом ответе).
     mode — тип игры (choice/build/input/study/…), direction — направление ('no2int'|'int2no').
     Клетка рампы = f'{mode}_{direction}': верный ответ → '1', ошибка → '' (сброс этой клетки).
@@ -348,7 +351,8 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
         async with db.execute("SELECT norwegian, data, forms FROM word_pool WHERE id = ?", (pool_id,)) as cur:
             wp = await cur.fetchone()
         wrow = {"norwegian": (wp["norwegian"] if wp else None), "data": (wp["data"] if wp else None)}
-        cells = required_cells(wrow)
+        kind = ramp_kind_of(wrow)
+        cells = _srs_cells.cells_of(kind)   # = required_cells(wrow); kind нужен для эффективного отката
         # грамм-клетки (overlay ★) — записываем результат, но base-рампу/«выучено» они НЕ затрагивают
         gcells = _grammar_cells(wp["norwegian"], wp["data"], wp["forms"]) if wp else []
         modes = {}
@@ -402,18 +406,27 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
                     modes[cell] = "1"              # верно → ступень пройдена
                 else:
                     modes[cell] = ""               # ошибка → текущая ступень сброшена
-                    # аудио-подтверждение (choice_no2int, слуховая сессия) при ошибке НЕ откатывает
-                    # текстовые ступени — слово остаётся «ждёт слух», повторит в след. слуховой партии
-                    if cell != _AUDIO_CELL:
-                        i = cells.index(cell)
-                        if i > 0:                  # ОТКАТ на одну ступень назад (не ниже первой клетки —
-                            modes[cells[i - 1]] = ""   # т.е. карточку-интро откат никогда не трогает)
+                    # Откат — по ЭФФЕКТИВНОЙ рампе. У контентных при audio ВКЛ аудио-клетка
+                    # (choice_no2int) идёт отдельной слуховой партией и в текстовый откат НЕ входит:
+                    # ошибка на тексте откатывает на предыдущий ТЕКСТОВЫЙ шаг (мимо аудио-клетки), а
+                    # ошибка на слух текст не трогает (её клетки нет в seq). При audio ВЫКЛ и у
+                    # служебных/фраз (kind != CONTENT) choice_no2int — обычная клетка, откат штатный.
+                    if audio_on is None and kind == _srs_cells.CONTENT:
+                        from .users import get_user_audio
+                        audio_on, _ = await get_user_audio(user_id)   # лениво, только когда нужен откат
+                    seq = ([c for c in cells if c != _AUDIO_CELL]
+                           if (audio_on and kind == _srs_cells.CONTENT) else list(cells))
+                    if cell in seq:
+                        i = seq.index(cell)
+                        if i > 0:                  # ОТКАТ на одну ступень назад (карточку-интро не трогаем)
+                            modes[seq[i - 1]] = ""
         strength = _strength_from(modes["hist"])
         if correct:
             fast = elapsed is not None and elapsed <= _FAST_SEC
             ease = min(3.0, ease + (0.08 if fast else 0.04))
+            was_new = interval < 1                  # запоминаем ДО присваивания (иначе бонус недостижим)
             interval = 1 if interval < 1 else min(_INTERVAL_CAP, round(interval * ease))
-            if fast and interval < 1:
+            if fast and was_new:                    # быстрый верный на НОВОМ слове → сразу +2 дня
                 interval = 2
             st["reps"] += 1; st["correct"] += 1; st["streak"] += 1
             due = _due_str(interval)
@@ -462,8 +475,16 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
                     d0 = {}
                 pos0 = normalize_pos(d0.get("part_of_speech"))
                 from .learning_forms import note_cycle_mastered, is_formable
+                # Гейт per-POS тумблером — ТОТ ЖЕ критерий, что у build_universe (форм-фаза): иначе
+                # выключенный тумблером POS копится в батч, но выпадает из плана → цикл churn'ит
+                # forms↔words. Копим только если грамматика вкл и группа этого POS включена.
                 if is_formable(pos0, wp["forms"], wp["norwegian"]):
-                    await note_cycle_mastered(db, user_id, pool_id)
+                    from .users import get_user_grammar, get_user_grammar_pos
+                    grp = _GRAMMAR_GROUP.get(pos0)
+                    if grp and await get_user_grammar(user_id):
+                        gpos = await get_user_grammar_pos(user_id)
+                        if gpos.get(grp, True):
+                            await note_cycle_mastered(db, user_id, pool_id)
         # дневная активность (для стрика/цели/точности/хитмапа)
         day = _now()[:10]
         await db.execute("""
@@ -768,6 +789,12 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 pdata = json.loads(r["data"]) if r.get("data") else {}
             except Exception:
                 pdata = {}
+            # forms парсим ЗДЕСЬ один раз (как data/modes): голый json.loads в make_element/
+            # build_universe ронял бы ВСЮ сборку сессии на одной битой строке forms.
+            try:
+                r["forms"] = json.loads(r["forms"]) if r.get("forms") else None
+            except Exception:
+                r["forms"] = None
             enriched.append({"row": r, "modes": modes, "status": st, "due": _is_due(r), "data": pdata})
         # бюджеты/ворота — чистые именованные правила srs.gates (Этап 3): слуховые
         # слова слот «в работе» не занимают; критерий пачки/тормоза — в одном месте
@@ -903,6 +930,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # дистракторы досыпаем как prereq-лексику (после цикла), чтобы фраза разблокировалась позже. ──
     order_cands = [c for c in ordered if c[1][1] == "order"]
     distr_level, distr_pid, known_no, prereq = {}, {}, set(), []
+    stuck_phrases = []   # играбельные фразы, вечно неразрешимые (нет ≥2 достижимых дистракторов) → архив
     user_rank = None
     if order_cands:
         ulvl = await estimate_level(user_id)
@@ -1021,7 +1049,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             translate=data.get("translate", {}),
             part_of_speech=data.get("part_of_speech", ""),
             gloss=data.get("gloss"), example=data.get("example"),  # для карточки служебного (Ф2)
-            forms=(json.loads(e["row"]["forms"]) if e["row"].get("forms") else None),  # колонка wp.forms (не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
+            forms=e["row"].get("forms"),  # уже распарсено в _load (колонка wp.forms, не data!) — для артикля (en/ei/et) сущ. и «å» глаг.
             mode=mode, direction=direction, step=cell,
             # повтор = ХРАНИМЫЙ флаг mastered (слово было доведено до выученного и теперь на повторении),
             # а не эвристика. Слова в первом прохождении рампы повтором НЕ считаются.
@@ -1041,8 +1069,15 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             if len(ok) < 2:
                 # мало узнаваемых дистракторов → фразу пока не показываем; её невыученные (но
                 # pool-backed) дистракторы — в prereq-лексику, чтобы разблокировать фразу позже
-                prereq.extend(dl for d in raw
-                              if not _distr_ok(d) and (dl := (d or "").strip().lower()) in distr_pid)
+                pb = [dl for d in raw
+                      if not _distr_ok(d) and (dl := (d or "").strip().lower()) in distr_pid]
+                prereq.extend(pb)
+                # ПРОВАЛЬНО неразрешимая играбельная фраза: даже выучив ВСЕ pool-backed дистракторы,
+                # ≥2 узнаваемых не набрать (остальные — свободный текст, не из Базы, узнаваемыми не
+                # станут никогда) → фраза вечно держала бы WIP-слот и глушила приток новых. Архивируем
+                # (уходит из ротации и из WIP-счёта; прогресс не теряется, learning_add вернёт).
+                if len({(d or "").strip().lower() for d in ok} | set(pb)) < 2:
+                    stuck_phrases.append(pid)
                 continue
             el["distractors"] = ok[:3]
         if mode == "cloze":
@@ -1078,6 +1113,20 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             pid_pre = distr_pid.get(d)
             if pid_pre:
                 await add_word_to_dict(user_id, hid, pid_pre)
+
+    # ПРОВАЛЬНО неразрешимые играбельные фразы (order-ветка выше): архивируем, чтобы не держали
+    # WIP-слот вечно. Начатая фраза (order-шаг ⇒ attempts>0) всегда имеет строку user_words —
+    # UPDATE её и заденет. В дрилле по набору (scoped) чужие решения не трогаем.
+    if stuck_phrases and not scoped:
+        dba = await _conn()
+        try:
+            for spid in dict.fromkeys(stuck_phrases):
+                await dba.execute(
+                    "UPDATE user_words SET archived = 1 WHERE user_id = ? AND pool_id = ?",
+                    (user_id, spid))
+            await dba.commit()
+        finally:
+            await _release(dba)
 
     # грамм-тир ★: трек форм (сущ./глаг./прил.) + pronoun-overlay — добиваем выученными словами;
     # не дублируем слово, если оно уже попало в сессию обычным упражнением (повтор и т.п.)
@@ -1180,12 +1229,16 @@ async def build_listen_session(user_id, size=20, lang="ru"):
     pending.sort(key=lambda rdm: rdm[0].get("last_seen") or "")   # дольше всех не виделись — первыми
     session = []
     for r, data, _modes in pending[:size]:
+        try:                                   # битый forms не должен ронять слуховую партию
+            _forms = json.loads(r["forms"]) if r.get("forms") else None
+        except Exception:
+            _forms = None
         session.append(_make_element(
             pool_id=r["pool_id"], no=r["norwegian"],
             translate=data.get("translate", {}),
             part_of_speech=data.get("part_of_speech", ""),
             gloss=data.get("gloss"), example=data.get("example"),  # union Этапа 6 (было только в дневной)
-            forms=(json.loads(r["forms"]) if r.get("forms") else None),
+            forms=_forms,
             mode="choice", direction="no2int", step=_AUDIO_CELL,
             listen=True,   # фронт: проигрывать аудио, текст скрыт (слуховое узнавание)
             repeat=(r.get("mastered") == 1),

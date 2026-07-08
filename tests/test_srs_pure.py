@@ -1,8 +1,8 @@
 """ЭТАП 2: чистое SRS-ядро (srs/) — матрица видов рампы, контракты шагов, паритет с фасадом.
 
 Ядро не знает про БД: всё тестируется значениями. Особые ветки (критика плана):
-grandfathering ОДНОНАПРАВЛЕННЫЙ (старая контентная рампа у служебного = выучено;
-обратный флип cloze выкл→вкл ничего не грандфазирует) — фикстуры явные, не случайные."""
+grandfathering служебных СИММЕТРИЧЕН в обе стороны рубильника cloze (старая контентная/choice
+рампа = выучено при cloze ВКЛ; пройденная cloze-рампа = выучено при cloze ВЫКЛ) — фикстуры явные."""
 import pytest
 
 from srs import cells, status, steps
@@ -40,11 +40,14 @@ def test_grandfather_func_word_mastered_by_old_content_ramp():
     assert status.is_mastered(FUNC_CLOZE, OLD_CONTENT_DONE) is True
 
 
-def test_no_reverse_grandfather_cloze_to_choice():
-    """Обратный флип (слово сдало cloze, затем cloze выключили → рампа «только выбор»):
-    cloze-прогресс НЕ считается за choice-клетки — mastered только по своим клеткам."""
-    assert status.is_mastered(FUNC_CHOICE, CLOZE_DONE) is False
+def test_reverse_grandfather_cloze_to_choice():
+    """Обратный флип рубильника (слово сдало cloze, затем cloze ВЫКЛючили → рампа «только выбор»):
+    пройденная cloze-рампа ГРАНДФАЗИТ FUNC_CHOICE — слово остаётся выученным, откат рубильника его
+    не «разучивает» (симметрично forward-грандфазингу; cloze тяжелее выбора). Частично сданная
+    cloze-рампа — ещё НЕ выучено."""
+    assert status.is_mastered(FUNC_CHOICE, CLOZE_DONE) is True
     assert status.is_mastered(FUNC_CHOICE, {c: "1" for c in cells.FUNC_CELLS_CHOICE}) is True
+    assert status.is_mastered(FUNC_CHOICE, {cells.FUNC_CELLS[0]: "1"}) is False
 
 
 def test_grandfather_func_word_mastered_by_choice_ramp():
