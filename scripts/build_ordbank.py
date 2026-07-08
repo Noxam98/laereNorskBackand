@@ -180,7 +180,11 @@ def build_compounds(out, text):
         if len(p) < 12:
             continue
         oppslag = p[2].strip()
-        forledd, fuge, etterledd = p[4].strip().strip("-"), p[6].strip(), p[7].strip().strip("-")
+        # forledd/etterledd — самостоятельные леммы, сверяются с пулом (всегда lower) → нормализуем
+        # регистр сразу (иначе часть с заглавной не матчит pool.norwegian). marked — для показа, как есть.
+        forledd = p[4].strip().strip("-").lower()
+        etterledd = p[7].strip().strip("-").lower()
+        fuge = p[6].strip()
         marked = p[11].strip()
         if not forledd or not etterledd:                     # simplex — не составное
             continue

@@ -7,7 +7,8 @@
 IO (запросы, скрытый словарь) — в db/learning_suggest; индекс пула — воркер (autofill).
 
 index — список записей пул-композитов: {"pool_id", "no", "forledd", "etterledd", "freq"}.
-Множества (mastered/have/learnable) — norwegian-строки. Частоты — zipf (0..8).
+mastered/learnable — norwegian-строки (части сверяются по написанию); have (в eligible_unlocks) —
+множество pool_id уже имеющихся слов (омонимы: одна запись не отсекает вторую). Частоты — zipf (0..8).
 """
 
 # Веса скоринга — частото-эквивалентные (в единицах zipf); тюнятся без релиза при нужде.
@@ -48,9 +49,14 @@ def leverage(word, feat):
 
 
 def eligible_unlocks(index, mastered, have):
-    """Композиты, ОТКРЫТЫЕ к вводу: обе части mastered, а самого слова у юзера ещё нет."""
+    """Композиты, ОТКРЫТЫЕ к вводу: обе части mastered (сверка по НАПИСАНИЮ — forledd/etterledd
+    это строки-леммы), а самого слова у юзера ещё нет. `have` — множество pool_id уже имеющихся
+    у юзера слов: для ОМОНИМОВ (одно написание, две записи пула) сверяем по pool_id, чтобы
+    владение одной записью не отсекало вторую. Членский тест по c["no"] сохранён для обратной
+    совместимости чистых вызовов с have-множеством строк (наборы однородны — лишний тест мимо)."""
     return [c for c in index
-            if c["forledd"] in mastered and c["etterledd"] in mastered and c["no"] not in have]
+            if c["forledd"] in mastered and c["etterledd"] in mastered
+            and c["pool_id"] not in have and c["no"] not in have]
 
 
 def complete_count(word, feat, mastered):

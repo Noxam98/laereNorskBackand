@@ -227,10 +227,11 @@ async def suggest_compounds(user_id, count=COMPOUND_BUFFER):
                 "SELECT w.norwegian FROM user_words uw JOIN word_pool w ON w.id = uw.pool_id "
                 "WHERE uw.user_id = ? AND uw.mastered = 1", (user_id,)) as cur:
             mastered = {r["norwegian"] for r in await cur.fetchall()}
+        # have — pool_id (а не написание): у омонима одна запись не должна отсекать вторую
         async with db.execute(
-                "SELECT w.norwegian FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
-                "JOIN word_pool w ON w.id = dw.pool_id WHERE d.user_id = ?", (user_id,)) as cur:
-            have = {r["norwegian"] for r in await cur.fetchall()}
+                "SELECT dw.pool_id FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                "WHERE d.user_id = ?", (user_id,)) as cur:
+            have = {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
     unlocked = _comp.eligible_unlocks(index, mastered, have)
@@ -259,10 +260,11 @@ async def unlocked_compounds_count(user_id):
                 "SELECT w.norwegian FROM user_words uw JOIN word_pool w ON w.id = uw.pool_id "
                 "WHERE uw.user_id = ? AND uw.mastered = 1", (user_id,)) as cur:
             mastered = {r["norwegian"] for r in await cur.fetchall()}
+        # have — pool_id (а не написание): у омонима одна запись не должна отсекать вторую
         async with db.execute(
-                "SELECT w.norwegian FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
-                "JOIN word_pool w ON w.id = dw.pool_id WHERE d.user_id = ?", (user_id,)) as cur:
-            have = {r["norwegian"] for r in await cur.fetchall()}
+                "SELECT dw.pool_id FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                "WHERE d.user_id = ?", (user_id,)) as cur:
+            have = {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
     return len(_comp.eligible_unlocks(index, mastered, have))

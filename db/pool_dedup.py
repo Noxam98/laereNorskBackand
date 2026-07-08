@@ -70,8 +70,9 @@ async def nearest_other(pool_id: int, embedding_raw, k: int = 4):
 
 
 async def merge_pool_words(winner_id: int, loser_id: int):
-    """Слить loser в winner: перепривязать dict_words/user_words на победителя (OR IGNORE при
-    UNIQUE-конфликте), удалить остатки и сам loser из word_pool/word_topics/vec_words. True при успехе."""
+    """Слить loser в winner: перепривязать dict_words/user_words/form_srs на победителя (OR IGNORE
+    при UNIQUE-конфликте), удалить остатки и сам loser из word_pool/word_topics/vec_words/
+    word_pool_compounds. True при успехе."""
     if winner_id == loser_id:
         return False
     db = await _conn()
@@ -79,9 +80,16 @@ async def merge_pool_words(winner_id: int, loser_id: int):
         await db.execute("PRAGMA foreign_keys = ON")
         await db.execute("UPDATE OR IGNORE dict_words SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
         await db.execute("UPDATE OR IGNORE user_words SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
-        await db.execute("DELETE FROM dict_words  WHERE pool_id = ?", (loser_id,))
-        await db.execute("DELETE FROM user_words  WHERE pool_id = ?", (loser_id,))
-        await db.execute("DELETE FROM word_topics WHERE pool_id = ?", (loser_id,))
+        # form_srs: PK (user_id,pool_id,cell), FK CASCADE → без ремапа терялся бы прогресс форм loser'а
+        await db.execute("UPDATE OR IGNORE form_srs SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
+        # word_pool_compounds: pool_id — PK, БЕЗ FK на word_pool → иначе висячая строка loser'а даёт
+        # фантомный unlock (compounds_unlocked_by/index читают её напрямую). Ремапим на winner
+        # (тот же композит), остаток чистим — так индекс не потеряет разбор winner'а.
+        await db.execute("UPDATE OR IGNORE word_pool_compounds SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
+        await db.execute("DELETE FROM dict_words           WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM user_words           WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM word_topics          WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM word_pool_compounds  WHERE pool_id = ?", (loser_id,))
         try:
             await db.execute("DELETE FROM vec_words WHERE rowid = ?", (loser_id,))
         except Exception:
@@ -93,6 +101,11 @@ async def merge_pool_words(winner_id: int, loser_id: int):
     try:                              # убрать loser из резидентного кеша эмбеддингов (дистракторы)
         import embcache
         embcache.remove_vec(loser_id)
+    except Exception:
+        pass
+    try:                              # word_pool_compounds изменился — сбросить TTL-кеш индекса
+        from .compound_index import invalidate
+        invalidate()
     except Exception:
         pass
     return True

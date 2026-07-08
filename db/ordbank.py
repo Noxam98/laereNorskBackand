@@ -226,5 +226,8 @@ def compound(norwegian: str):
     if not rows:
         return None
     forledd, fuge, etterledd, marked = rows[0]
-    return {"forledd": forledd, "fuge": fuge or "", "etterledd": etterledd,
-            "marked": marked, "parts": [forledd, etterledd]}
+    # части — самостоятельные леммы, кликаются/ищутся в пуле (pool.norwegian всегда lower); старые
+    # дампы клали forledd/etterledd без .lower() → рантайм-нормализация, чтобы часть матчилась.
+    fl, el = (forledd or "").lower(), (etterledd or "").lower()
+    return {"forledd": fl, "fuge": fuge or "", "etterledd": el,
+            "marked": marked, "parts": [fl, el]}

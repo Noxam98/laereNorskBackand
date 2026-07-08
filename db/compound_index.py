@@ -4,13 +4,25 @@
 Логики подбора здесь НЕТ — только доступ к БД и лёгкий TTL-кеш (индекс меняется редко:
 лишь новые пул-слова). Направление импорта db→session допустимо (session чистый).
 """
+import asyncio
 import time
 
 from session import compounds as _comp
 from .core import _conn, _release
 
 _CACHE = {"at": 0.0, "index": None, "feat": None, "learnable": None}
-_TTL = 300.0   # сек: индекс редкоизменчив, лишний раз не бьём БД
+_TTL = 60.0    # сек: индекс редкоизменчив, но learnable зависит от ВСЕХ слов пула (новое слово-часть
+               # индекс не трогает) → короткий TTL ограничивает устаревание, чтение дешёвое
+_LOCK = asyncio.Lock()   # single-flight на reload (без дубль-чтения)
+_GEN = 0                 # поколение данных: инвалидация ++ → reload не перезапишет кэш устаревшим
+
+
+def invalidate():
+    """Сбросить TTL-кеш индекса (звать при изменении word_pool_compounds ИЛИ добавлении пул-слов,
+    т.к. learnable/дистракторы зависят от всего пула). Дёшево — следующий load_index перечитает."""
+    global _GEN
+    _CACHE["index"] = None
+    _GEN += 1
 
 
 async def pool_batch_after(after_id: int, limit: int = 300):
@@ -26,44 +38,59 @@ async def pool_batch_after(after_id: int, limit: int = 300):
 
 
 async def set_pool_compounds(rows):
-    """rows: [(pool_id, norwegian, forledd, etterledd)] → в индекс (идемпотентно)."""
+    """rows: [(pool_id, norwegian, forledd, etterledd)] → в индекс (идемпотентно).
+    forledd/etterledd нормализуем в lower — сверяются с пулом (pool.norwegian всегда lower)."""
     if not rows:
         return
+    rows = [(pid, no, (fl or "").lower(), (el or "").lower()) for pid, no, fl, el in rows]
     db = await _conn()
     try:
         await db.executemany("INSERT OR REPLACE INTO word_pool_compounds VALUES (?,?,?,?)", rows)
         await db.commit()
     finally:
         await _release(db)
-    _CACHE["index"] = None   # инвалидируем кеш
+    invalidate()   # инвалидируем кеш (с ++поколения — reload не перезапишет свежую инвалидацию)
 
 
 async def load_index():
-    """(index, feat, learnable) с TTL-кешем.
+    """(index, feat, learnable) с TTL-кешем (single-flight под _LOCK — без дубль-чтения).
     index — [{pool_id,no,forledd,etterledd,freq}] всех пул-композитов;
     feat — предвычисленные признаки (session.compounds.build_features);
-    learnable — множество частей, которые сами являются словами пула (для предохранителя)."""
+    learnable — множество частей, которые сами являются словами пула (для предохранителя).
+    forledd/etterledd приводим к lower на чтении — старые дампы клали части с заглавной,
+    а pool.norwegian всегда lower (иначе часть не матчилась бы)."""
     now = time.monotonic()
     if _CACHE["index"] is not None and now - _CACHE["at"] < _TTL:
         return _CACHE["index"], _CACHE["feat"], _CACHE["learnable"]
-    db = await _conn()
-    try:
-        async with db.execute(
-                "SELECT c.pool_id, c.norwegian, c.forledd, c.etterledd, COALESCE(w.freq,0) AS freq "
-                "FROM word_pool_compounds c JOIN word_pool w ON w.id = c.pool_id") as cur:
-            index = [{"pool_id": r["pool_id"], "no": r["norwegian"], "forledd": r["forledd"],
-                      "etterledd": r["etterledd"], "freq": r["freq"]} for r in await cur.fetchall()]
-        async with db.execute(
-                "SELECT DISTINCT p FROM ("
-                "  SELECT forledd AS p FROM word_pool_compounds"
-                "  UNION SELECT etterledd FROM word_pool_compounds) parts "
-                "WHERE p IN (SELECT norwegian FROM word_pool)") as cur:
-            learnable = {r["p"] for r in await cur.fetchall()}
-    finally:
-        await _release(db)
-    feat = _comp.build_features(index)
-    _CACHE.update(at=now, index=index, feat=feat, learnable=learnable)
-    return index, feat, learnable
+    async with _LOCK:
+        # double-check: пока ждали лок, другой вызов мог уже перечитать
+        now = time.monotonic()
+        if _CACHE["index"] is not None and now - _CACHE["at"] < _TTL:
+            return _CACHE["index"], _CACHE["feat"], _CACHE["learnable"]
+        gen_before = _GEN
+        db = await _conn()
+        try:
+            async with db.execute(
+                    "SELECT c.pool_id, c.norwegian, c.forledd, c.etterledd, COALESCE(w.freq,0) AS freq "
+                    "FROM word_pool_compounds c JOIN word_pool w ON w.id = c.pool_id") as cur:
+                index = [{"pool_id": r["pool_id"], "no": r["norwegian"],
+                          "forledd": (r["forledd"] or "").lower(),
+                          "etterledd": (r["etterledd"] or "").lower(),
+                          "freq": r["freq"]} for r in await cur.fetchall()]
+            async with db.execute(
+                    "SELECT DISTINCT p FROM ("
+                    "  SELECT LOWER(forledd) AS p FROM word_pool_compounds"
+                    "  UNION SELECT LOWER(etterledd) FROM word_pool_compounds) parts "
+                    "WHERE p IN (SELECT norwegian FROM word_pool)") as cur:
+                learnable = {r["p"] for r in await cur.fetchall()}
+        finally:
+            await _release(db)
+        feat = _comp.build_features(index)
+        # кэшируем ТОЛЬКО если за время чтения не было инвалидации (иначе вернём свежие данные,
+        # но не запишем — следующий вызов перечитает и не залипнет на устаревшем снимке)
+        if _GEN == gen_before:
+            _CACHE.update(at=time.monotonic(), index=index, feat=feat, learnable=learnable)
+        return index, feat, learnable
 
 
 async def mastered_set(db, user_id):
@@ -81,9 +108,11 @@ async def compounds_unlocked_by(db, user_id, norwegian):
     key = (norwegian or "").strip().lower()
     if not key:
         return 0
+    # LOWER(): старые дампы клали части с заглавной, key всегда lower (иначе часть не матчит)
     async with db.execute(
-            "SELECT pool_id, forledd, etterledd FROM word_pool_compounds "
-            "WHERE forledd = ? OR etterledd = ?", (key, key)) as cur:
+            "SELECT pool_id, LOWER(forledd) AS forledd, LOWER(etterledd) AS etterledd "
+            "FROM word_pool_compounds WHERE LOWER(forledd) = ? OR LOWER(etterledd) = ?",
+            (key, key)) as cur:
         rows = await cur.fetchall()
     if not rows:
         return 0
