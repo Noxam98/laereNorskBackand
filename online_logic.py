@@ -41,11 +41,14 @@ def _norm_settings(s):
 
 
 def _q_payload(q, i, total, lang, qtime):
+    # ВАЖНО: keys (норв. слова-ключи опций) НЕ шлём в вопросе — в no2int промпт = норв. слово,
+    # и keys.index(prompt) выдал бы ответ (чит). keys уезжают в reveal/race_result (для маппинга
+    # votes→кнопки на разборе), см. run_quiz/_race_answer.
     if q["per_lang"]:   # no2int — показываем норвежское слово, варианты-переводы
         return {"type": "question", "i": i, "total": total, "dir": "no2int",
-                "prompt": q["no"], "options": q["options"][lang], "keys": q["keys"][lang], "time": qtime}
+                "prompt": q["no"], "options": q["options"][lang], "time": qtime}
     return {"type": "question", "i": i, "total": total, "dir": "int2no",   # перевод → норв. слова
-            "prompt": q["prompt"][lang], "options": q["options"], "keys": q["keys"], "time": qtime}
+            "prompt": q["prompt"][lang], "options": q["options"], "time": qtime}
 
 
 def _q_correct(q, lang):
