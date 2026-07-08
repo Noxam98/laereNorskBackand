@@ -66,6 +66,7 @@ async def learning_next_cards_route(body: dict, user=Depends(get_current_user)):
     """Живая сессия: добор новых карточек-знакомств по требованию (когда юзер убрал карточку кнопкой).
     body: { n?: int (1..20), exclude?: [pool_id, ...] }. Возвращает { cards: [...] } или { blocked }."""
     n = body.get("n", 5)
+    n = n if isinstance(n, int) else 5      # нечисловой n ({"n":"abc"}) не должен ронять роут (500)
     exclude = body.get("exclude") or []
     if not isinstance(exclude, list):
         exclude = []
@@ -94,6 +95,20 @@ async def _resolve_pool_id(body: dict):
             raise HTTPException(status_code=422, detail="invalid pool_id")
     word = (body.get("word") or body.get("norwegian") or "").strip()
     return await get_pool_id(word) if word else None
+
+
+async def _owns_pool(user_id: int, pool_id: int) -> bool:
+    """Слово реально в Учёбе юзера (в любом его словаре) — защита от накрутки статуса/рейтинга
+    по чужому/произвольному pool_id (IDOR)."""
+    from db.core import _conn, _release
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT 1 FROM dict_words WHERE pool_id = ? AND dict_id IN "
+            "(SELECT id FROM dictionaries WHERE user_id = ?) LIMIT 1", (pool_id, user_id)) as cur:
+            return (await cur.fetchone()) is not None
+    finally:
+        await _release(db)
 
 
 @router.post("/learning/add")
@@ -209,4 +224,7 @@ async def learning_audit_grade_route(body: AuditBody, user=Depends(get_current_u
 
 @router.post("/learning/{pool_id}/status")
 async def learning_status_route(pool_id: int, body: LearningStatusBody, user=Depends(get_current_user)):
+    # только по своему слову: иначе action="know" ставил mastered=1 любому pool_id → накрутка all-time-ранга
+    if not await _owns_pool(user["id"], pool_id):
+        raise HTTPException(status_code=404, detail="Word not in your study")
     return await learning_set_status(user["id"], pool_id, body.action)

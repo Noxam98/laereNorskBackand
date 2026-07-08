@@ -124,6 +124,7 @@ async def pool(q: str = None, limit: int = 60, offset: int = 0,
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq", "relevance") else "alpha"
+    limit = max(1, min(200, limit)); offset = max(0, offset)   # без клампа limit=100000/-1 выгружал весь пул (память)
     res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang, embed_fn=embed_text)
     res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang, user_id=user["id"])  # счётчики под текущий фильтр
     return res
@@ -362,9 +363,11 @@ async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
 
 
 @router.get("/pool/{word}/description")
-async def pool_description(word: str, model: str = None, pool_id: int = None, user=Depends(get_current_user)):
+async def pool_description(word: str, model: str = None, pool_id: int = None, user=Depends(llm_rate_limit)):
     """Описание слова из общего пула (как в личном словаре): есть — отдаём, нет — генерим и кэшируем.
-    pool_id — точная запись омонима (напр. `ro` сущ./глаг.), иначе первая по norwegian."""
+    pool_id — точная запись омонима (напр. `ro` сущ./глаг.), иначе первая по norwegian.
+    ВАЖНО: на llm_rate_limit (а не get_current_user) — при промахе кэша тут реальный вызов LLM
+    (ask_json), без лимита это обход анти-абьюза и слив общей квоты Gemini (см. redescribe)."""
     pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
