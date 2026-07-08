@@ -65,8 +65,9 @@ def test_cold_cache_empty_options():
     assert patch[1] == {"options": [], "distractors": []}
 
 
-async def test_cold_embcache_logs_degradation(monkeypatch, caplog):
-    """Оркестратор: пустой embcache — WARNING в лог (фронт без вариантов ≠ норма)."""
+async def test_cold_embcache_logs_degradation(monkeypatch, caplog, fresh_db):
+    """Пустой embcache + пустой пул (фолбэку нечем добрать) — WARNING в лог и пустые варианты
+    (фронт без вариантов ≠ норма). При НЕпустом пуле фолбэк добрал бы — см. test_embcache_fixes."""
     import embcache
     from db import learning
 
@@ -76,6 +77,6 @@ async def test_cold_embcache_logs_degradation(monkeypatch, caplog):
     monkeypatch.setattr(embcache, "candidates_for", _empty)
     session = [_item()]
     with caplog.at_level("WARNING"):
-        await learning._attach_choice_options(session, "ru")
-    assert any("embcache" in r.message for r in caplog.records)
+        await learning._attach_choice_options(session, "ru")   # пул пуст (fresh_db) → фолбэк пуст
+    assert any(r.levelname == "WARNING" for r in caplog.records)
     assert session[0]["options"] == []

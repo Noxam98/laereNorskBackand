@@ -486,7 +486,11 @@ async def freq_loop():
                 continue
             z = await asyncio.to_thread(_load_zipf)   # 5.5МБ json.load — не блокируем event loop
             if not z:
-                return
+                # пустой/несостоявшийся Zipf (транзиентный сбой чтения, MemoryError) — НЕ убиваем
+                # корутину навсегда (был `return`): отдаём память и ждём как ветка «нет работы».
+                _free_zipf()
+                await asyncio.sleep(3600)
+                continue
             pairs = [(pid, float(z.get((no or "").strip().lower(), 0.0))) for pid, no in pend]
             n = await set_pool_freq_bulk(pairs)
             if n:

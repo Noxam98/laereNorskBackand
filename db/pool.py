@@ -361,6 +361,11 @@ async def update_pool_word(old_norwegian: str, translate: dict):
             (json.dumps(data, ensure_ascii=False), new_key, pid),
         )
         await db.commit()
+        try:                          # смысл слова изменился (emb_sem=0 → пере-эмбеддинг): убрать
+            import embcache           # stale-вектор из резидентного кеша (дистракторы), консистентно
+            embcache.remove_vec(pid)  # с delete/merge; reembed пере-добавит свежий через update_vec
+        except Exception:
+            pass
         return {"ok": True, "norwegian": new_key}
     finally:
         await _release(db)
@@ -390,6 +395,11 @@ async def replace_pool_word(old_norwegian: str, new_norwegian: str, data: dict):
             (json.dumps(data, ensure_ascii=False), new_key, pid),
         )
         await db.commit()
+        try:                          # embedding занулён → убрать stale-вектор из резидентного кеша
+            import embcache           # (дистракторы), консистентно с delete/merge; reembed пере-
+            embcache.remove_vec(pid)  # добавит свежий через set_pool_embedding→update_vec
+        except Exception:
+            pass
         return {"ok": True, "norwegian": new_key}
     finally:
         await _release(db)

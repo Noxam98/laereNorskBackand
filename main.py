@@ -110,6 +110,16 @@ async def startup():
             logger.info(f"all grammatical forms reset ({n}) — will be regenerated per-POS")
     except Exception as e:
         logger.warning(f"forms reset: {e}")
+    # Резидентный кеш эмбеддингов в RAM (дистракторы сессии = matvec, без sqlite-KNN) поднимаем
+    # СТРОГО ДО старта воркеров. Иначе окно гонки: update_vec/remove_vec — no-op пока кеш not _ready,
+    # и запись эмбеддинга/мердж между чтением снапшота из БД и _ready=True терялась бы НАВСЕГДА
+    # (периодического reload нет). Здесь запросы ещё не обслуживаются, конкурентных писателей нет.
+    try:
+        import embcache
+        await embcache.ensure_loaded()
+        logger.info(f"emb cache loaded: {embcache.cache_stats()}")
+    except Exception as e:
+        logger.warning(f"emb cache load failed: {e}")
     if text_enabled():
         asyncio.create_task(autofill_loop())
         logger.info("autofill (доделка): эмбеддинг/озвучка/классификация недостающего")
@@ -140,14 +150,6 @@ async def startup():
     # разблокировки составных слов по выученным основам. Стартует всегда.
     asyncio.create_task(compound_index_loop())
     logger.info("compound index enabled: индекс частей составных слов (ordbank)")
-    # Резидентный кеш эмбеддингов в RAM — дистракторы сессии считаем matvec'ом, без sqlite-KNN.
-    # Источник правды — БД (/data); на старте кеш встаёт из неё, в рантайме синкается set_pool_embedding.
-    try:
-        import embcache
-        await embcache.ensure_loaded()
-        logger.info(f"emb cache loaded: {embcache.cache_stats()}")
-    except Exception as e:
-        logger.warning(f"emb cache load failed: {e}")
     # Telegram — только оповещения: алерты (notify) + лента активности «что происходит».
     asyncio.create_task(notify.feed_worker())
     logger.info(f"telegram notifications: {'ON' if notify.enabled() else 'OFF'} · feed: {'ON' if notify.FEED_ON else 'OFF'}")

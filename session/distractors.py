@@ -29,11 +29,16 @@ def _answer_of(d, no, direction, lang):
     return (tr[0] if tr else None, tr[1] if len(tr) > 1 else None)
 
 
-def options_patch(items, *, neighbors, words, lang, n=3):
+def options_patch(items, *, neighbors, words, lang, n=3, fallback=None):
     """{pool_id: {"options": [{w,alt}], "distractors": [w]}}. Вход НЕ мутируется.
 
     neighbors — {pool_id: [id соседей по убыванию близости]} (embcache),
-    words — {id: {"norwegian", "data"}} слова-кандидаты батчем."""
+    words — {id: {"norwegian", "data"}} слова-кандидаты батчем,
+    fallback — {pool_id: [{"norwegian", "data"}, ...]} ЗАПАСНЫЕ кандидаты того же POS/уровня
+        (приносит оркестратор), которыми ДОБИРАЕМ варианты до n, когда соседей не хватило
+        (нет эмбеддинга/соседей или все отсеялись синонимами) — иначе была бы пустая
+        неотвечаемая choice-карточка. К фолбэку те же фильтры, что к соседям."""
+    fallback = fallback or {}
     patch = {}
     for e in items:
         direction = e.get("direction") or "int2no"
@@ -43,17 +48,27 @@ def options_patch(items, *, neighbors, words, lang, n=3):
         # пересекаются со смыслом цели) исключаем — иначе вариант оказался бы тоже верным
         # и вопрос нечестным (avstand=[расстояние,дистанция] vs distanse=[дистанция,…]).
         target_mean = {x.strip().lower() for x in (tr_all.get(lang) or []) if x}
-        # плюс не повторяем сами допустимые ответы (все переводы / норв. формы цели)
-        own = ({(no or "").strip().lower()} | {x.strip().lower() for x in (tr_all.get("no") or []) if x}) \
-            if direction == "int2no" else set(target_mean)
-        own.discard("")
+        # НОРВ. написания цели (само слово + формы translate.no). В no2int (показываем норв.
+        # слово, ждём перевод) дистрактор с ТЕМ ЖЕ норвежским — это ОМОНИМ другого смысла, его
+        # перевод тоже верен к показанному слову → отсекаем по написанию (в int2no он и так
+        # отсеялся бы как совпавший ответ, но проверяем единообразно для обоих направлений).
+        own_no = {(no or "").strip().lower()} | {x.strip().lower() for x in (tr_all.get("no") or []) if x}
+        own_no.discard("")
+        # дедуп показанных вариантов: int2no показывает норв. (не повторяем норв. цели),
+        # no2int показывает переводы (не повторяем переводы = смысл цели)
+        seen = set(own_no) if direction == "int2no" else set(target_mean)
+        seen.discard("")
         nb_ids = neighbors.get(e["pool_id"]) or []   # уже по убыванию близости
-        ordered = [words[i] for i in nb_ids if i in words]
-        out, seen = [], set(own)
+        # сперва соседи по смыслу, затем фолбэк-кандидаты того же POS/уровня (порядок = приоритет)
+        ordered = [words[i] for i in nb_ids if i in words] + list(fallback.get(e["pool_id"]) or [])
+        out = []
         for c in ordered:
             cd = c.get("data") or {}
             cmean = {x.strip().lower() for x in ((cd.get("translate", {}) or {}).get(lang) or []) if x}
             if target_mean and (cmean & target_mean):   # синоним по смыслу — не годится
+                continue
+            cno = (c.get("norwegian") or "").strip().lower()
+            if cno and cno in own_no:                    # омоним цели (то же норв. написание) — тоже верен
                 continue
             a, alt = _answer_of(cd, c.get("norwegian"), direction, lang)
             la = (a or "").strip().lower()

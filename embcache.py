@@ -72,7 +72,16 @@ def update_vec(pool_id, raw):
     with _lock:
         row = _rowof.get(int(pool_id))
         if row is not None:
-            _M[row] = v                                   # пере-эмбеддинг — замена на месте
+            # пере-эмбеддинг: copy-on-write, НЕ мутация на месте. candidates_for снимает ссылку
+            # на _M под локом и считает matvec БЕЗ лока — in-place `_M[row]=v` рвал бы ему матрицу
+            # под руками (torn read). Копия делает опубликованный _M неизменяемым для читателей.
+            M2 = _M.copy()
+            M2[row] = v
+            _M = M2
+        elif _M is None:
+            _M = v.reshape(1, -1)                          # пул был пуст (_M is None) — первая строка
+            _ids = np.append(_ids, np.int64(pool_id))
+            _rowof[int(pool_id)] = 0
         else:
             _M = np.vstack([_M, v])                        # новое слово — дописать строку
             _ids = np.append(_ids, np.int64(pool_id))
