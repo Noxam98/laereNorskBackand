@@ -25,6 +25,14 @@ async def fresh_db():
     """Свежая пустая БД на каждый тест."""
     path = tempfile.mktemp(suffix=".db")
     core.DATABASE_URL = path  # переключаем путь для этого теста
+    # пер-юзер локи кэшируются на модуле и привязаны к event loop; у каждого теста свой loop —
+    # чистим, чтобы тест не переиспользовал asyncio.Lock из ЗАКРЫТОГО loop прошлого теста (в проде
+    # один долгоживущий loop, проблемы нет). Иначе конкурентный apply_(form_)result → «loop is closed».
+    try:
+        from db.learning import _USER_LOCKS
+        _USER_LOCKS.clear()
+    except Exception:
+        pass
     await init_db()
     yield path
     try:

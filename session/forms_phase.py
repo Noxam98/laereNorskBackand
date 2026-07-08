@@ -57,6 +57,34 @@ def build_universe(enriched, *, ordered_pids, group_of, pronoun_forms, cells_for
     return cands, info
 
 
+def withheld_reviews(enriched, *, ordered_pids, group_of, cells_for):
+    """Pool_id выученных формо-способных слов трека (noun/verb/adjective), которые build_universe
+    исключил из info/cands ТОЛЬКО потому, что их взяла base-сессия этого прохода (ordered_pids).
+
+    plan_forms_phase считает их «партия ещё не сдана» (Фикс #2): они временно отсутствуют в info, но
+    с трека НЕ ушли — иначе последнее несданное слово партии, попавшее в base как due-повтор, схлопнет
+    партию (преждевременный флип forms→words + очистка). Де-мастеренные/POS-off сюда НЕ попадают
+    (status≠mastered либо group=None) — те действительно вышли из трека, партии не мешают.
+    Оркестратор (build_session) зовёт с теми же group_of/cells_for и передаёт в plan_forms_phase."""
+    out = set()
+    for e in enriched:
+        pid = e["row"]["pool_id"]
+        if e["status"] != "mastered" or pid not in ordered_pids:
+            continue
+        if group_of(e) not in ("noun", "verb", "adjective"):
+            continue
+        raw = e["row"].get("forms")
+        if not raw:
+            continue
+        try:
+            fdict = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            continue
+        if fdict and cells_for(e, fdict):
+            out.add(pid)
+    return out
+
+
 def pending_cells(pid, info, fstates):
     """Несданные клетки слова: сперва начатые (они всегда due — рампа держит due=сейчас),
     затем нетронутые (пойдут карточкой). Сданная = produce пройден → interval ≥ 1."""
@@ -77,12 +105,16 @@ def empty_plan(cap_new):
 
 
 def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
-                     base_servable, batch_size, session_share, overlay_pending):
+                     base_servable, batch_size, session_share, overlay_pending,
+                     withheld=frozenset()):
     """FSM цикла «слова↔формы» + отбор грамм-заданий фазы forms.
 
     cycle_state — {"phase","batch"} из form_cycle или None (ни разу не создавался);
     base_servable — сколько элементов base-сессия реально отдаст (для анти-дедлока);
-    overlay_pending(e, fdict) → несданные клетки местоим-overlay.
+    overlay_pending(e, fdict) → несданные клетки местоим-overlay;
+    withheld — pool_id слов партии, временно взятых base-сессией как due-повтор (withheld_reviews):
+    их нет в info, но с трека они не ушли → не считаем партию сданной (Фикс #2). Пусто → старое
+    поведение (по info-фильтру): слово вне info схлопывает партию.
 
     Переходы: seed (None → ветеран с бэклогом ≥ batch_size сразу в forms, новичок в
     words) · партия сдана → words · анти-дедлок words → forms (базе нечего отдать,
@@ -105,9 +137,16 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
                if len(backlog) >= batch_size else {"phase": "words", "batch": []})
         save = (cyc["phase"], cyc["batch"])
     phase, batch = cyc["phase"], [p for p in cyc["batch"] if p in info]
-    batch_pending = [p for p in batch if _pending(p)] if phase == "forms" else []
-    if phase == "forms" and not batch_pending:
-        phase = "words"                 # партия сдана (или все её клетки выключены
+    batch_serve = [p for p in batch if _pending(p)] if phase == "forms" else []
+    # Завершённость партии — по ХРАНИМОМУ составу, НЕ по info-отфильтрованному набору (Фикс #2):
+    # слово «сдано» только если оно в info и все клетки мастер (нет pending) ЛИБО совсем ушло с трека
+    # (де-мастерено/POS-off → его нет ни в info, ни в withheld). Слово, временно взятое base-сессией
+    # этого прохода как due-повтор (withheld: выучено+формо-способно), сданным НЕ считаем — иначе
+    # последнее несданное слово партии схлопывает её (преждевременный флип forms→words + очистка).
+    batch_incomplete = ([p for p in cyc["batch"] if (p in info and _pending(p)) or p in withheld]
+                        if phase == "forms" else [])
+    if phase == "forms" and not batch_incomplete:
+        phase = "words"                 # партия ГЕНУИННО сдана (или все клетки выключены
         save = ("words", [])            # тумблерами) → по кругу: снова слова
     # ── ДОСРОЧНЫЙ флип words→forms (анти-дедлок ветерана): базе нечего отдать (повторы
     # не подошли, новые кончились/заблокированы), а работа по формам ЕСТЬ (несданные
@@ -122,7 +161,7 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
             extra = sorted((p for p in info if _pending(p) and p not in batch), key=_freq)
             batch = (batch + extra)[:batch_size]
             phase = "forms"
-            batch_pending = [p for p in batch if _pending(p)]
+            batch_serve = [p for p in batch if _pending(p)]
             save = ("forms", batch)
 
     if phase != "forms":
@@ -136,6 +175,10 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
     picks = []   # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]
     cards_cap = max(1, cap_new)
     quota = max(1, round(size * session_share))
+    # порядок слов: партия (частотные первыми) → бэклог-филлер (переваривает старые выученные слова,
+    # чьи формы ещё не отработаны; флип от филлера не зависит). Считаем ДО повторов — нужен резерв.
+    word_order = sorted(batch_serve, key=_freq)
+    word_order += sorted((p for p in info if p not in set(batch) and _pending(p)), key=_freq)
     # 0) подошедшие ПОВТОРЫ уже СДАННЫХ клеток (interval≥1, due≤now) — первыми: формы
     #    повторяются в СВОЕЙ фазе (в фазе слов форм нет вовсе)
     due_rev = []
@@ -144,16 +187,20 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
                 and (strow.get("interval_days") or 0) >= 1 and (strow.get("due_at") or "") <= now_s):
             due_rev.append(((strow.get("due_at") or ""), rpid, rc, strow.get("stage") or "produce"))
     due_rev.sort()
-    taken = {}   # pid → взятые клетки этой сессии
+    # РЕЗЕРВ под прогресс партии (Фикс #1): повторы форм НЕ занимают всю квоту — иначе у ветерана с
+    # ≥quota подошедших повторов на клетки партии не остаётся слотов, партия не двигается, флип
+    # forms→words не наступает, cap_new застревает на 0 (новые слова стоят). Держим ≥ трети квоты под
+    # слова партии/бэклога; повторы сверх резерва добираем ПОСЛЕ прогресса, если квота не выбрана.
+    min_batch_slots = max(1, quota // 3) if word_order else 0
+    due_cap = max(0, quota - min_batch_slots)
+    taken = {}          # pid → взятые клетки этой сессии
+    deferred_rev = []   # повторы сверх резерва — добор остатка квоты после прогресса партии
     for _d, rpid, rc, rstg in due_rev:
-        if len(picks) >= quota:
-            break
+        if len(picks) >= due_cap:
+            deferred_rev.append((rpid, rc, rstg))
+            continue
         picks.append(("form", info[rpid]["e"], rc, info[rpid]["fdict"], rstg))
         taken.setdefault(rpid, set()).add(rc)
-    # порядок слов: партия (частотные первыми) → бэклог-филлер (переваривает старые
-    # выученные слова, чьи формы ещё не отработаны; флип от филлера не зависит)
-    word_order = sorted(batch_pending, key=_freq)
-    word_order += sorted((p for p in info if p not in set(batch) and _pending(p)), key=_freq)
     cards_n = 0  # карточек формы уже взято (порция ≤ cards_cap)
     for _round in (0, 1):                      # ≤2 клетки на слово, раунд-робином
         for pid in word_order:
@@ -173,6 +220,14 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
                 cards_n += 1
             picks.append(("form", info[pid]["e"], nxt, info[pid]["fdict"], stage))
             got.add(nxt)
+    # добор отложенных повторов (партия уже получила свой резерв — старвейшна больше нет)
+    for rpid, rc, rstg in deferred_rev:
+        if len(picks) >= quota:
+            break
+        if rc in taken.get(rpid, set()):
+            continue
+        picks.append(("form", info[rpid]["e"], rc, info[rpid]["fdict"], rstg))
+        taken.setdefault(rpid, set()).add(rc)
     # местоим-overlay (курируемая парадигма, вне трека форм) — добивает остаток квоты
     ov_picks = []
     for e, group, fdict in cands:
@@ -183,7 +238,15 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
             ov_picks.append((e["row"].get("freq") or 0, ("overlay", e, pending_ov[0], fdict, None)))
     ov_picks.sort(key=lambda x: -x[0])
     picks += [it for _, it in ov_picks][:max(0, quota - len(picks))]
+    if not picks:
+        # партия «зависла» целиком вне info (все несданные слова — due-повторы базы этого прохода
+        # или временно недоступны), другой форм-работы нет → дрилить нечего: отдаём слова ЭТУ сессию,
+        # партию НЕ чистим (save как есть — вернутся в info → форм-фаза продолжится). (Фикс #2:
+        # иначе пустая форм-сессия с cap_new=0.)
+        plan = empty_plan(cap_new)
+        plan["save_cycle"] = save
+        return plan
     return {"picks": picks, "phase": "forms", "cap_new": 0, "cards_cap": cards_cap,
-            "cycle_left": len(batch_pending),
-            "cycle_cells": sum(len(_pending(pid)) for pid in batch_pending),
+            "cycle_left": len(batch_serve),
+            "cycle_cells": sum(len(_pending(pid)) for pid in batch_serve),
             "save_cycle": save}

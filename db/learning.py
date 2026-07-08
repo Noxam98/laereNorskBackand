@@ -743,11 +743,21 @@ async def _attach_choice_options(session, lang, n=3):
     all_nb = {i for pid in pids for i in (nbr_map.get(pid) or [])}
     words = await get_pool_words_by_ids(list(all_nb)) if all_nb else {}
     patch = _distractors.options_patch(items, neighbors=nbr_map, words=words, lang=lang, n=n)
-    if not any(p["options"] for p in patch.values()):
-        # деградация (холодный embcache после рестарта и т.п.) — говорим в лог, не молчим:
-        # у всех choice-элементов пустые варианты = фронт покажет вопрос без ответов
-        logger.warning("options_patch: пустые варианты у всех %d choice-элементов "
-                       "(embcache холодный?)", len(items))
+    # ФОЛБЭК: у слова нет эмбеддинга / соседей не хватило (reembed отстал, новое слово) → варианты
+    # пустые/куцые = неотвечаемая карточка. Добираем частотными словами (options_patch отсеет
+    # синонимы/ответ/омоним). Запрос делаем ТОЛЬКО когда кто-то реально короче n (обычно не нужен).
+    short = [e for e in items if len(patch[e["pool_id"]]["options"]) < n]
+    if short:
+        from db import pool_by_freq
+        fb_rows = await pool_by_freq(200, None)
+        fb = [{"norwegian": w["norwegian"],
+               "data": {"translate": w.get("translate", {}), "part_of_speech": w.get("part_of_speech", "")}}
+              for w in fb_rows]
+        fb_map = {e["pool_id"]: fb for e in short}
+        patch = _distractors.options_patch(items, neighbors=nbr_map, words=words, lang=lang, n=n, fallback=fb_map)
+        still = sum(1 for e in items if len(patch[e["pool_id"]]["options"]) < n)
+        if still:
+            logger.warning("options_patch: у %d choice-элементов < %d вариантов даже с фолбэком", still, n)
     _distractors.apply_patch(session, patch)
 
 
@@ -1002,6 +1012,12 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         cands, finfo = _forms_phase.build_universe(
             enriched, ordered_pids={e["row"]["pool_id"] for e, _ in ordered},
             group_of=_group_of, pronoun_forms=PRONOUN_PARADIGM.get, cells_for=_cells_for)
+        # выученные формо-способные слова, выпавшие из finfo ТОЛЬКО потому что взяты base-сессией как
+        # due-повтор: партию НЕ закрывают (иначе преждевременный флип forms→words). Де-мастеренные/
+        # POS-off — не в withheld, они партию схлопывают штатно.
+        withheld = _forms_phase.withheld_reviews(
+            enriched, ordered_pids={e["row"]["pool_id"] for e, _ in ordered},
+            group_of=_group_of, cells_for=_cells_for)
         fstates = await load_form_states(user_id, list(finfo)) if finfo else {}
         blocked_new = _gates.new_words_blocked(in_work, gate_open, wip_limit=WIP_LIMIT)
         # form_cycle: чтение+план+запись АТОМАРНО под пер-юзер локом (Этап 9). Иначе между нашим
@@ -1014,7 +1030,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                 now_s=_now(), cap_new=cap_new, size=size,
                 base_servable=sum(1 for e2, _s2 in ordered if attempts(e2) > 0 or not blocked_new),
                 batch_size=FORM_CYCLE_BATCH, session_share=FORMS_SESSION_SHARE,
-                overlay_pending=_overlay_pending)
+                overlay_pending=_overlay_pending, withheld=withheld)
             if fplan["save_cycle"]:
                 await save_form_cycle(user_id, *fplan["save_cycle"])
     grammar_picks = fplan["picks"]   # [(kind 'form'|'overlay', e, cell, fdict, stage|None)]

@@ -25,7 +25,11 @@ from morphology import (
     strip_aux,
     noun_form_options, verb_form_options, adj_form_options,
     NOUN_FORM_CELLS, VERB_FORM_CELLS, ADJ_FORM_CELLS, UNCOUNTABLE_NOUNS,
+    all_weak_pasts, all_weak_perfects, regular_past, regular_perfect,
 )
+# множества допустимых ДУБЛЕТОВ сущ. (boka/boken, husene/husa, vintrer/vintre) — для produce-accept
+from morphology.noun import _allowed_def_sg, _allowed_indef_pl, _allowed_def_pl
+from morphology._common import _norm, _plausible
 
 # Рампа одной формы: показать карточку → выбрать верную среди подменённых окончаний → набрать самому.
 FORM_STAGES = ("card", "choose", "produce")
@@ -83,12 +87,23 @@ def cell_value(pos, forms, cell):
     ПРИЧАСТИЕ (без 'har' — вспом. постоянен)."""
     if cell == "gender":
         val = (forms.get("gender") or "").strip()
-    else:
-        field = _FORM_FIELD.get(cell, (cell, cell))[0]
-        val = (forms.get(field) or "").strip()
-        if pos == "verb" and cell == "perfect" and val:
-            val = strip_aux(val)
+        # род дрилим ТОЛЬКО как выбор артикля en/ei/et; m/f/hankjønn/пусто — не клетка (Фикс #5)
+        return val if val.lower() in ("en", "ei", "et") else ""
+    field = _FORM_FIELD.get(cell, (cell, cell))[0]
+    val = (forms.get(field) or "").strip()
+    if pos == "verb" and cell == "perfect" and val:
+        stripped = strip_aux(val)
+        # 'har'/'er' без причастия (strip_aux вернул голый вспом.) — дрилить нечего (Фикс #6)
+        val = "" if stripped in ("har", "er") else stripped
     return "" if val.lower() in _JUNK_FORMS else val
+
+
+def _truthy(v):
+    """Мягкая истинность флага из БД/JSON: bool True, число 1, строки 'true'/'1'/'yes' (Фикс #6):
+    строгое `is True` не ловило uncountable, пришедший как 1 или 'true'."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes")
+    return v is True or v == 1
 
 
 def form_cells_for(pos, forms, no=None):
@@ -98,7 +113,7 @@ def form_cells_for(pos, forms, no=None):
     cells = FORM_CELLS_BY_POS.get(pos)
     if not cells:
         return []
-    mass = pos == "noun" and (forms.get("uncountable") is True
+    mass = pos == "noun" and (_truthy(forms.get("uncountable"))
                               or (no and str(no).strip().lower() in UNCOUNTABLE_NOUNS))
     out = []
     for c in cells:
@@ -129,6 +144,33 @@ def form_options(pos, no, forms, cell, n=3):
     if pos == "adjective":
         return adj_form_options(no, forms, cell, n)
     return (None, [])
+
+
+def _produce_accept(pos, no, forms, cell, value):
+    """Допустимые ДУБЛЕТЫ produce-клетки (в БД одна форма, но валидны обе) — множество из
+    morphology-хелпера МИНУС основное значение (Фикс #4). Пусто — если дублетов нет.
+
+    Сущ.: феминное опр.ед. boka/boken (_allowed_def_sg), синкопа мн. vintrer/vintre
+    (_allowed_indef_pl), опр.мн. среднего husene/husa (_allowed_def_pl). Глаг.: слабый претерит
+    kastet/kasta и причастие — только для РЕАЛЬНО слабых (regular_* ≠ None), у сильных дублетов нет
+    (all_weak_* там даёт желанные ошибки-дистракторы, не альтернативы). Набор — тот же, что «choose»
+    считает валидным (verb_form_options/noun_form_options не квизят его как ошибку) → консистентно."""
+    v = _norm(value)
+    alts = set()
+    if pos == "noun":
+        gender = (forms.get("gender") or "").strip().lower()
+        if cell == "def_sg":
+            alts = set(_allowed_def_sg(no, gender))
+        elif cell == "indef_pl":
+            alts = set(_allowed_indef_pl(no, gender))
+        elif cell == "def_pl":
+            alts = set(_allowed_def_pl(no, gender, forms.get("indef_pl")))
+    elif pos == "verb":
+        if cell == "past" and regular_past(no) is not None:
+            alts = set(all_weak_pasts(no))
+        elif cell == "perfect" and regular_perfect(no) is not None:
+            alts = set(all_weak_perfects(no))
+    return sorted(a for a in alts if a and a != v and _plausible(a))
 
 
 def form_element(row, forms, data, cell, stage):
@@ -163,6 +205,11 @@ def form_element(row, forms, data, cell, stage):
         correct, dis = form_options(pos, no, forms, cell)
         if not correct:
             return None
+        if cell == "gender" and correct == "en":
+            # феминное, записанное как gender='en', валидно и как 'ei' → не даём 'ei' ложным
+            # дистрактором (иначе отвергаем верный выбор). Принять 'ei' нельзя — 'ei bil' не бывает,
+            # а масc./фем. по одному 'en' не различить: безопасно просто убрать вариант. (Фикс #5)
+            dis = [d for d in dis if d != "ei"]
         if dis:                               # нормальный выбор: верный + правдоподобные подмены
             target = {"field": field, "value": correct}
             if cell == "gender" and correct == "ei":
@@ -173,9 +220,15 @@ def form_element(row, forms, data, cell, stage):
                                 distractors=dis)
         # дистракторов не собрать (все правдоподобные варианты — валидные формы слова):
         # однокнопочный «выбор» бессмыслен — отдаём ВВОД, ступень choose всё равно продвинется
-    # produce — набрать форму самому
+    # produce — набрать форму самому. Валидные ДУБЛЕТЫ (boka/boken, kastet/kasta, husene/husa) —
+    # в target.accept: в БД одна форма, но верны обе. Фронт читает target.value + target.accept
+    # (как в choice-режиме рода ei→en). (Фикс #4)
+    target = {"field": field, "value": value}
+    accept = _produce_accept(pos, no, forms, cell, value)
+    if accept:
+        target["accept"] = accept
     return make_element(**base, mode="input", direction=cell,
-                        target={"field": field, "value": value}, scoring={"typoForgive": False})
+                        target=target, scoring={"typoForgive": False})
 
 
 def schedule_form(stage, ease, interval_days, correct, elapsed=None):
@@ -299,37 +352,44 @@ async def apply_form_result(user_id, pool_id, cell, correct, elapsed=None, stage
 
     Как у грамм-overlay: base-SRS слова (user_words) НЕ трогаем — трек форм отдельный слой.
     stage клиента игнорируем в пользу хранимого (анти-рассинхрон двух вкладок); карточка (stage
-    'card') активность не пишет (пассивный показ, не ответ)."""
-    db = await _conn()
-    try:
-        async with db.execute("SELECT * FROM form_srs WHERE user_id = ? AND pool_id = ? AND cell = ?",
-                              (user_id, pool_id, cell)) as cur:
-            r = await cur.fetchone()
-        st = dict(r) if r else {"stage": "card", "ease": _EASE_START, "interval_days": 0,
-                                "reps": 0, "lapses": 0}
-        cur_stage = st.get("stage") or "card"
-        nxt, ease, interval, due_days = schedule_form(cur_stage, st.get("ease"), st.get("interval_days"),
-                                                      correct, elapsed)
-        is_card = cur_stage == "card"
-        reps = st["reps"] + (0 if is_card else 1)
-        lapses = st["lapses"] + (0 if (is_card or correct) else 1)
-        due = _due_in(due_days)
-        await db.execute("""
-            INSERT INTO form_srs (user_id, pool_id, cell, stage, ease, interval_days, due_at,
-                                  reps, lapses, last_seen, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(user_id, pool_id, cell) DO UPDATE SET
-                stage=excluded.stage, ease=excluded.ease, interval_days=excluded.interval_days,
-                due_at=excluded.due_at, reps=excluded.reps, lapses=excluded.lapses,
-                last_seen=excluded.last_seen
-        """, (user_id, pool_id, cell, nxt, ease, interval, due, reps, lapses, _now(), _now()))
-        if not is_card:   # реальный ответ → стрик/цель/точность (карточка — пассив)
-            day = _now()[:10]
+    'card') активность не пишет (пассивный показ, не ответ).
+
+    Пер-юзер лок (Фикс #3): read-modify-write form_srs без него давал lost update при дабл-тапе/двух
+    вкладках (обе читают одну строку, второй commit затирает первый) — тот же реестр, что у базового
+    apply_result. Импорт ленивый: learning импортирует learning_forms (цикл). apply_form_result
+    зовётся только из роутера (не изнутри apply_result под тем же локом) → реентрантности нет."""
+    from .learning import _user_lock   # ленивый: разрыв цикла импорта learning ↔ learning_forms
+    async with _user_lock(user_id):
+        db = await _conn()
+        try:
+            async with db.execute("SELECT * FROM form_srs WHERE user_id = ? AND pool_id = ? AND cell = ?",
+                                  (user_id, pool_id, cell)) as cur:
+                r = await cur.fetchone()
+            st = dict(r) if r else {"stage": "card", "ease": _EASE_START, "interval_days": 0,
+                                    "reps": 0, "lapses": 0}
+            cur_stage = st.get("stage") or "card"
+            nxt, ease, interval, due_days = schedule_form(cur_stage, st.get("ease"), st.get("interval_days"),
+                                                          correct, elapsed)
+            is_card = cur_stage == "card"
+            reps = st["reps"] + (0 if is_card else 1)
+            lapses = st["lapses"] + (0 if (is_card or correct) else 1)
+            due = _due_in(due_days)
             await db.execute("""
-                INSERT INTO user_activity (user_id, day, answers, correct) VALUES (?,?,1,?)
-                ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
-            """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
-        await db.commit()
-        return {"ok": True, "form": True, "cell": cell, "stage": nxt, "due_at": due}
-    finally:
-        await _release(db)
+                INSERT INTO form_srs (user_id, pool_id, cell, stage, ease, interval_days, due_at,
+                                      reps, lapses, last_seen, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, pool_id, cell) DO UPDATE SET
+                    stage=excluded.stage, ease=excluded.ease, interval_days=excluded.interval_days,
+                    due_at=excluded.due_at, reps=excluded.reps, lapses=excluded.lapses,
+                    last_seen=excluded.last_seen
+            """, (user_id, pool_id, cell, nxt, ease, interval, due, reps, lapses, _now(), _now()))
+            if not is_card:   # реальный ответ → стрик/цель/точность (карточка — пассив)
+                day = _now()[:10]
+                await db.execute("""
+                    INSERT INTO user_activity (user_id, day, answers, correct) VALUES (?,?,1,?)
+                    ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + 1, correct = correct + ?
+                """, (user_id, day, 1 if correct else 0, 1 if correct else 0))
+            await db.commit()
+            return {"ok": True, "form": True, "cell": cell, "stage": nxt, "due_at": due}
+        finally:
+            await _release(db)
