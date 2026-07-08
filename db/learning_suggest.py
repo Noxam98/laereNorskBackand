@@ -17,6 +17,19 @@ from .exams import _audit_throttled, new_words_blocked
 from .placement import get_start_level
 
 
+def _level_from_total(learned_total, start=None):
+    """Достигнутый CEFR-уровень по КУМУЛЯТИВНОМУ числу выученных слов: LEVEL_TARGETS[lv] — сколько
+    слов нужно, чтобы БЫТЬ на lv. Берём самый высокий взятый порог, затем флор уровня из плейсмента
+    (start). Единый источник для learning_stats и estimate_level — иначе они расходятся."""
+    lvl = LEVELS[0]
+    for lv in LEVELS:
+        if learned_total >= LEVEL_TARGETS[lv]:
+            lvl = lv
+    if start and _LEVEL_ORDER.get(start, 0) > _LEVEL_ORDER.get(lvl, 0):
+        lvl = start
+    return lvl
+
+
 async def learning_stats(user_id):
     db = await _conn()
     try:
@@ -49,20 +62,23 @@ async def learning_stats(user_id):
             by_level[lv]["total"] += 1
             if w["status"] in ("mastered", "archived"):
                 by_level[lv]["mastered"] += 1
+    # УРОВЕНЬ — КУМУЛЯТИВНЫЙ: LEVEL_TARGETS[lv] = общее число выученных слов, чтобы БЫТЬ на lv.
+    # by_level[*].mastered (по CEFR-тегу) остаётся ТОЛЬКО для гистограммы отображения, НЕ для расчёта
+    # уровня — прежняя формула (per-tag mastered против кумулятивного target) замораживала currentLevel
+    # на плейсмент-тире и запирала юзера в его словаре (сессии сохли). learned_total = всё выученное.
+    learned_total = by_status.get("mastered", 0) + by_status.get("repeat", 0) + by_status.get("archived", 0)
     for lv in LEVELS:
-        by_level[lv]["done"] = by_level[lv]["mastered"] >= by_level[lv]["target"]
-    # текущий уровень = первый незакрытый по цели, но не ниже уровня из входного теста
-    computed = next((lv for lv in LEVELS if not by_level[lv]["done"]), "C2")
+        by_level[lv]["done"] = learned_total >= by_level[lv]["target"]
     start = await get_start_level(user_id)
-    current = computed
-    if start and _LEVEL_ORDER.get(start, 0) > _LEVEL_ORDER.get(computed, 0):
-        current = start
-    cur = by_level[current]
-    to_next = max(0, cur["target"] - cur["mastered"])
+    current = _level_from_total(learned_total, start)
+    # к следующему уровню — первый тир ВЫШЕ текущего, чей кумулятивный порог ещё не взят
+    next_goal = next((lv for lv in LEVELS
+                      if _LEVEL_ORDER[lv] > _LEVEL_ORDER[current] and learned_total < LEVEL_TARGETS[lv]), None)
+    to_next = max(0, LEVEL_TARGETS[next_goal] - learned_total) if next_goal else 0
     # ретеншн = доля выученных среди (выучено+слабых); «выучено за неделю» — по last_seen
     from datetime import datetime, timedelta
     # «выучено» для ретеншна = mastered + repeat (повтор — это тоже выученное, просто подошёл срок) + архив
-    mastered_n = (by_status.get("mastered", 0) + by_status.get("repeat", 0) + by_status.get("archived", 0))
+    mastered_n = learned_total   # то же (mastered+repeat+archived) — считаем один раз для уровня и ретеншна
     weak_n = by_status.get("weak", 0)
     retention = round(100 * mastered_n / (mastered_n + weak_n)) if (mastered_n + weak_n) else None
     week_cut = (datetime.utcnow() - timedelta(days=7)).isoformat()
@@ -86,8 +102,19 @@ async def learning_stats(user_id):
 
 
 async def estimate_level(user_id):
-    """Рабочий уровень для подсказок — текущий уровень по целям (первый незакрытый)."""
-    return (await learning_stats(user_id))["currentLevel"]
+    """Рабочий уровень для подсказок — КУМУЛЯТИВНЫЙ (по числу выученных), с флором плейсмента.
+    Лёгкий: дешёвый COUNT выученных вместо полного learning_stats (зовётся несколько раз за сборку
+    сессии — тяжёлый _fetch_user_words/activity/forms тут не нужен)."""
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM user_words "
+            "WHERE user_id = ? AND (COALESCE(mastered,0) = 1 OR COALESCE(archived,0) = 1)",
+            (user_id,)) as cur:
+            learned = (await cur.fetchone())["n"]
+    finally:
+        await _release(db)
+    return _level_from_total(learned, await get_start_level(user_id))
 
 
 async def suggest_words(user_id, count=10, level=None, allow_func=True):
@@ -117,12 +144,14 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
     # иначе у юзера с большим словарём топ-N по частоте уже целиком его, новых не находится и пул
     # кажется «исчерпанным» (сессии тают до 1–3 слов, перестают смешиваться).
     window = len(have) + max(count * 6, 60)
-    cand = await pool_by_freq(window, lvl)
+    # КУМУЛЯТИВНО (up_to): уровни ≤ lvl по частоте, а не точный тир — иначе placed-юзер заперт в
+    # словаре своего тира и после его исчерпания сессии сохнут при нетронутом остальном пуле.
+    cand = await pool_by_freq(window, lvl, up_to=True)
     # Фокус на темах: ~1 из 3 кандидатов — из выбранных тем (по частоте), пока тема-слова не кончатся.
     # Пусто → cand без изменений (поведение ровно как раньше). Дедуп — общим циклом ниже (have).
     focus = await get_user_focus_topics(user_id)
     if focus:
-        topic_cand = await pool_by_freq_topics(window, lvl, focus)
+        topic_cand = await pool_by_freq_topics(window, lvl, focus, up_to=True)
         if topic_cand:
             merged, ti, ni = [], 0, 0
             while ti < len(topic_cand) or ni < len(cand):
@@ -153,19 +182,27 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
         from config import logger as _lg
         _lg.warning("suggest_words: компаунд-ранжирование пропущено", exc_info=True)
     added = []
-    for w in cand:
-        if len(added) >= count:
-            break
-        pid = w["pool_id"]
-        if not pid or pid in have:
-            continue
-        # гейт A1: пока нет базы контентных — служебные не досыпаем (иначе «новый пул» забьётся ими)
-        if not allow_func and is_function_word(w["norwegian"], {"part_of_speech": w.get("part_of_speech")}):
-            continue
-        res = await add_word_to_dict(user_id, target_id, pid)
-        if res.get("id") and not res.get("duplicate"):
-            added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
-            have.add(pid)
+
+    async def _take(cands):
+        for w in cands:
+            if len(added) >= count:
+                return
+            pid = w["pool_id"]
+            if not pid or pid in have:
+                continue
+            # гейт A1: пока нет базы контентных — служебные не досыпаем (иначе «новый пул» забьётся ими)
+            if not allow_func and is_function_word(w["norwegian"], {"part_of_speech": w.get("part_of_speech")}):
+                continue
+            res = await add_word_to_dict(user_id, target_id, pid)
+            if res.get("id") and not res.get("duplicate"):
+                added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
+                have.add(pid)
+
+    await _take(cand)
+    # Fallthrough: уровни ≤ lvl исчерпаны (всё уже в словаре юзера), но пул НЕ пуст — добираем ЛЮБЫМ
+    # уровнем по частоте, чтобы сессия не сохла (частотные/простые вперёд). Запрос только при нехватке.
+    if len(added) < count:
+        await _take(await pool_by_freq(len(have) + max(count * 6, 60), None))
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
 
 
@@ -325,19 +362,25 @@ async def next_new_cards(user_id, n=5, exclude=None):
         return {"cards": [], "blocked": True}
     rows = await _own_new_card_rows(user_id, exclude)
     if len(rows) < n:                             # своих не хватило → досыпаем из пула и перечитываем
-        await suggest_words(user_id, count=(n - len(rows)) + len(exclude) + 4)
+        # allow_func=False: добор-карточки середины сессии — только контентные; служебные вводит
+        # build_session со своим пословным гейтом (иначе тут они просачивались бы мимо A1-гейта).
+        await suggest_words(user_id, count=(n - len(rows)) + len(exclude) + 4, allow_func=False)
         rows = await _own_new_card_rows(user_id, exclude)
     if not rows:
         return {"cards": []}
     cards = []
     for r in rows[:n]:
         data = json.loads(r["data"]) if r["data"] else {}
+        try:
+            _forms = json.loads(r["forms"]) if r["forms"] else None   # битый forms не роняет добор
+        except Exception:
+            _forms = None
         cards.append(make_element(
             pool_id=r["pool_id"], no=r["norwegian"],
             translate=data.get("translate", {}),
             part_of_speech=data.get("part_of_speech", ""),
             gloss=data.get("gloss"), example=data.get("example"),
-            forms=(json.loads(r["forms"]) if r["forms"] else None),
+            forms=_forms,
             mode="study", direction=None, step="card", repeat=False,
         ))
     return {"cards": cards}

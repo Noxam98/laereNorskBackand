@@ -22,12 +22,21 @@ def freq_band(z):
     return "very_rare"
 
 
-async def pool_by_freq(limit: int = 80, level: str = None):
+_CEFR = ["A1", "A2", "B1", "B2", "C1", "C2"]
+
+
+async def pool_by_freq(limit: int = 80, level: str = None, up_to: bool = False):
     """Слова пула по убыванию частотности (самые употребимые сначала; freq IS NULL — в хвост).
-    [{pool_id, norwegian, translate, part_of_speech, freq}]. Фильтр по уровню CEFR."""
+    [{pool_id, norwegian, translate, part_of_speech, freq}]. Фильтр по уровню CEFR.
+    up_to=True — КУМУЛЯТИВНО: все уровни ≤ level (частотные вперёд), а не только точное совпадение
+    (иначе юзер заперт в словаре своего тира; см. suggest_words)."""
     conds, params = ["data IS NOT NULL", "COALESCE(learn_excluded, 0) = 0"], []
     if level:
-        conds.append("level = ?"); params.append(level)
+        if up_to and level in _CEFR:
+            tiers = _CEFR[:_CEFR.index(level) + 1]
+            conds.append(f"level IN ({','.join('?' for _ in tiers)})"); params += tiers
+        else:
+            conds.append("level = ?"); params.append(level)
     sql = (f"SELECT id, norwegian, data, freq FROM word_pool WHERE {' AND '.join(conds)} "
            "ORDER BY freq IS NULL, freq DESC LIMIT ?")
     params.append(limit)
@@ -49,13 +58,18 @@ async def pool_by_freq(limit: int = 80, level: str = None):
         await _release(db)
 
 
-async def pool_by_freq_topics(limit: int, level, topics):
-    """Как pool_by_freq, но только слова с любой из тем `topics` (для фокуса Учёбы). По частоте."""
+async def pool_by_freq_topics(limit: int, level, topics, up_to: bool = False):
+    """Как pool_by_freq, но только слова с любой из тем `topics` (для фокуса Учёбы). По частоте.
+    up_to=True — кумулятивно (уровни ≤ level), как в pool_by_freq."""
     if not topics:
         return []
     conds, params = ["wp.data IS NOT NULL", "COALESCE(wp.learn_excluded, 0) = 0"], []
     if level:
-        conds.append("wp.level = ?"); params.append(level)
+        if up_to and level in _CEFR:
+            tiers = _CEFR[:_CEFR.index(level) + 1]
+            conds.append(f"wp.level IN ({','.join('?' for _ in tiers)})"); params += tiers
+        else:
+            conds.append("wp.level = ?"); params.append(level)
     marks = ",".join("?" for _ in topics)
     sql = (f"SELECT DISTINCT wp.id, wp.norwegian, wp.data, wp.freq FROM word_pool wp "
            f"JOIN word_topics wt ON wt.pool_id = wp.id "
