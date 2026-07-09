@@ -10,14 +10,14 @@
 CONTENT = "content"          # обычные слова: choice×2 → build → input
 FUNC_CLOZE = "func_cloze"    # служебные при включённом cloze: 3 cloze-предложения
 FUNC_CHOICE = "func_choice"  # служебные при выключенном cloze: только выбор
-PHRASE = "phrase"            # устойчивые выражения: выбор → порядок слов → буквы
+PHRASE = "phrase"            # устойчивые выражения: выбор → порядок слов → ВВОД (тот же input, что у слов)
 
 AUDIO_CELL = "choice_no2int"   # аудио-подтверждение (при audio ВКЛ — в слуховую партию)
 
 REQUIRED_CELLS = ("choice_int2no", "choice_no2int", "build_int2no", "input_int2no")
 FUNC_CELLS = ("cloze_1", "cloze_2", "cloze_3")
 FUNC_CELLS_CHOICE = ("choice_int2no", "choice_no2int")
-PHRASE_CELLS = ("choice_no2int", "order_int2no", "cells_int2no")
+PHRASE_CELLS = ("choice_no2int", "order_int2no", "input_int2no")   # финал — ОБЫЧНЫЙ ввод (InputGame), не буквенные клетки
 ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS
 
 _CELLS_OF = {
