@@ -1,6 +1,7 @@
 import aiosqlite
 import os
 import asyncio
+import contextvars
 import json
 import logging
 from datetime import datetime
@@ -27,7 +28,19 @@ def _now():
 # --- Пул соединений (переиспользуем, чтобы не плодить потоки aiosqlite на каждый вызов) ---
 _POOL = []
 _POOL_LOCK = asyncio.Lock()
-_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))   # сколько ПРОСТАИВАЮЩИХ соединений держим в пуле
+
+# Хард-бонд ОДНОВРЕМЕННЫХ соединений. Без него всплеск из N параллельных запросов плодил N соединений
+# aiosqlite — по ФОНОВОМУ ПОТОКУ на каждое → на маленькой VPS это раздувание памяти/потоков (пул кэшировал
+# лишь ПРОСТОЙ, не параллелизм). Ограничиваем число ЗАДАЧ, держащих соединение; лишние ждут освобождения.
+# Слот занимает только ВНЕШНИЙ _conn задачи. Вложенные _conn (функция под соединением зовёт хелпер,
+# открывающий СВОЁ — независимая транзакция) слот НЕ занимают: иначе N задач, каждая с одним соединением
+# и тянущаяся за вторым, взаимно заперли бы пул (классический дедлок вложенного захвата). Каждый _conn —
+# по-прежнему отдельное реальное соединение, семантика транзакций не меняется. Потолок живых соединений
+# = _MAX_CONNS × глубина вложенности (обычно ≤2-3) — ограничен, в отличие от прежнего «сколько угодно».
+_MAX_CONNS = max(1, int(os.getenv("DB_MAX_CONCURRENCY", "24")))
+_POOL_SEM = asyncio.Semaphore(_MAX_CONNS)
+_conn_depth = contextvars.ContextVar("_conn_depth", default=0)   # глубина вложенных _conn в задаче
 
 
 async def _make_conn():
@@ -47,27 +60,62 @@ async def _make_conn():
 
 
 async def _conn():
-    async with _POOL_LOCK:
-        if _POOL:
-            return _POOL.pop()
-    return await _make_conn()
+    depth = _conn_depth.get()
+    if depth == 0:
+        await _POOL_SEM.acquire()   # ВНЕШНИЙ _conn задачи: занимаем слот (ждём, если пул исчерпан)
+    _conn_depth.set(depth + 1)      # вложенные _conn слот не берут — только считаем глубину
+    try:
+        async with _POOL_LOCK:
+            if _POOL:
+                return _POOL.pop()
+        return await _make_conn()
+    except BaseException:
+        # соединение не выдано — откатываем учёт слота, чтобы permit не утёк (пул бы медленно засох)
+        _conn_depth.set(depth)
+        if depth == 0:
+            _POOL_SEM.release()
+        raise
 
 
 async def _release(db):
-    # сбрасываем возможную незавершённую транзакцию перед возвратом в пул
     try:
-        await db.rollback()
-    except Exception:
+        # сбрасываем возможную незавершённую транзакцию перед возвратом в пул
         try:
-            await db.close()
+            await db.rollback()
         except Exception:
-            pass
-        return
-    async with _POOL_LOCK:
-        if len(_POOL) < _POOL_SIZE:
-            _POOL.append(db)
+            try:
+                await db.close()
+            except Exception:
+                pass
             return
-    await db.close()
+        async with _POOL_LOCK:
+            if len(_POOL) < _POOL_SIZE:
+                _POOL.append(db)
+                return
+        await db.close()
+    finally:
+        _free_slot()   # слот отпускаем на ЛЮБОМ исходе release (в т.ч. закрытие/ошибка отката)
+
+
+def _free_slot():
+    """Парно к занятию слота в _conn: внешний release задачи отпускает permit, вложенные — только
+    уменьшают глубину. При depth<=0 (лишний/непарный release) ничего не делаем — permit не плодим."""
+    depth = _conn_depth.get()
+    if depth <= 0:
+        return
+    _conn_depth.set(depth - 1)
+    if depth == 1:
+        _POOL_SEM.release()
+
+
+def _reset_pool():
+    """ТЕСТЫ: свежие примитивы пула на каждый event loop. asyncio.Semaphore привязывается к loop при
+    первой БЛОКИРОВКЕ; тест, исчерпавший бонд, оставил бы семафор на своём (закрытом) loop. Пересоздаём
+    семафор, сбрасываем глубину и очищаем список (при DB_POOL_SIZE=0, как в тестах, он и так пуст)."""
+    global _POOL_SEM
+    _POOL.clear()
+    _POOL_SEM = asyncio.Semaphore(_MAX_CONNS)
+    _conn_depth.set(0)
 
 
 async def get_setting(key: str, default=None):

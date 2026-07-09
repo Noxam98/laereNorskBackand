@@ -33,6 +33,7 @@ async def fresh_db():
         _USER_LOCKS.clear()
     except Exception:
         pass
+    core._reset_pool()   # свежий семафор пула под event loop этого теста (см. _reset_pool)
     await init_db()
     yield path
     try:
