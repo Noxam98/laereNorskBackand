@@ -302,6 +302,18 @@ async def init_db():
             )
         """)
 
+        # Дедуп жалоб «не учить»: один пользователь = одна жалоба на слово. Без этого повторные
+        # отправки одного слова накручивали word_pool.report_count и флудили пуш-уведомлениями
+        # модератора (отравление очереди модерации). PK (user_id, pool_id) → INSERT OR IGNORE.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_word_reports (
+                user_id INTEGER NOT NULL,
+                pool_id INTEGER NOT NULL,
+                created_at TEXT,
+                PRIMARY KEY (user_id, pool_id)
+            )
+        """)
+
         # Теги-темы общего пула (много на слово).
         await db.execute("""
         CREATE TABLE IF NOT EXISTS word_topics (

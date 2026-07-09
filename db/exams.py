@@ -210,21 +210,25 @@ async def _known_vocab(db):
     return _KNOWN_VOCAB
 
 
-def _exam_answer_ok(r, lang, ans, known=None, accept_translation=True):
+def _exam_answer_ok(r, lang, ans, known=None, accept_translation=True, accept_word_forms=True):
     """Нечёткая сверка (fuzzy.py): ответ достаточно близок к «своей» форме слова. Со словарём-стражем
     (known) ввод, равный ДРУГОМУ известному слову, отклоняется (это не опечатка).
 
     accept_translation=False (тип input) — принимаем ТОЛЬКО норвежское слово и его словоформы, НЕ
     показанный перевод: иначе юзер печатает показанную ему подсказку-перевод и получает «верно».
-    accept_translation=True (типы-выбор no2int/int2no/cloze) — варианты без подписей, ответом может
-    быть перевод ИЛИ норвежское слово, поэтому сверка остаётся типонезависимой."""
+    accept_word_forms=False (тип no2int) — норвежская лемма ВИДИМА в самом вопросе (это промпт),
+    поэтому норвежские словоформы НЕ принимаем: иначе клиент эхом промпта всегда «сдаёт» (обход
+    ворот забывания). Принимаем только перевод.
+    Оба True (типы-выбор int2no/cloze) — варианты без подписей, ответом может быть перевод ИЛИ
+    норвежское слово, поэтому сверка остаётся типонезависимой."""
     data = _load_data(r)
     try:
         fcol = json.loads(r["forms"]) if r.get("forms") else None
     except Exception:
         fcol = None
     acc = list(data.get("translate", {}).get(lang) or []) if accept_translation else []
-    acc += fuzzy.word_forms(r["norwegian"], fcol)
+    if accept_word_forms:
+        acc += fuzzy.word_forms(r["norwegian"], fcol)
     return fuzzy.fuzzy_match(ans, acc, known=known)
 
 
@@ -308,41 +312,53 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
         missed_pids = []
         seen = set()   # дедуп по pool_id: одна карточка засчитывается ОДИН раз. Иначе повтор верного
         for a in (answers or []):   # ответа ×PASS подделывал бы сдачу ворот (сертификацию всей пачки 50–100 слов)
+            if not isinstance(a, dict):   # мусор в answers ([str], [null]) не должен ронять грейд (500)
+                continue
             pid = a.get("pool_id")
             r = by_pid.get(pid)
             if not r or pid in seen:
                 continue
             seen.add(pid)
-            accept_tr = a.get("type") != "input"   # input: показанный перевод НЕ засчитываем
-            if _exam_answer_ok(r, lang, a.get("answer"), known, accept_translation=accept_tr):
+            qtype = a.get("type")
+            accept_tr = qtype != "input"     # input: показанный перевод НЕ засчитываем
+            accept_wf = qtype != "no2int"    # no2int: норв. лемма — видимый вопрос → эхо промпта не сдаём
+            ans_txt = str(a.get("answer") or "").strip()   # безопасная коэрция (не .strip() по не-str)
+            if _exam_answer_ok(r, lang, ans_txt, known,
+                               accept_translation=accept_tr, accept_word_forms=accept_wf):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
 
-        if correct_n >= need:
-            if pack:
-                marks = ",".join("?" for _ in pack)
-                # сертифицируем пачку и сразу назначаем первый аудит забывания (now + FIRST_AUDIT_DAYS).
-                # audit_interval запоминает длину текущего интервала — при успехе аудита он умножается на рост.
-                await db.execute(
-                    f"UPDATE user_words SET certified = 1, was_certified = 1, audit_due = ?, audit_interval = ? "
-                    f"WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
-                    [_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id]
-                    + [r["pool_id"] for r in pack])
-                await db.commit()
-            return {"passed": True}
+        # мутацию user_words держим под пер-юзер локом (Фикс #7): read-modify-write иначе теряет
+        # апдейт против конкурентного /answer того же юзера (второй commit затирает первый).
+        from .learning import _user_lock   # ленивый: цикл learning ↔ exams
+        async with _user_lock(user_id):
+            # buildable==0 → выборка пуста: не сертифицируем даже при correct_n>=need (need=1 на пустом
+            # экзамене был бы достижим эхом норв. слов). _pass_threshold(0) оставляем =1 (контракт).
+            if buildable > 0 and correct_n >= need:
+                if pack:
+                    marks = ",".join("?" for _ in pack)
+                    # сертифицируем пачку и сразу назначаем первый аудит забывания (now + FIRST_AUDIT_DAYS).
+                    # audit_interval запоминает длину текущего интервала — при успехе аудита он умножается на рост.
+                    await db.execute(
+                        f"UPDATE user_words SET certified = 1, was_certified = 1, audit_due = ?, audit_interval = ? "
+                        f"WHERE user_id = ? AND certified = 0 AND pool_id IN ({marks})",
+                        [_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id]
+                        + [r["pool_id"] for r in pack])
+                    await db.commit()
+                return {"passed": True}
 
-        # провал: демоут промахов + столько же самых слабых по силе из пачки (штраф ×2)
-        missed = [by_pid[p] for p in missed_pids if p in by_pid]
-        missed_set = {r["pool_id"] for r in missed}
-        rest = sorted([r for r in pack if r["pool_id"] not in missed_set],
-                      key=lambda r: (r.get("strength") or 0, r.get("due_at") or ""))
-        penalty = rest[:len(missed)]   # столько же самых слабых
-        to_demote = missed + penalty
-        for r in to_demote:
-            await _demote(db, user_id, r)
-        await db.commit()
-        return {"passed": False, "demoted": len(to_demote)}
+            # провал: демоут промахов + столько же самых слабых по силе из пачки (штраф ×2)
+            missed = [by_pid[p] for p in missed_pids if p in by_pid]
+            missed_set = {r["pool_id"] for r in missed}
+            rest = sorted([r for r in pack if r["pool_id"] not in missed_set],
+                          key=lambda r: (r.get("strength") or 0, r.get("due_at") or ""))
+            penalty = rest[:len(missed)]   # столько же самых слабых
+            to_demote = missed + penalty
+            for r in to_demote:
+                await _demote(db, user_id, r)
+            await db.commit()
+            return {"passed": False, "demoted": len(to_demote)}
     finally:
         await _release(db)
 
@@ -396,42 +412,52 @@ async def grade_audit(user_id, answers, lang="ru"):
         known = await _known_vocab(db)
         checked = refreshed = forgot = 0
         seen = set()   # дедуп по pool_id: дубль не накручивает checked/refreshed и не разбавляет долю forgot
-        for a in (answers or []):
-            pid = a.get("pool_id")
-            r = by_pid.get(pid)
-            if not r or pid in seen:
-                continue
-            seen.add(pid)
-            checked += 1
-            accept_tr = a.get("type") != "input"   # input: показанный перевод НЕ засчитываем
-            ok = _exam_answer_ok(r, lang, a.get("answer"), known, accept_translation=accept_tr)
-            if ok:
-                # срок растёт между успешными аудитами: новый интервал = прежний × рост.
-                # Прежний интервал помним в audit_interval (на сертификации = FIRST_AUDIT_DAYS),
-                # поэтому при аудите вовремя получаем 30 → 60 → 120 … (а не залипание на 60).
-                prev_interval = r.get("audit_interval") or 0
-                if prev_interval <= 0:
-                    prev_interval = FIRST_AUDIT_DAYS
-                next_days = round(prev_interval * _AUDIT_GROWTH)
+        # мутацию user_words держим под пер-юзер локом (Фикс #7): иначе теряется апдейт против
+        # конкурентного /answer того же юзера (второй commit затирает первый).
+        from .learning import _user_lock   # ленивый: цикл learning ↔ exams
+        async with _user_lock(user_id):
+            for a in (answers or []):
+                if not isinstance(a, dict):   # мусор в answers не должен ронять грейд (500)
+                    continue
+                pid = a.get("pool_id")
+                r = by_pid.get(pid)
+                if not r or pid in seen:
+                    continue
+                seen.add(pid)
+                checked += 1
+                qtype = a.get("type")
+                accept_tr = qtype != "input"     # input: показанный перевод НЕ засчитываем
+                accept_wf = qtype != "no2int"    # no2int: норв. лемма — видимый вопрос → эхо не сдаём
+                ans_txt = str(a.get("answer") or "").strip()   # безопасная коэрция (не .strip() по не-str)
+                ok = _exam_answer_ok(r, lang, ans_txt, known,
+                                     accept_translation=accept_tr, accept_word_forms=accept_wf)
+                if ok:
+                    # срок растёт между успешными аудитами: новый интервал = прежний × рост.
+                    # Прежний интервал помним в audit_interval (на сертификации = FIRST_AUDIT_DAYS),
+                    # поэтому при аудите вовремя получаем 30 → 60 → 120 … (а не залипание на 60).
+                    prev_interval = r.get("audit_interval") or 0
+                    if prev_interval <= 0:
+                        prev_interval = FIRST_AUDIT_DAYS
+                    next_days = round(prev_interval * _AUDIT_GROWTH)
+                    await db.execute(
+                        "UPDATE user_words SET audit_due = ?, audit_interval = ? WHERE user_id = ? AND pool_id = ?",
+                        (_due_str(next_days), float(next_days), user_id, r["pool_id"]))
+                    refreshed += 1
+                else:
+                    # забыл → де-сертификация + назад в очередь изучения, снимаем с аудита
+                    await _demote(db, user_id, r)
+                    await db.execute(
+                        "UPDATE user_words SET audit_due = NULL, audit_interval = 0 WHERE user_id = ? AND pool_id = ?",
+                        (user_id, r["pool_id"]))
+                    forgot += 1
+            throttle = bool(checked) and (forgot / checked) > THROTTLE
+            if throttle:
+                # мягкий тормоз: притормаживаем приток новых на THROTTLE_DAYS (энфорсится на бэкенде)
                 await db.execute(
-                    "UPDATE user_words SET audit_due = ?, audit_interval = ? WHERE user_id = ? AND pool_id = ?",
-                    (_due_str(next_days), float(next_days), user_id, r["pool_id"]))
-                refreshed += 1
-            else:
-                # забыл → де-сертификация + назад в очередь изучения, снимаем с аудита
-                await _demote(db, user_id, r)
-                await db.execute(
-                    "UPDATE user_words SET audit_due = NULL, audit_interval = 0 WHERE user_id = ? AND pool_id = ?",
-                    (user_id, r["pool_id"]))
-                forgot += 1
-        throttle = bool(checked) and (forgot / checked) > THROTTLE
-        if throttle:
-            # мягкий тормоз: притормаживаем приток новых на THROTTLE_DAYS (энфорсится на бэкенде)
-            await db.execute(
-                "UPDATE users SET audit_throttle_until = ? WHERE id = ?",
-                (_due_str(THROTTLE_DAYS), user_id))
-        await db.commit()
-        return {"checked": checked, "refreshed": refreshed, "forgot": forgot, "throttle": throttle}
+                    "UPDATE users SET audit_throttle_until = ? WHERE id = ?",
+                    (_due_str(THROTTLE_DAYS), user_id))
+            await db.commit()
+            return {"checked": checked, "refreshed": refreshed, "forgot": forgot, "throttle": throttle}
     finally:
         await _release(db)
 

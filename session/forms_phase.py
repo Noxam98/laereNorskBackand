@@ -165,6 +165,9 @@ def plan_forms_phase(cands, info, *, fstates, cycle_state, now_s, cap_new, size,
             save = ("forms", batch)
 
     if phase != "forms":
+        # Фаза слов — БЕЗ форм (осознанное разделение фаз FSM, см. test_form_reviews_live_in_forms_phase):
+        # повторы сданных клеток живут только в фазе форм. Комментарии-«due в любой фазе» в
+        # db/learning_forms.py / db/learning.py:986-990 — устаревшие, реальное поведение фаза-гейтед.
         plan = empty_plan(cap_new)
         plan["save_cycle"] = save
         return plan

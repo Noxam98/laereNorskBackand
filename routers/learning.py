@@ -16,6 +16,8 @@ from db import (
     report_word, skip_word, pending_count, reported_count,
 )
 import asyncio
+from ratelimit import _hit
+from db.learning import LEVELS
 from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody
 
 router = APIRouter()
@@ -137,6 +139,9 @@ async def learning_report_route(body: dict, user=Depends(get_current_user)):
     pid = await _resolve_pool_id(body)
     if not pid:
         raise HTTPException(status_code=404, detail="Word not in pool")
+    # антифлуд: даже с дедупом (одно слово — одна жалоба) юзер мог бы залить очередь модерации
+    # десятками РАЗНЫХ слов. _hit сам бросит 429 при превышении окна.
+    _hit(("report", user["id"]), 20, 3600)
     res = await report_word(pid, user["id"])
     if res.get("status") == "queued":
         async def _notify_mods():
@@ -161,6 +166,11 @@ async def learning_skip_route(body: dict, user=Depends(get_current_user)):
 @router.post("/learning/answer")
 async def learning_answer_route(body: LearningAnswer, user=Depends(get_current_user)):
     mark_activity()
+    # IDOR: без проверки владения любой юзер писал бы SRS/активность по ЧУЖОМУ pool_id (накрутка
+    # рейтинга, «мастеринг» произвольных слов). Легитимные карточки сессии кладутся в скрытый
+    # авто-словарь юзера на этапе сборки → _owns_pool у них True; режем лишь чужие/неучёбные id.
+    if not await _owns_pool(user["id"], body.pool_id):
+        raise HTTPException(status_code=404, detail="Word not in your study")
     if body.form:   # трек ФОРМ: отдельный SRS-слой form_srs, base-рампу не трогает (cell/stage
                     # гарантирует валидатор LearningAnswer — тихого провала в base больше нет)
         from db.learning_forms import apply_form_result
@@ -185,6 +195,8 @@ async def learning_grade_route(body: PlacementBody, user=Depends(get_current_use
 @router.post("/learning/level")
 async def learning_level_route(body: LevelBody, user=Depends(get_current_user)):
     """Самооценка уровня (self-report): сохранить как стартовый, уточним по сессиям."""
+    if body.level not in LEVELS:   # невалидный уровень: persist/seed/echo разошлись бы (сид по мусору)
+        raise HTTPException(status_code=422, detail="invalid level")
     await learning_set_level(user["id"], body.level)
     seed = await learning_seed_starter(user["id"], body.level)
     return {"ok": True, "level": body.level, "seeded": seed.get("seeded", 0)}
@@ -199,6 +211,7 @@ async def learning_gate_route(user=Depends(get_current_user)):
 @router.get("/learning/gate/exam")
 async def learning_gate_exam_route(lang: str = "ru", user=Depends(get_current_user)):
     """Собрать выборку вопросов зачётного экзамена (до SAMPLE из несданной пачки)."""
+    _hit(("exam_fetch", user["id"]), 60, 60)   # анти-реролл: не даём фармить варианты пере-запросом
     return await learning_gate_exam(user["id"], lang=lang)
 
 
@@ -212,6 +225,7 @@ async def learning_gate_grade_route(body: GateExamBody, user=Depends(get_current
 @router.get("/learning/audit")
 async def learning_audit_route(lang: str = "ru", user=Depends(get_current_user)):
     """Собрать аудит-выборку забывания (до AUDIT_CAP самых просроченных сертифицированных)."""
+    _hit(("exam_fetch", user["id"]), 60, 60)   # анти-реролл: не даём фармить варианты пере-запросом
     return await learning_audit(user["id"], lang=lang)
 
 

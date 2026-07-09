@@ -56,7 +56,13 @@ async def learning_stats(user_id):
         # повторяются отдельным аудитом (по audit_due), их due_at — вестигиальный (остаётся старым
         # после сертификации) и не должен надувать счётчик «повторить» на карточке (фантомные due).
         if w["due"] and not w["certified"]:
-            due_count += 1
+            # выученное СЛУЖЕБНОЕ слово build_session текстовым повтором не обслуживает (у служебных
+            # cloze-рампа, due-повтора нет) → его вестигиальный due не идёт в «к повторению» (зеркалит
+            # due_mastered из session/pools.py: mastered + due + не серт. + НЕ служебное).
+            is_func_mastered = (w["status"] == "mastered"
+                                and is_function_word(w["no"], {"part_of_speech": w["part_of_speech"]}))
+            if not is_func_mastered:
+                due_count += 1
         lv = w["level"] if w["level"] in by_level else None
         if lv:
             by_level[lv]["total"] += 1
@@ -67,10 +73,15 @@ async def learning_stats(user_id):
     # уровня — прежняя формула (per-tag mastered против кумулятивного target) замораживала currentLevel
     # на плейсмент-тире и запирала юзера в его словаре (сессии сохли). learned_total = всё выученное.
     learned_total = by_status.get("mastered", 0) + by_status.get("repeat", 0) + by_status.get("archived", 0)
-    for lv in LEVELS:
-        by_level[lv]["done"] = learned_total >= by_level[lv]["target"]
     start = await get_start_level(user_id)
     current = _level_from_total(learned_total, start)
+    # «done» согласован с currentLevel: уровень закрыт, когда ты его ПРОШЁЛ (текущий выше по порядку),
+    # либо это последний тир и добит его порог. Прежняя формула (learned_total >= target) трактовала
+    # target как «пройти lv», а _level_from_total — как «достичь lv», поэтому UI на всей полосе показывал
+    # «A1 done» и «на A1 → A2» разом. Считаем ПОСЛЕ current (нужен _LEVEL_ORDER[current]).
+    for lv in LEVELS:
+        by_level[lv]["done"] = (_LEVEL_ORDER[current] > _LEVEL_ORDER[lv]
+                                or (lv == LEVELS[-1] and learned_total >= by_level[lv]["target"]))
     # к следующему уровню — первый тир ВЫШЕ текущего, чей кумулятивный порог ещё не взят
     next_goal = next((lv for lv in LEVELS
                       if _LEVEL_ORDER[lv] > _LEVEL_ORDER[current] and learned_total < LEVEL_TARGETS[lv]), None)
@@ -107,9 +118,13 @@ async def estimate_level(user_id):
     сессии — тяжёлый _fetch_user_words/activity/forms тут не нужен)."""
     db = await _conn()
     try:
+        # «Выучено» = mastered (набор клеток рампы пройден ИЛИ «я знаю» через set_status, тоже mastered=1).
+        # Голый archived НЕ засчитываем: learning_remove ставит archived=1, mastered=0 (мягкое удаление),
+        # иначе после удалений estimate_level расходится с learning_stats.currentLevel (тот считает
+        # mastered) и suggest_words подаёт слова труднее, чем показывает карточка уровня.
         async with db.execute(
             "SELECT COUNT(*) AS n FROM user_words "
-            "WHERE user_id = ? AND (COALESCE(mastered,0) = 1 OR COALESCE(archived,0) = 1)",
+            "WHERE user_id = ? AND COALESCE(mastered,0) = 1",
             (user_id,)) as cur:
             learned = (await cur.fetchone())["n"]
     finally:

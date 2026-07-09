@@ -254,6 +254,11 @@ async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None,
             (key, json.dumps(data, ensure_ascii=False), _now(), pos, created_by, approved, key),
         )
         await db.commit()
+        try:                          # новое пул-слово: сбросить TTL-кеш compound-индекса
+            from .compound_index import invalidate   # (learnable/дистракторы зависят от всего пула)
+            invalidate()
+        except Exception:
+            pass
         return cur.lastrowid
     finally:
         await _release(db)
@@ -357,7 +362,10 @@ async def update_pool_word(old_norwegian: str, translate: dict):
                     return {"error": "exists"}
             data["word"] = new_no
         await db.execute(
-            "UPDATE word_pool SET data = ?, norwegian = ?, emb_sem = 0, tts_tr_done = 0, translate_done = 1 WHERE id = ?",
+            # embedding=NULL: иначе на рестарте до пере-эмбеддинга load_pool_embeddings (WHERE
+            # embedding IS NOT NULL) вернёт stale-вектор в кеш дистракторов (как replace_pool_word)
+            "UPDATE word_pool SET data = ?, norwegian = ?, embedding = NULL, emb_sem = 0, "
+            "tts_tr_done = 0, translate_done = 1 WHERE id = ?",
             (json.dumps(data, ensure_ascii=False), new_key, pid),
         )
         await db.commit()
@@ -813,10 +821,14 @@ async def get_pool_words_by_ids(ids):
 
 
 async def load_pool_embeddings():
-    """(ids[list[int]], raw_embeddings[list[bytes]]) всех слов с эмбеддингом — вход для embcache."""
+    """(ids[list[int]], raw_embeddings[list[bytes]]) всех слов с эмбеддингом — вход для embcache.
+    Только вычитанные (COALESCE(approved,1)=1): неодобренные юзер-слова не должны стать дистракторами
+    (база — approved NULL/1)."""
     db = await _conn()
     try:
-        async with db.execute("SELECT id, embedding FROM word_pool WHERE embedding IS NOT NULL") as cur:
+        async with db.execute(
+            "SELECT id, embedding FROM word_pool "
+            "WHERE embedding IS NOT NULL AND COALESCE(approved, 1) = 1") as cur:
             ids, embs = [], []
             for r in await cur.fetchall():
                 ids.append(r["id"]); embs.append(r["embedding"])

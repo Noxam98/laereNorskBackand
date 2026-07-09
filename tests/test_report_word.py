@@ -29,24 +29,31 @@ async def test_report_lifecycle_queue_keep_dismiss_exclude(fresh_db):
     pid, _ = await pytest.seed_word(did, "pokemon")
     await _add_user_word(uid, pid)
 
-    # 1) первая жалоба → в очередь админа, и слово убрано из Учёбы пользователя
+    # 1) первая жалоба (юзер uid) → в очередь админа, и слово убрано из Учёбы пользователя
     r = await report_word(pid, uid)
     assert r["status"] == "queued"
     assert not await _has_user_word(uid, pid)
     assert await reported_count() == 1
     assert [w["pool_id"] for w in await reported_words()] == [pid]
 
+    # дедуп: повторная жалоба ТОГО ЖЕ юзера не крутит счётчик и не будит модератора повторно
+    assert (await report_word(pid, uid))["status"] == "already"
+    assert await reported_count() == 1
+
     # 2) админ «оставить» → жалоба снята, выбор запомнен на следующие 5 жалоб
     await resolve_report(pid, "keep")
     assert await reported_count() == 0
 
-    # 3) следующие 5 жалоб гасятся автоматически (не идут в очередь)
-    for _ in range(5):
-        assert (await report_word(pid, uid))["status"] == "dismissed"
+    # 3) следующие 5 жалоб от РАЗНЫХ юзеров гасятся автоматически (не идут в очередь).
+    # Один юзер = одна жалоба (дедуп), поэтому реалистичный сценарий гашения — разные юзеры.
+    for i in range(5):
+        u2, _ = await pytest.seed_user(f"rep{i}")
+        assert (await report_word(pid, u2))["status"] == "dismissed"
     assert await reported_count() == 0
 
-    # 4) 6-я жалоба (память исчерпана) → снова в очередь админа
-    assert (await report_word(pid, uid))["status"] == "queued"
+    # 4) 6-я жалоба нового юзера (память исчерпана) → снова в очередь админа
+    u3, _ = await pytest.seed_user("rep6")
+    assert (await report_word(pid, u3))["status"] == "queued"
     assert await reported_count() == 1
 
     # 5) админ «убрать из учёбы» → слово исчезает из подбора новых

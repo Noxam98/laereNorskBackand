@@ -30,7 +30,9 @@ async def pool_by_freq(limit: int = 80, level: str = None, up_to: bool = False):
     [{pool_id, norwegian, translate, part_of_speech, freq}]. Фильтр по уровню CEFR.
     up_to=True — КУМУЛЯТИВНО: все уровни ≤ level (частотные вперёд), а не только точное совпадение
     (иначе юзер заперт в словаре своего тира; см. suggest_words)."""
-    conds, params = ["data IS NOT NULL", "COALESCE(learn_excluded, 0) = 0"], []
+    # COALESCE(approved,1)=1: неодобренные юзер-слова не идут в дистракторы (база — approved NULL/1)
+    conds, params = ["data IS NOT NULL", "COALESCE(learn_excluded, 0) = 0",
+                     "COALESCE(approved, 1) = 1"], []
     if level:
         if up_to and level in _CEFR:
             tiers = _CEFR[:_CEFR.index(level) + 1]

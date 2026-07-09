@@ -118,21 +118,25 @@ async def reset_set_ramp(user_id: int, set_id: int):
             WHERE dw.dict_id = ? AND uw.mastered = 1
         """, (user_id, set_id)) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
-        for r in rows:
-            try:
-                modes = json.loads(r["modes"]) if r["modes"] else {}
-            except Exception:
-                modes = {}
-            for c in ALL_CELLS:
-                modes[c] = ""
-            corr = r["correct"] or 0
-            if (corr + (r["incorrect"] or 0)) == 0:   # attempts==0 → поставим 1, чтобы не интро-карточка
-                corr = 1
-            await db.execute(
-                "UPDATE user_words SET modes = ?, mastered = 0, certified = 0, was_certified = 0, "
-                "strength = 0, reps = 0, interval_days = 0, correct = ?, due_at = ? WHERE id = ?",
-                (json.dumps(modes, ensure_ascii=False), corr, _now(), r["uid"]))
-        await db.commit()
+        # мутацию user_words держим под пер-юзер локом (Фикс #7): read-modify-write иначе теряет
+        # апдейт против конкурентного /answer того же юзера (второй commit затирает первый).
+        from .learning import _user_lock   # ленивый: тот же реестр локов, что у apply_result
+        async with _user_lock(user_id):
+            for r in rows:
+                try:
+                    modes = json.loads(r["modes"]) if r["modes"] else {}
+                except Exception:
+                    modes = {}
+                for c in ALL_CELLS:
+                    modes[c] = ""
+                corr = r["correct"] or 0
+                if (corr + (r["incorrect"] or 0)) == 0:   # attempts==0 → поставим 1, чтобы не интро-карточка
+                    corr = 1
+                await db.execute(
+                    "UPDATE user_words SET modes = ?, mastered = 0, certified = 0, was_certified = 0, "
+                    "strength = 0, reps = 0, interval_days = 0, correct = ?, due_at = ? WHERE id = ?",
+                    (json.dumps(modes, ensure_ascii=False), corr, _now(), r["uid"]))
+            await db.commit()
         return {"ok": True, "reset": len(rows)}
     finally:
         await _release(db)

@@ -44,7 +44,7 @@ async def build_placement(lang="ru", per=8):
       • input (B2,C1,C2 — продукция): {no:<норв. лемма — КЛЮЧ для грейда>, prompt:<перевод на lang,
         показывается>, level, type:"input"} (без options). Угадать ввод нельзя → честнее на верхах."""
     import random
-    from .pool import get_pool_duel_words
+    from .pool import get_pool_duel_words, get_pool_id
     questions = []
     for lv in LEVELS:
         is_input = lv in PLACEMENT_INPUT_LEVELS
@@ -66,9 +66,15 @@ async def build_placement(lang="ru", per=8):
             corr = (w["translate"].get(lang) or [None])[0]
             if not corr:
                 continue
+            # ТОЧНАЯ запись пула этого смысла (омонимы): несём её id в вопрос, чтобы grade_placement
+            # сверял ответ именно с ней, а не переугадывал get_pool_id(no) без pos (др. смысл → «мимо»).
+            # Если pos-колонка не проставлена (легаси), get_pool_id(no,pos) вернёт None → падаем на (no).
+            qpid = (await get_pool_id(w["norwegian"], w.get("part_of_speech"))
+                    or await get_pool_id(w["norwegian"]))
             if is_input:
                 # продукция: показываем перевод (prompt), ключ грейда — норвежская лемма (no)
-                questions.append({"no": w["norwegian"], "prompt": corr, "level": lv, "type": "input"})
+                questions.append({"no": w["norwegian"], "prompt": corr, "level": lv, "type": "input",
+                                  "pool_id": qpid})
                 picked += 1
                 continue
             pos = (w.get("part_of_speech") or "").lower()
@@ -87,7 +93,8 @@ async def build_placement(lang="ru", per=8):
                 continue
             opts = distract + [corr]
             random.shuffle(opts)
-            questions.append({"no": w["norwegian"], "level": lv, "type": "choice", "options": opts})
+            questions.append({"no": w["norwegian"], "level": lv, "type": "choice", "options": opts,
+                              "pool_id": qpid})
             picked += 1
     random.shuffle(questions)
     return {"questions": questions}
@@ -107,12 +114,22 @@ async def grade_placement(user_id, lang, answers):
     from .pool import get_pool_id, get_pool_by_id
     per_lvl = {lv: {"ok": 0, "total": 0} for lv in LEVELS}
     for a in (answers or []):
+        if not isinstance(a, dict):   # мусор в answers ([str]/[null]) не должен ронять грейд (500)
+            continue
         lv = a.get("level")
         if lv not in per_lvl:
             continue
         per_lvl[lv]["total"] += 1
-        no = a.get("no") or ""
-        pid = await get_pool_id(no)
+        no = str(a.get("no") or "")
+        # омоним: грейдим по ТОЧНОЙ записи пула, которую построил build_placement (carried pool_id),
+        # иначе get_pool_id(no) без pos мог взять ДРУГОЙ смысл (др. переводы) → верный ответ «мимо».
+        cid = a.get("pool_id")
+        try:
+            pid = int(cid) if cid is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        if not pid:                    # старый клиент без pool_id → прежний путь (по слову, без pos)
+            pid = await get_pool_id(no)
         if not pid:
             continue
         p = await get_pool_by_id(pid)
@@ -120,14 +137,14 @@ async def grade_placement(user_id, lang, answers):
         qtype = a.get("type") or ("input" if lv in PLACEMENT_INPUT_LEVELS else "choice")
         if qtype == "input":
             # продукция: введённое сравниваем с норвежской леммой no и всеми вариантами translate.no
-            ans = _fold_loose(a.get("answer") or "")
+            ans = _fold_loose(str(a.get("answer") or ""))
             keys = {_fold_loose(no)} | {_fold_loose(t) for t in (translate.get("no") or [])}
             keys.discard("")
             if ans and ans in keys:
                 per_lvl[lv]["ok"] += 1
         else:
             tr = translate.get(lang) or []
-            ans = (a.get("answer") or "").strip().lower()
+            ans = str(a.get("answer") or "").strip().lower()
             if ans and any(ans == (t or "").strip().lower() for t in tr):
                 per_lvl[lv]["ok"] += 1
     # уровень = высший пройденный подряд снизу; стоп на первом несданном (консервативно, вниз)

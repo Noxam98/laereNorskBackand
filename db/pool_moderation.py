@@ -89,9 +89,18 @@ async def report_word(pool_id: int, user_id: int):
     (персонально, навсегда) и решаем судьбу жалобы:
       • learn_excluded=1     → уже убрано из учёбы для всех (status=excluded, тихо);
       • report_dismiss_left>0 → админ ранее решил «оставить» → гасим жалобу (−1, status=dismissed);
-      • иначе                 → ставим в очередь админа (reported=1, report_count+1, status=queued)."""
+      • иначе                 → ставим в очередь админа (reported=1, report_count+1, status=queued).
+
+    Дедуп: один юзер = одна жалоба на слово (user_word_reports). Повторная жалоба того же юзера
+    не крутит report_count и не будит модератора повторно (отравление очереди/пуш-флуд) —
+    возвращаем {status:'already'}; персональное удаление на первой жалобе уже сделано."""
     db = await _conn()
     try:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO user_word_reports (user_id, pool_id, created_at) VALUES (?,?,?)",
+            (user_id, pool_id, _now()))
+        if cur.rowcount == 0:                       # этот юзер уже жаловался на это слово
+            return {"ok": True, "pool_id": pool_id, "status": "already"}
         async with db.execute(
             "SELECT COALESCE(learn_excluded,0) le, COALESCE(report_dismiss_left,0) dl "
             "FROM word_pool WHERE id = ?", (pool_id,)) as cur:
