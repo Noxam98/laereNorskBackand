@@ -11,7 +11,7 @@ from db import (
     get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
     pending_words, pending_count, set_word_approval,
     reported_words, reported_count, resolve_report,
-    set_pool_forms, set_pool_meta,
+    set_pool_forms, set_pool_meta, set_pool_compound,
 )
 from auth import get_current_user, get_admin_user, is_admin
 from ratelimit import llm_rate_limit, tts_rate_limit
@@ -444,6 +444,70 @@ async def pool_ask(word: str, body: AskBody, user=Depends(llm_rate_limit)):
         info = errors.report(e, "pool_ask")
         raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     return {"answer": (res or {}).get("answer", "") if isinstance(res, dict) else ""}
+
+
+_COMPOUND_SCHEMA = {"name": "compound_analysis", "schema": {
+    "type": "object",
+    "properties": {
+        "is_compound": {"type": "boolean", "description": (
+            "true ТОЛЬКО если слово — СОСТАВНОЕ (sammensetning: две самостоятельные основы-леммы слитно, "
+            "напр. holdbarhet+s+tid, arbeid+s+plass, barn+e+hage). НЕ считай составными: дериваты с суффиксами "
+            "(-het/-ing/-else/-dom: holdbarhet=holdbar+het — это деривация, false), заимствования "
+            "(universitet, telefon, informasjon) и простые слова.")},
+        "forledd": {"type": "string", "description": "первый элемент в форме ЛЕММЫ (без соединителя)"},
+        "fuge": {"type": "string", "description": "соединительная морфема: 's', 'e' или '' (пусто)"},
+        "etterledd": {"type": "string", "description": "вторая часть (голова) — лемма"},
+    },
+    "required": ["is_compound"],
+}}
+
+
+async def _analyze_compound(key: str):
+    """LLM-разбор составного слова (для слов вне ordbank leddanalyse). Возвращает
+    {forledd,fuge,etterledd} либо None. Жёсткая валидация против галлюцинаций: части
+    буква-в-букву складываются в слово И обе — реальные леммы (банк или пул)."""
+    from db import ordbank
+    sys = ("Ты — эксперт по морфологии норвежского (bokmål). Определи, является ли слово СОСТАВНЫМ "
+           "(sammensetning), и если да — дай разбор на две части-леммы + соединительную морфему. "
+           "Строго различай КОМПОЗИЦИЮ (два самостоятельных слова) и ДЕРИВАЦИЮ (основа + суффикс) — "
+           "деривацию составной НЕ считай. forledd+fuge+etterledd обязаны буква-в-букву давать слово.")
+    res = await ask_json(sys, f"Норвежское слово: {key}", _COMPOUND_SCHEMA, purpose="user", label="разбор состава")
+    if not isinstance(res, dict) or not res.get("is_compound"):
+        return None
+    fl = (res.get("forledd") or "").strip().lower()
+    fu = (res.get("fuge") or "").strip().lower()
+    el = (res.get("etterledd") or "").strip().lower()
+    if not (fl and el) or (fl + fu + el) != key:
+        return None
+    # обе части должны быть известными леммами (банк ИЛИ пул) — иначе это не композиция, а выдумка
+    async def known(x):
+        return ordbank.is_lemma(x) or bool(await get_pool_id(x))
+    if not (await known(fl) and await known(el)):
+        return None
+    return {"forledd": fl, "fuge": fu, "etterledd": el}
+
+
+@router.post("/pool/{word}/compound")
+async def pool_compound(word: str, pool_id: int = None, user=Depends(llm_rate_limit)):
+    """Разбор составного слова по запросу пользователя (LLM) — для слов, которых нет в ordbank
+    leddanalyse. Валидный разбор пишем в data.compound (карточка покажет кликабельные части),
+    «не составное» тоже помечаем проверенным (пункт меню исчезает, квота не жжётся повторно)."""
+    from db import ordbank
+    key = normalize_word(word)
+    pid = pool_id or await get_pool_id(key)
+    if not pid:
+        raise HTTPException(status_code=404, detail="Not in pool")
+    existing = ordbank.compound(key)   # авторитетный разбор банка — если есть, LLM не зовём
+    if existing:
+        return {"is_compound": True, "compound": existing}
+    mark_activity()
+    try:
+        comp = await _analyze_compound(key)
+    except Exception as e:
+        info = errors.report(e, "pool_compound")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
+    await set_pool_compound(pid, comp)   # comp или None → пометить проверенным
+    return {"is_compound": bool(comp), "compound": comp}
 
 
 @router.post("/pool/{word}/edit")

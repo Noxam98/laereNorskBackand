@@ -231,3 +231,12 @@ def compound(norwegian: str):
     fl, el = (forledd or "").lower(), (etterledd or "").lower()
     return {"forledd": fl, "fuge": fuge or "", "etterledd": el,
             "marked": marked, "parts": [fl, el]}
+
+
+def is_lemma(norwegian: str) -> bool:
+    """Есть ли слово как ЛЕММА в банке (таблица forms). Используем для валидации LLM-разбора
+    составных: обе части должны быть реальными леммами, иначе это не композиция, а выдумка."""
+    key = (norwegian or "").strip().lower()
+    if not key:
+        return False
+    return bool(_q("SELECT 1 FROM forms WHERE norwegian = ? LIMIT 1", (key,)))

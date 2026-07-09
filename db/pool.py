@@ -742,6 +742,9 @@ async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
             "translate": d.get("translate", {}),
             "forms": forms,
             "compound": compound,
+            # проверено ли слово на составность (банк-разбор ИЛИ ручной LLM): фронт по этому
+            # прячет пункт меню «Разобрать состав» у уже разобранных/простых слов
+            "compoundChecked": bool(compound) or bool(d.get("compound_checked")),
             "hasTts": bool(row["has_tts"]),
             "freq": row["freq"], "freqBand": freq_band(row["freq"]),
             "inLearning": in_learning,
@@ -906,6 +909,39 @@ async def set_pool_forms(pool_id: int, forms: dict):
         await db.commit()
     finally:
         await _release(db)
+
+
+async def set_pool_compound(pool_id: int, compound: dict = None):
+    """Записать (или пометить отсутствие) разбор составного слова в data.compound — для слов,
+    которых нет в ordbank leddanalyse (ручной LLM-разбор из карточки). compound=None → слово
+    проверено и НЕ составное (флаг compound_checked, чтобы пункт меню исчез и не жёг квоту).
+    Разбор кладём и в обратный индекс частей (word_pool_compounds) — как делает compound_index_loop,
+    иначе разблокировка композитов по выученным основам это слово не увидит (курсор мог его пройти)."""
+    db = await _conn()
+    try:
+        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return
+        data = json.loads(row["data"]) if row["data"] else {}
+        if compound and compound.get("forledd") and compound.get("etterledd"):
+            data["compound"] = {"forledd": compound["forledd"], "fuge": compound.get("fuge") or "",
+                                "etterledd": compound["etterledd"]}
+        else:
+            data.pop("compound", None)
+            compound = None
+        data["compound_checked"] = True
+        await db.execute("UPDATE word_pool SET data = ? WHERE id = ?",
+                         (json.dumps(data, ensure_ascii=False), pool_id))
+        await db.commit()
+    finally:
+        await _release(db)
+    if compound:
+        try:
+            from .compound_index import set_pool_compounds   # upsert + invalidate внутри
+            await set_pool_compounds([(pool_id, row["norwegian"], compound["forledd"], compound["etterledd"])])
+        except Exception:
+            pass
 
 
 async def clear_nonformable_forms():
