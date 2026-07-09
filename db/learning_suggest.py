@@ -278,6 +278,10 @@ async def suggest_compounds(user_id, count=COMPOUND_BUFFER):
                 "SELECT dw.pool_id FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
                 "WHERE d.user_id = ?", (user_id,)) as cur:
             have = {r["pool_id"] for r in await cur.fetchall()}
+        async with db.execute(   # known/mastered тоже исключаем (parity с suggest_words/phrases)
+                "SELECT pool_id FROM user_words WHERE user_id = ? AND (COALESCE(known,0)=1 OR COALESCE(mastered,0)=1)",
+                (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
     unlocked = _comp.eligible_unlocks(index, mastered, have)
@@ -348,12 +352,17 @@ async def suggest_phrases(user_id, count=PHRASE_BUFFER, level=None):
             have = {r["pool_id"] for r in await cur.fetchall()}
         async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
             have |= {r["pool_id"] for r in await cur.fetchall()}
+        async with db.execute(   # known/mastered — жёсткий фильтр (иначе известные фразы «se på tv» подсыпались заново)
+                "SELECT pool_id FROM user_words WHERE user_id = ? AND (COALESCE(known,0)=1 OR COALESCE(mastered,0)=1)",
+                (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
         marks = ",".join("?" for _ in allowed)
-        # 'A1'<'A2'<'B1'… лексикографически = по возрастанию CEFR → младшие фразы первыми (фундамент)
+        # 'A1'<'A2'<'B1'… лексикографически; DESC = БЛИЖЕ К УРОВНЮ первыми (B1-юзеру B1-фразы, а не A1-завал).
+        # Младшие фразы допустимы (словосочетания), но идут В ХВОСТЕ, а не заваливают продвинутого.
         async with db.execute(
             f"SELECT id, norwegian, data FROM word_pool "
             f"WHERE pos='phrase' AND COALESCE(learn_excluded,0)=0 AND level IN ({marks}) "
-            f"ORDER BY level, id", allowed) as cur:
+            f"ORDER BY level DESC, id", allowed) as cur:
             cands = [dict(r) for r in await cur.fetchall()]
     finally:
         await _release(db)
