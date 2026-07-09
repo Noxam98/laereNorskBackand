@@ -36,15 +36,16 @@ def test_pool_priority_order():
     assert [c[0]["row"]["pool_id"] for c in cand] == [1, 2, 3, 4, 5]
 
 
-def test_homograph_dedup_same_pos_only():
-    """Одинаковые (norwegian, pos) — дедуп; омонимы с разным pos — оба проходят."""
+def test_homograph_dedup_by_spelling():
+    """Одно НАПИСАНИЕ на сессию: и (norwegian,pos)-дубли, и РАЗНО-pos омонимы схлопываются в один —
+    оба смысла «liv» подряд в одной сессии сбивают юзера; второй смысл придёт в другой сессии."""
     a = _e(1, no="liv", pos="noun", due=True)
     b = _e(2, no="liv", pos="noun", due=True)     # дубль (norwegian, pos)
-    c = _e(3, no="liv", pos="verb", due=True)     # другой pos — можно
+    c = _e(3, no="liv", pos="verb", due=True)     # другой смысл — тоже придерживаем
     built = pools.build_pools([a, b, c], is_certified=lambda r: False,
                               is_function_word=lambda no, d: False)
     cand = _select(built)
-    assert [x[0]["row"]["pool_id"] for x in cand] == [1, 3]
+    assert [x[0]["row"]["pool_id"] for x in cand] == [1]
 
 
 def test_cooldown_moves_to_tail_not_drops():

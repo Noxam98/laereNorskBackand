@@ -38,14 +38,16 @@ def build_pools(enriched, *, is_certified, is_function_word):
 
 
 def select_candidates(pools, *, next_step, review_step, func_locked):
-    """Отбор кандидатов из пулов по приоритету: дедуп по pool_id и по омографу
-    (norwegian, pos); mastered — только в review-пул; новое служебное придерживается
-    пословным порогом; слову назначается ступень (нет ступени — слово не идёт)."""
+    """Отбор кандидатов из пулов по приоритету: дедуп по pool_id и по НАПИСАНИЮ (norwegian);
+    mastered — только в review-пул; новое служебное придерживается пословным порогом; слову
+    назначается ступень (нет ступени — слово не идёт). Дедуп по написанию (а не (norwegian,pos)):
+    оба смысла омонима в ОДНОЙ сессии подряд («dyr» дорого + «dyr» животное) сбивают — второй смысл
+    придёт в другой сессии."""
     cand, seen, seen_wp = [], set(), set()
     for pool, review in pools:
         for e in pool:
             pid = e["row"]["pool_id"]
-            wp = (e["row"]["norwegian"], (e["data"] or {}).get("part_of_speech", "") or "")
+            wp = (e["row"]["norwegian"] or "").strip().lower()
             if pid in seen or wp in seen_wp or e["status"] in ("archived", "known"):
                 continue
             if not review and e["status"] == "mastered":
