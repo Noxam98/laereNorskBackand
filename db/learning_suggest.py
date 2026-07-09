@@ -197,8 +197,20 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
         from config import logger as _lg
         _lg.warning("suggest_words: компаунд-ранжирование пропущено", exc_info=True)
     added = []
+    # Смещение к УРОВНЮ. Частотный up_to заваливал placed-юзера (напр. B1) словами A1 («dag/bok/gjøre» —
+    # самые частотные), хотя это его ПОТОЛОК, а не то, что нужно доучивать. Приоритет — словам ЕГО
+    # уровня; слова НИЖЕ уровня («добор пробелов») — не более ~⅓ порции. Если своего уровня не хватило
+    # (исчерпан) — добираем ниже-уровневыми, чтобы сессия не сохла. A1-новичка не режем (li==0).
+    li = LEVELS.index(lvl) if lvl in LEVELS else 0
+    below_cap = count if li == 0 else max(1, (count + 2) // 3)
+    below_added = 0
 
-    async def _take(cands):
+    def _below_level(w):
+        wl = w.get("level")
+        return bool(wl) and wl in LEVELS and LEVELS.index(wl) < li
+
+    async def _take(cands, respect_band=True):
+        nonlocal below_added
         for w in cands:
             if len(added) >= count:
                 return
@@ -208,16 +220,23 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
             # гейт A1: пока нет базы контентных — служебные не досыпаем (иначе «новый пул» забьётся ими)
             if not allow_func and is_function_word(w["norwegian"], {"part_of_speech": w.get("part_of_speech")}):
                 continue
+            below = _below_level(w)
+            if respect_band and below and below_added >= below_cap:
+                continue   # квота слов ниже уровня исчерпана — ждём слова своего уровня
             res = await add_word_to_dict(user_id, target_id, pid)
             if res.get("id") and not res.get("duplicate"):
                 added.append({"pool_id": pid, "no": w["norwegian"], "translate": w.get("translate", {})})
                 have.add(pid)
+                if below:
+                    below_added += 1
 
     await _take(cand)
+    if len(added) < count:   # своего уровня не хватило → снимаем квоту, добираем ниже-уровневыми из тех же кандидатов
+        await _take(cand, respect_band=False)
     # Fallthrough: уровни ≤ lvl исчерпаны (всё уже в словаре юзера), но пул НЕ пуст — добираем ЛЮБЫМ
     # уровнем по частоте, чтобы сессия не сохла (частотные/простые вперёд). Запрос только при нехватке.
     if len(added) < count:
-        await _take(await pool_by_freq(len(have) + max(count * 6, 60), None))
+        await _take(await pool_by_freq(len(have) + max(count * 6, 60), None), respect_band=False)
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
 
 

@@ -39,7 +39,7 @@ async def pool_by_freq(limit: int = 80, level: str = None, up_to: bool = False):
             conds.append(f"level IN ({','.join('?' for _ in tiers)})"); params += tiers
         else:
             conds.append("level = ?"); params.append(level)
-    sql = (f"SELECT id, norwegian, data, freq FROM word_pool WHERE {' AND '.join(conds)} "
+    sql = (f"SELECT id, norwegian, data, freq, level FROM word_pool WHERE {' AND '.join(conds)} "
            "ORDER BY freq IS NULL, freq DESC LIMIT ?")
     params.append(limit)
     db = await _conn()
@@ -54,7 +54,8 @@ async def pool_by_freq(limit: int = 80, level: str = None, up_to: bool = False):
                 tr = d.get("translate", {}) or {}
                 if tr:
                     out.append({"pool_id": r["id"], "norwegian": r["norwegian"], "translate": tr,
-                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"]})
+                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"],
+                                "level": r["level"]})
             return out
     finally:
         await _release(db)
