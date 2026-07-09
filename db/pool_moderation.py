@@ -44,14 +44,28 @@ async def pending_count():
 
 
 async def set_word_approval(pool_id: int, approved: int):
-    """approved: 1 — одобрить (в общую базу), 2 — отклонить (остаётся приватным у автора)."""
+    """approved: 1 — одобрить (в общую базу), 2 — отклонить (остаётся приватным у автора).
+    Одобрять можно только слово НА МОДЕРАЦИИ (approved=0): без этой проверки повторный approve
+    или approve уже исключённого слова оставил бы противоречивое состояние (approved=1 И
+    learn_excluded=1 разом). При одобрении сбрасываем жалобу/исключение — слово входит в общую
+    базу чистым."""
+    approved = int(approved)
     db = await _conn()
     try:
-        cur = await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (int(approved), pool_id))
-        await db.commit()
-        if cur.rowcount == 0:                       # id не существует — не молчим «успехом»
+        async with db.execute("SELECT COALESCE(approved, 1) ap FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:                                 # id не существует — не молчим «успехом»
             return {"ok": False, "error": "not_found", "pool_id": pool_id}
-        return {"ok": True, "pool_id": pool_id, "approved": int(approved)}
+        if approved == 1:
+            if row["ap"] != 0:                      # уже одобрено/отклонено — одобрять нечего
+                return {"ok": False, "error": "not_pending", "pool_id": pool_id}
+            await db.execute(
+                "UPDATE word_pool SET approved = 1, reported = 0, report_count = 0, "
+                "report_dismiss_left = 0, learn_excluded = 0 WHERE id = ?", (pool_id,))
+        else:
+            await db.execute("UPDATE word_pool SET approved = ? WHERE id = ?", (approved, pool_id))
+        await db.commit()
+        return {"ok": True, "pool_id": pool_id, "approved": approved}
     finally:
         await _release(db)
 
@@ -157,20 +171,32 @@ async def reported_count():
 
 async def resolve_report(pool_id: int, action: str):
     """Вердикт админа по жалобе:
-      • 'exclude' — убрать из учёбы (learn_excluded=1, снять жалобу);
-      • 'keep'    — оставить слово, следующие 5 жалоб гасить автоматически (report_dismiss_left=5)."""
+      • 'exclude' — убрать из учёбы (learn_excluded=1, снять жалобу); допустимо для любого слова;
+      • 'keep'    — оставить слово, следующие 5 жалоб гасить автоматически (report_dismiss_left=5);
+                    применимо только к слову с активной жалобой (reported=1).
+    Несуществующий id → not_found (раньше молчал «успехом»). После вердикта чистим пер-юзер дедуп
+    жалоб (user_word_reports): дедуп там ПОСТОЯННЫЙ (PK user_id,pool_id, INSERT OR IGNORE в
+    report_word), иначе вновь деградировавшее слово та же когорта юзеров уже никогда не смогла бы
+    переотправить (упрутся в status:'already'). Очистка на вердикте перезапускает цикл жалоб."""
     db = await _conn()
     try:
+        async with db.execute("SELECT COALESCE(reported, 0) rp FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:                                 # id не существует
+            return {"error": "not_found"}
         if action == "exclude":
             await db.execute(
                 "UPDATE word_pool SET learn_excluded = 1, reported = 0, report_count = 0, report_dismiss_left = 0 WHERE id = ?",
                 (pool_id,))
         elif action == "keep":
+            if not row["rp"]:                       # активной жалобы нет — «оставить» нечего
+                return {"error": "not_reported"}
             await db.execute(
                 "UPDATE word_pool SET reported = 0, report_count = 0, report_dismiss_left = 5 WHERE id = ?",
                 (pool_id,))
         else:
             return {"error": "bad_action"}
+        await db.execute("DELETE FROM user_word_reports WHERE pool_id = ?", (pool_id,))
         await db.commit()
         return {"ok": True, "pool_id": pool_id, "action": action}
     finally:

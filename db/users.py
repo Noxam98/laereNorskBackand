@@ -13,6 +13,20 @@ async def get_user(username: str):
         await _release(db)
 
 
+async def username_taken_ci(username: str) -> bool:
+    """Регистронезависимая проверка занятости имени. users.username UNIQUE — BINARY (регистрозависим),
+    а is_admin сравнивает имя по .lower(): без этой проверки «maksym» и «Maksym» — РАЗНЫЕ аккаунты, и
+    оба матчат админ-список ⇒ эскалация привилегий (регистрируешь регистро-вариант админа → ты админ).
+    Запрещаем создавать любой регистро-вариант уже занятого имени, чтобы имя было CI-уникальным."""
+    db = await _conn()
+    try:
+        async with db.execute(
+                "SELECT 1 FROM users WHERE username = ? COLLATE NOCASE LIMIT 1", (username.strip(),)) as cur:
+            return (await cur.fetchone()) is not None
+    finally:
+        await _release(db)
+
+
 async def set_user_theme(user_id: int, theme: str):
     db = await _conn()
     try:

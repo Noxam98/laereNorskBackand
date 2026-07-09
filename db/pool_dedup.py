@@ -86,10 +86,15 @@ async def merge_pool_words(winner_id: int, loser_id: int):
         # фантомный unlock (compounds_unlocked_by/index читают её напрямую). Ремапим на winner
         # (тот же композит), остаток чистим — так индекс не потеряет разбор winner'а.
         await db.execute("UPDATE OR IGNORE word_pool_compounds SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
+        # user_word_reports: PK (user_id,pool_id), БЕЗ FK на word_pool → без ремапа строки loser'а
+        # осиротели бы (жалоба «не учить» с loser'а потерялась бы для winner). Ремапим на winner,
+        # остаток (UNIQUE-конфликт по (user_id,winner)) чистим — как для word_pool_compounds.
+        await db.execute("UPDATE OR IGNORE user_word_reports SET pool_id = ? WHERE pool_id = ?", (winner_id, loser_id))
         await db.execute("DELETE FROM dict_words           WHERE pool_id = ?", (loser_id,))
         await db.execute("DELETE FROM user_words           WHERE pool_id = ?", (loser_id,))
         await db.execute("DELETE FROM word_topics          WHERE pool_id = ?", (loser_id,))
         await db.execute("DELETE FROM word_pool_compounds  WHERE pool_id = ?", (loser_id,))
+        await db.execute("DELETE FROM user_word_reports    WHERE pool_id = ?", (loser_id,))
         try:
             await db.execute("DELETE FROM vec_words WHERE rowid = ?", (loser_id,))
         except Exception:

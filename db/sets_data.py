@@ -149,7 +149,10 @@ async def reset_set_ramp(user_id: int, set_id: int):
 
 async def sets_for_words(user_id: int, pool_ids):
     """Карта pool_id → [set_id]: в каких личных наборах уже лежит каждое слово (для пикера)."""
-    ids = [int(p) for p in (pool_ids or []) if p]
+    try:                              # нечисловой элемент → пустая карта, а не 500 глубже в SQL
+        ids = [int(p) for p in (pool_ids or []) if p]
+    except (TypeError, ValueError):
+        return {}
     if not ids:
         return {}
     db = await _conn()

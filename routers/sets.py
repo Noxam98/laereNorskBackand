@@ -43,6 +43,14 @@ async def sets_create(body: dict, user=Depends(get_current_user)):
 async def sets_membership(body: dict, user=Depends(get_current_user)):
     """Карта pool_id → [set_id] для пикера «Добавить в набор»: где уже лежит каждое слово."""
     pool_ids = (body or {}).get("pool_ids") or []
+    if not isinstance(pool_ids, list):
+        raise HTTPException(status_code=422, detail="pool_ids must be a list")
+    if len(pool_ids) > 500:
+        raise HTTPException(status_code=413, detail="Too many pool_ids")
+    try:                              # нечисловой элемент в теле → 422, а не 500 глубже в SQL
+        pool_ids = [int(p) for p in pool_ids]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="invalid pool_id")
     return await sets_for_words(user["id"], pool_ids)
 
 
@@ -90,6 +98,8 @@ async def sets_words_add(set_id: int, body: dict, user=Depends(get_current_user)
         pool_ids = [int(p) for p in pool_ids]
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="invalid pool_id")
+    if len(pool_ids) > 500:
+        raise HTTPException(status_code=413, detail="Too many words")
     if not pool_ids:
         raise HTTPException(status_code=400, detail="No words")
     return _bad(await add_words_to_set(user["id"], set_id, pool_ids))
@@ -110,10 +120,15 @@ async def sets_generate(set_id: int, body: dict, user=Depends(llm_rate_limit)):
     if words is None:
         raise HTTPException(status_code=404, detail="Not found")
     body = body or {}
+    topic = body.get("topic")
+    if isinstance(topic, str) and len(topic) > 120:   # кап фритекста в LLM-промпт
+        raise HTTPException(status_code=413, detail="Topic too long")
     count = max(0, min(20, int(body.get("count") or 0)))
     if count > 0:
         from autofill import generate_set_words   # ленивый импорт — избегаем циклов на старте
-        pids = await generate_set_words(body.get("topic"), body.get("level"), count, body.get("lang") or "ru")
+        # модерация: сгенерированные слова → в личное расширение автора (approved=0), не в общую Базу
+        pids = await generate_set_words(topic, body.get("level"), count, body.get("lang") or "ru",
+                                        created_by=user["id"])
         if pids:
             await add_words_to_set(user["id"], set_id, pids)
         words = await get_set_words(user["id"], set_id)
@@ -143,9 +158,12 @@ async def sets_ocr(set_id: int, body: dict, user=Depends(llm_rate_limit)):
         raise HTTPException(status_code=400, detail="No image")
     if not isinstance(image, str) or len(image) > 8_000_000:   # ~8 МБ base64 — не шлём в vision гигантские блобы
         raise HTTPException(status_code=413, detail="Image too large")
+    hint = (body or {}).get("hint") or ""
+    if len(hint) > 500:                    # кап фритекста-подсказки в LLM-промпт
+        raise HTTPException(status_code=413, detail="Hint too long")
     mime, b64 = _parse_data_url(image)
     from autofill import words_from_image   # ленивый импорт — избегаем циклов на старте
-    return {"words": await words_from_image(b64, mime, (body or {}).get("hint") or "")}
+    return {"words": await words_from_image(b64, mime, hint)}
 
 
 @router.post("/sets/{set_id}/import-words")
@@ -155,11 +173,14 @@ async def sets_import_words(set_id: int, body: dict, user=Depends(llm_rate_limit
     mark_activity()
     if (await get_set_words(user["id"], set_id)) is None:
         raise HTTPException(status_code=404, detail="Not found")
-    words = [w for w in ((body or {}).get("words") or []) if isinstance(w, str) and w.strip()]
+    # кап на слово (≤80): не пускаем гигантский фритекст в LLM-промпт; общий список режет words_from_list (≤50)
+    words = [w for w in ((body or {}).get("words") or [])
+             if isinstance(w, str) and w.strip() and len(w.strip()) <= 80]
     if not words:
         raise HTTPException(status_code=400, detail="No words")
     from autofill import words_from_list   # ленивый импорт — избегаем циклов на старте
-    pids = await words_from_list(words, (body or {}).get("lang") or "ru")
+    # модерация: импортированные слова → в личное расширение автора (approved=0), не в общую Базу
+    pids = await words_from_list(words, (body or {}).get("lang") or "ru", created_by=user["id"])
     if pids:
         await add_words_to_set(user["id"], set_id, pids)
     return {"words": await get_set_words(user["id"], set_id), "added": len(pids)}
@@ -179,8 +200,11 @@ async def sets_parse_text(set_id: int, body: dict, user=Depends(llm_rate_limit))
         raise HTTPException(status_code=400, detail="No text")
     if len(text) > 20000:
         raise HTTPException(status_code=413, detail="Text too large")
+    hint = (body or {}).get("hint") or ""
+    if len(hint) > 500:                    # кап фритекста-подсказки в LLM-промпт
+        raise HTTPException(status_code=413, detail="Hint too long")
     from autofill import words_from_text   # ленивый импорт — избегаем циклов на старте
-    return {"words": await words_from_text(text, (body or {}).get("hint") or "")}
+    return {"words": await words_from_text(text, hint)}
 
 
 @router.post("/sets/{set_id}/reset")

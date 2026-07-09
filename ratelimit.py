@@ -42,10 +42,18 @@ def client_ip(request: Request) -> str:
 _LLM_MAX = int(os.getenv("RATE_LLM_MAX", "40"))
 _LLM_WINDOW = int(os.getenv("RATE_LLM_WINDOW", "600"))   # дефолт: 40 запросов / 10 минут
 
+# Глобальный бэкстоп на общую квоту Gemini: пер-юзер лимит не спасает от НЕСКОЛЬКИХ аккаунтов,
+# суммарно множащих нагрузку. ЩЕДРЫЙ потолок на ВСЕХ юзеров сразу — нормальная многопользовательская
+# нагрузка его не задевает, но убегающий цикл/рой аккаунтов упрётся. Оба env-переопределяемы.
+_LLM_GLOBAL_MAX = int(os.getenv("RATE_LLM_GLOBAL_MAX", "600"))
+_LLM_GLOBAL_WINDOW = int(os.getenv("RATE_LLM_GLOBAL_WINDOW", "600"))   # дефолт: 600 запросов / 10 минут на ВСЕХ
+
 
 async def llm_rate_limit(user=Depends(get_current_user)):
-    """Замена get_current_user для дорогих LLM-эндпоинтов: та же аутентификация + лимит на юзера."""
+    """Замена get_current_user для дорогих LLM-эндпоинтов: та же аутентификация + лимит на юзера
+    и щедрый глобальный бэкстоп на общую квоту Gemini."""
     _hit(("llm", user["id"]), _LLM_MAX, _LLM_WINDOW)
+    _hit(("llm_global",), _LLM_GLOBAL_MAX, _LLM_GLOBAL_WINDOW)
     return user
 
 

@@ -13,8 +13,9 @@ from db import (
     reported_words, reported_count, resolve_report,
     set_pool_forms, set_pool_meta,
 )
-from auth import get_current_user, get_admin_user
+from auth import get_current_user, get_admin_user, is_admin
 from ratelimit import llm_rate_limit, tts_rate_limit
+from llm.settings import TEXT_PROFILES
 from activity import mark_activity
 from tts import synth_tts, _tts_lock
 from llm import TOPIC_KEYS, CEFR_LEVELS, ask_json, DESC_SCHEMA, DIFF_SCHEMA, REVIEW_SCHEMA, LANG_NAMES, ranked_pool, normalize_word_item, generate_words, persist_pool, text_enabled, embed_text
@@ -25,6 +26,10 @@ import runtime
 import storage
 
 router = APIRouter()
+
+# Разрешённые id моделей для user-routes с параметром ?model= (иначе произвольная строка
+# пользователя уходила бы прямо в провайдера). Легитимны только модели профилей user/autofill.
+_ALLOWED_MODELS = set(TEXT_PROFILES.get("user", [])) | set(TEXT_PROFILES.get("autofill", []))
 
 _TTS_HEADERS = {"Cache-Control": "public, max-age=604800"}
 _TRANSLATION_LANGS = TTS_LANGS  # языки озвучки переводов (коды голосов из реестра langs.py)
@@ -263,6 +268,7 @@ async def admin_neighbors(user=Depends(get_admin_user)):
 
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(get_current_user)):
+    limit = max(1, min(50, limit))   # без клампа ?limit=-1 = LIMIT без ограничения (весь пул → DoS)
     return {"results": await search_pool(q, limit, lang)}
 
 
@@ -297,9 +303,11 @@ async def pool_generate(body: dict, user=Depends(llm_rate_limit)):
     word = (body.get("word") or "").strip()
     if not word:
         raise HTTPException(status_code=400, detail="no word")
+    if len(word) > 80:   # кап свободного текста в LLM (слова/короткие фразы) — анти-абьюз генерации
+        raise HTTPException(status_code=400, detail="word too long")
     pid = await get_pool_id(normalize_word(word))
     if pid:
-        p = await get_pool_by_id(pid)
+        p = await get_pool_by_id(pid, user_id=user["id"])
         return {"word": word, "pool_id": pid, "generated": False,
                 "translate": (p or {}).get("translate", {}) if isinstance(p, dict) else {}}
     mark_activity()
@@ -368,15 +376,21 @@ async def pool_description(word: str, model: str = None, pool_id: int = None, us
     pool_id — точная запись омонима (напр. `ro` сущ./глаг.), иначе первая по norwegian.
     ВАЖНО: на llm_rate_limit (а не get_current_user) — при промахе кэша тут реальный вызов LLM
     (ask_json), без лимита это обход анти-абьюза и слив общей квоты Gemini (см. redescribe)."""
+    if model is not None and model not in _ALLOWED_MODELS:   # юзер-строка model не уходит в провайдера
+        raise HTTPException(status_code=400, detail="unknown model")
     pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
-    p = await get_pool_by_id(pid)
+    p = await get_pool_by_id(pid, user_id=user["id"])
     if p and p.get("description"):
         return {"description": p["description"]}
     mark_activity()
-    desc = await ask_json(description_task, desc_user_prompt(normalize_word(word), p.get("data") if p else None), DESC_SCHEMA,
-                          purpose="user", label="описание слова", model=model)
+    try:
+        desc = await ask_json(description_task, desc_user_prompt(normalize_word(word), p.get("data") if p else None), DESC_SCHEMA,
+                              purpose="user", label="описание слова", model=model)
+    except Exception as e:   # все ключи в 429 и т.п. → чистый статус LLM-ошибки (а не голый 500)
+        info = errors.report(e, "pool_description")
+        raise HTTPException(status_code=info.http_status, detail=info.user_detail)
     if not isinstance(desc, dict):
         raise HTTPException(status_code=500, detail="No JSON found in the response")
     description = desc.get("description", desc)
@@ -393,7 +407,7 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(llm_rate
         raise HTTPException(status_code=404, detail="Not in pool")
     hint = (body.hint or "").strip()
     mark_activity()
-    p = await get_pool_by_id(pid)
+    p = await get_pool_by_id(pid, user_id=user["id"])
     extra = ("ВАЖНО: предыдущее описание было неверным. Правильное значение/уточнение "
              f"от пользователя (учти обязательно): {hint}") if hint else ""
     user_prompt = desc_user_prompt(normalize_word(word), p.get("data") if p else None, extra)
@@ -415,7 +429,7 @@ async def pool_ask(word: str, body: AskBody, user=Depends(llm_rate_limit)):
     q = (body.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="Empty question")
-    p = await get_pool_by_id(pid)
+    p = await get_pool_by_id(pid, user_id=user["id"])
     lang_name = LANG_NAMES.get(body.lang, "русский")
     mark_activity()
     sys = ("Ты — дружелюбный преподаватель норвежского (bokmål). Кратко и по делу ответь на "
@@ -433,12 +447,23 @@ async def pool_ask(word: str, body: AskBody, user=Depends(llm_rate_limit)):
 
 
 @router.post("/pool/{word}/edit")
-async def pool_edit(word: str, body: PoolEditBody, user=Depends(llm_rate_limit)):
-    """Правка слова в общем пуле (норвежское слово + переводы) — меняется для всех.
-    Сначала ревью нейросетью: применяем только при approved, иначе возвращаем причину."""
-    pid = await get_pool_id(word)
+async def pool_edit(word: str, body: PoolEditBody, pool_id: int = None, user=Depends(llm_rate_limit)):
+    """Правка слова в пуле (норвежское слово + переводы). Модерация: общую базу (approved=1)
+    правит ТОЛЬКО админ; обычный юзер — лишь СВОЁ неодобренное слово (личное расширение). Иначе
+    любой переписывал бы общее слово всем (ревью-нейросеть — не авторизация). pool_id адресует
+    конкретную запись омонима. Сначала ревью нейросетью: применяем только при approved."""
+    pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
+    target = await get_pool_by_id(pid, user_id=user["id"])
+    if not target:                       # нет / чужое неодобренное (перебором id не читаем) → 404
+        raise HTTPException(status_code=404, detail="Not in pool")
+    appr = target.get("approved")
+    appr = 1 if appr is None else appr
+    own_unapproved = target.get("created_by") == user["id"] and appr != 1
+    if not (is_admin(user) or own_unapproved):
+        raise HTTPException(status_code=403,
+                            detail="Можно править только свои неодобренные слова / только админ правит общую базу")
     tr = body.translate or {}
     hint = (body.hint or "").strip()
     lang_name = LANG_NAMES.get(body.lang, "русский")
@@ -475,7 +500,7 @@ async def pool_edit(word: str, body: PoolEditBody, user=Depends(llm_rate_limit))
         "part_of_speech": wd.get("part_of_speech") or "",
         "translate": {k: v for k, v in (wd.get("translate") or {}).items() if v},
     })
-    res = await replace_pool_word(word, new_no, item)
+    res = await replace_pool_word(word, new_no, item, pool_id=pid)   # правим ИМЕННО отгейченную запись
     if res.get("error") == "not_found":
         raise HTTPException(status_code=404, detail="Not in pool")
     if res.get("error") == "exists":
@@ -491,7 +516,7 @@ async def pool_synonyms(word: str, n: int = 5, lang: str = "ru", pool_id: int = 
     pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
-    p = await get_pool_by_id(pid)
+    p = await get_pool_by_id(pid, user_id=user["id"])
     if not p or not p.get("embedding"):
         return {"synonyms": []}
     ordered = await ranked_pool(p["embedding"], normalize_word(word), n)
@@ -508,7 +533,7 @@ async def pool_distractors(pool_id: int, n: int = 3, mode: str = "no2int", lang:
     семантически близкие по эмбеддингам, иначе той же части речи. mode no2int|int2no."""
     import random
     from db import get_pool_candidates
-    p = await get_pool_by_id(pool_id)
+    p = await get_pool_by_id(pool_id, user_id=user["id"])
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     data = p["data"] or {}   # get_pool_by_id уже отдаёт data распарсенным

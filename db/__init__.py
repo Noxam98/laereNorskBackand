@@ -12,7 +12,7 @@ from .core import (
     get_setting, set_setting,
 )
 from .users import (
-    get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
+    get_user, username_taken_ci, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
     set_user_password, set_user_name, set_online_prefs, save_match, set_user_game_mode,
     set_user_focus_topics, get_user_focus_topics,

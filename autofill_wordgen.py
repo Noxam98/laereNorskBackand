@@ -47,10 +47,12 @@ async def restore_yo(words):
         if src and fixed and fixed != src and fixed.replace("ё", "е").replace("Ё", "Е") == src:
             out[src] = fixed
     return out
-async def ai_game_words(lang, level, topic, count, on_phase=None):
+async def ai_game_words(lang, level, topic, count, on_phase=None, created_by=None, approved=1):
     """AI-набор слов для онлайн-игры: 1 LLM-вызов под уровень/тему/язык (без «само-переводящихся»),
     прогон по пулу (переиспуск/создание), вектора новым (батч). Формы/tts добьются фоном.
     on_phase(p) — асинхронный колбэк прогресса ('indexing' перед эмбеддингами).
+    created_by/approved — модерация: пользовательский маршрут (/games/ai_words) кладёт слова в
+    личное расширение автора (approved=0), онлайн-хост оставляет дефолт (approved=1).
     Возвращает [{norwegian, translate, embedding}] для построения викторины."""
     lang_name = LANG_NAMES.get(lang, lang)
     topic_label = TOPIC_TAGS.get(topic, topic) if topic else None
@@ -81,7 +83,7 @@ async def ai_game_words(lang, level, topic, count, on_phase=None):
             continue  # «само-переводящееся» — пропускаем
         existed = await get_pool_id(it["word"])
         data_item = normalize_word_item(it)
-        pid = await get_or_create_pool(it["word"], data_item)
+        pid = await get_or_create_pool(it["word"], data_item, created_by=created_by, approved=approved)
         if not pid:
             continue
         await apply_item_meta(pid, it)
@@ -113,15 +115,17 @@ async def _embed_new(new_emb, on_phase=None):
             await mark_sem_embed(pid)
 
 
-async def _persist_word_items(items, n):
-    """Положить items (формат WORDS_SCHEMA) в общий пул: перевод/мета/эмбеддинги. → pool_id без дублей."""
+async def _persist_word_items(items, n, created_by=None, approved=1):
+    """Положить items (формат WORDS_SCHEMA) в общий пул: перевод/мета/эмбеддинги. → pool_id без дублей.
+    created_by/approved пробрасываются в get_or_create_pool: пользовательские импорты/генерация кладут
+    слова в личное расширение автора (approved=0), фоновые вызовы оставляют дефолт (approved=1)."""
     pids, seen, new_emb = [], set(), []
     for it in items:
         if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
             continue
         existed = await get_pool_id(it["word"])
         data_item = normalize_word_item(it)
-        pid = await get_or_create_pool(it["word"], data_item)
+        pid = await get_or_create_pool(it["word"], data_item, created_by=created_by, approved=approved)
         if not pid or pid in seen:
             continue
         await apply_item_meta(pid, it)
@@ -134,9 +138,10 @@ async def _persist_word_items(items, n):
     return pids
 
 
-async def generate_set_words(topic, level, count, lang="ru"):
+async def generate_set_words(topic, level, count, lang="ru", created_by=None):
     """AI-набор слов для ЛИЧНОГО набора: тематическая генерация под уровень/количество (0–20).
-    Модель — 3.5-flash с фолбэком на 3.1-flash-lite. Слова кладём в общий пул (обогащение фоном).
+    Модель — 3.5-flash с фолбэком на 3.1-flash-lite. Слова кладём в личное расширение автора
+    (approved=0, created_by=user) — модерация до попадания в общую Базу; обогащение фоном.
     Возвращает список pool_id добавленных/существующих слов (без дублей)."""
     n = max(1, min(20, int(count or 0)))
     lang_name = LANG_NAMES.get(lang, lang)
@@ -157,7 +162,7 @@ async def generate_set_words(topic, level, count, lang="ru"):
         errors.report(e, "generate_set_words")
         return []
     items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    return await _persist_word_items(items, n)
+    return await _persist_word_items(items, n, created_by=created_by, approved=0)
 
 
 async def words_from_image(image_b64, mime="image/jpeg", hint="", limit=30):
@@ -226,10 +231,11 @@ async def words_from_text(text, hint="", limit=50):
     return out
 
 
-async def words_from_list(words, lang="ru", limit=50):
+async def words_from_list(words, lang="ru", limit=50, created_by=None):
     """«Обычный генератор» для ЯВНОГО списка слов: обогащаем (перевод/часть речи/уровень) и кладём в пул.
     НЕ выдумывает новых слов — только то, что в списке. Длинные списки (импорт текстом) обрабатываем
-    пачками по 20 — размер, под который настроены модель/схема. → список pool_id (без дублей)."""
+    пачками по 20 — размер, под который настроены модель/схема. Пользовательский импорт → личное
+    расширение автора (approved=0, created_by=user), модерация до общей Базы. → список pool_id (без дублей)."""
     words = [w for w in (words or []) if isinstance(w, str) and w.strip()][:limit]
     if not words:
         return []
@@ -249,7 +255,7 @@ async def words_from_list(words, lang="ru", limit=50):
             errors.report(e, "words_from_list")
             continue
         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        for pid in await _persist_word_items(items, len(chunk)):
+        for pid in await _persist_word_items(items, len(chunk), created_by=created_by, approved=0):
             if pid not in seen:
                 seen.add(pid); pids.append(pid)
     return pids

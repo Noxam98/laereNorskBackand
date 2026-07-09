@@ -90,7 +90,12 @@ async def pool_missing_embedding(limit: int = 1):
     свой вектор, а get_pool_id без pos попал бы в старшую и NULL у нужной не очистился бы."""
     db = await _conn()
     try:
-        async with db.execute("SELECT id, norwegian FROM word_pool WHERE embedding IS NULL LIMIT ?", (limit,)) as cur:
+        # approved=0 (на модерации) НЕ эмбеддим: иначе невыверенное слово попадёт в vec_words и
+        # всплывёт соседом-дистрактором. Одобрит админ (approved=1) — луп заэмбеддит его штатно.
+        async with db.execute(
+            "SELECT id, norwegian FROM word_pool WHERE embedding IS NULL AND COALESCE(approved,1)=1 LIMIT ?",
+            (limit,),
+        ) as cur:
             return [(r["id"], r["norwegian"]) for r in await cur.fetchall()]
     finally:
         await _release(db)

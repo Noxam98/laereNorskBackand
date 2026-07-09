@@ -21,8 +21,13 @@ from tts import schedule_tts
 from task import description_task, desc_user_prompt
 from autofill import ai_game_words
 from models import DictCreate, AddWords, ImportDict, PoolAdd, PoolToDict, WordOverride, ResultBody, MoveWords, RefineWords, AiWordsBody, StudyingBody
+from llm.settings import TEXT_PROFILES
 
 router = APIRouter()
+
+# Разрешённые модели для юзер-override на описании слова: только те, что сервер и так гоняет в
+# профиле "user" (дефолт + env-override). Чужую строку в провайдер не пускаем (см. word_description).
+_ALLOWED_DESC_MODELS = set(TEXT_PROFILES.get("user") or [])
 
 
 @router.post("/games/ai_words")
@@ -31,7 +36,10 @@ async def games_ai_words(body: AiWordsBody, user=Depends(llm_rate_limit)):
     [{no, translate}] — слова попадают в общий пул и обогащаются фоном."""
     mark_activity()
     count = max(3, min(30, body.count or 10))
-    words = await ai_game_words(body.lang or "ru", body.level or None, body.topic or None, count)
+    # модерация: AI-слова одиночной игры кладём в личное расширение автора (approved=0), не в общую
+    # Базу — как /pool/generate. Иначе любой юзер инжектит произвольные слова всем в Базу/дистракторы.
+    words = await ai_game_words(body.lang or "ru", body.level or None, body.topic or None, count,
+                                created_by=user["id"], approved=0)
     return {"words": [{"no": w["norwegian"], "translate": w["translate"]} for w in words]}
 
 
@@ -51,7 +59,11 @@ async def word_result(dw_id: int, body: ResultBody, user=Depends(get_current_use
 
 
 @router.get("/words/{dw_id}/description")
-async def word_description(dw_id: int, model: str = None, user=Depends(get_current_user)):
+async def word_description(dw_id: int, model: str = None, user=Depends(llm_rate_limit)):
+    # user-override модели валидируем по allow-list (иначе произвольная строка уходит в провайдер);
+    # неизвестная → 400. Пусто = серверный дефолт профиля "user".
+    if model and model not in _ALLOWED_DESC_MODELS:
+        raise HTTPException(status_code=400, detail="Unknown model")
     dw = await get_dict_word(user["id"], dw_id)
     if not dw:
         raise HTTPException(status_code=404, detail="Not found")

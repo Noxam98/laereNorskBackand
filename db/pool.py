@@ -283,10 +283,17 @@ async def get_pool_id(norwegian: str, pos: str = None):
         await _release(db)
 
 
-async def get_pool_by_id(pool_id: int):
+async def get_pool_by_id(pool_id: int, user_id: int = None):
+    """Запись пула по id. Видимость модерации применяется ТОЛЬКО когда передан user_id (контекст
+    запроса пользователя): неодобренное (approved=0) слово читается лишь его автором (created_by ==
+    user_id) — иначе перебором id читались бы чужие pending-слова (/pool/{word}/meta|description|
+    synonyms|distractors). БЕЗ user_id (внутренние/фоновые вызовы — эмбеддинги, автофилл) фильтра нет."""
     db = await _conn()
     try:
-        async with db.execute("SELECT * FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+        async with db.execute(
+            "SELECT * FROM word_pool WHERE id = ? AND (COALESCE(approved,1) = 1 OR created_by = ? OR ? IS NULL)",
+            (pool_id, user_id, user_id),
+        ) as cur:
             row = await cur.fetchone()
             if not row:
                 return None
@@ -295,6 +302,8 @@ async def get_pool_by_id(pool_id: int):
                 "description": json.loads(row["description"]) if row["description"] else None,
                 "embedding": row["embedding"],  # сырые байты
                 "forms": json.loads(row["forms"]) if row["forms"] else None,
+                "created_by": row["created_by"],   # автор (NULL = системное/общая база)
+                "approved": row["approved"],        # 1 общая база / 0 pending / 2 rejected
             }
     finally:
         await _release(db)
@@ -342,6 +351,7 @@ async def update_pool_word(old_norwegian: str, translate: dict):
     Возвращает {ok, norwegian} либо {error: not_found|exists}."""
     key = normalize_word(old_norwegian)
     db = await _conn()
+    renamed = False
     try:
         async with db.execute("SELECT id, data FROM word_pool WHERE norwegian = ?", (key,)) as cur:
             row = await cur.fetchone()
@@ -369,48 +379,83 @@ async def update_pool_word(old_norwegian: str, translate: dict):
             (json.dumps(data, ensure_ascii=False), new_key, pid),
         )
         await db.commit()
+        renamed = new_key != key
         try:                          # смысл слова изменился (emb_sem=0 → пере-эмбеддинг): убрать
             import embcache           # stale-вектор из резидентного кеша (дистракторы), консистентно
             embcache.remove_vec(pid)  # с delete/merge; reembed пере-добавит свежий через update_vec
         except Exception:
             pass
-        return {"ok": True, "norwegian": new_key}
     finally:
         await _release(db)
+    _invalidate_candidates()          # правка не должна светиться в кеше «похожих»/дистракторов
+    if renamed:                       # переименование → инвалидируем и compound-индекс (как delete)
+        try:
+            from .compound_index import invalidate
+            invalidate()
+        except Exception:
+            pass
+    return {"ok": True, "norwegian": new_key}
 
 
-async def replace_pool_word(old_norwegian: str, new_norwegian: str, data: dict):
+async def replace_pool_word(old_norwegian: str, new_norwegian: str, data: dict,
+                            pos: str = None, pool_id: int = None):
     """Заменить слово в пуле стандартизованными данными (исправленное норв. слово + переводы +
     часть речи) и СБРОСИТЬ производное (эмбеддинг/формы/озвучку/флаги) — фон пересоздаст их
     заново для нового написания. pool_id сохраняется (ссылки словарей не рвутся).
+    Адресуем КОНКРЕТНУЮ запись омонима: по pool_id (точно), иначе по (norwegian, pos), иначе —
+    старшая по norwegian (обратная совместимость). Колонку pos держим в синхроне с
+    data.part_of_speech (иначе рассинхрон ключа (norwegian,pos) → дубли в get_or_create_pool).
     Возвращает {ok, norwegian} либо {error: not_found|exists}."""
     old_key = normalize_word(old_norwegian)
     new_key = normalize_word(new_norwegian) or old_key
+    new_pos = normalize_pos((data or {}).get("part_of_speech"))
     db = await _conn()
+    renamed = False
     try:
-        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (old_key,)) as cur:
+        if pool_id is not None:
+            sel_sql = "SELECT id, norwegian, COALESCE(pos,'') p FROM word_pool WHERE id = ?"
+            sel_args = (pool_id,)
+        elif pos is not None:
+            sel_sql = "SELECT id, norwegian, COALESCE(pos,'') p FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ?"
+            sel_args = (old_key, pos or "")
+        else:
+            sel_sql = "SELECT id, norwegian, COALESCE(pos,'') p FROM word_pool WHERE norwegian = ? ORDER BY id LIMIT 1"
+            sel_args = (old_key,)
+        async with db.execute(sel_sql, sel_args) as cur:
             row = await cur.fetchone()
         if not row:
             return {"error": "not_found"}
         pid = row["id"]
-        if new_key != old_key:
-            async with db.execute("SELECT 1 FROM word_pool WHERE norwegian = ? AND id != ?", (new_key, pid)) as c2:
+        old_row_key, old_row_pos = row["norwegian"], row["p"]
+        # коллизия — по ПАРЕ (новое слово, новая часть речи): омонимы (одно слово, разные pos) легальны
+        if new_key != old_row_key or new_pos != old_row_pos:
+            async with db.execute(
+                "SELECT 1 FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ? AND id != ?",
+                (new_key, new_pos, pid)) as c2:
                 if await c2.fetchone():
                     return {"error": "exists"}
         await db.execute(
-            "UPDATE word_pool SET data = ?, norwegian = ?, embedding = NULL, emb_sem = 0, "
+            "UPDATE word_pool SET data = ?, norwegian = ?, pos = ?, embedding = NULL, emb_sem = 0, "
             "forms = NULL, tts_tr_done = 0, translate_done = 0 WHERE id = ?",
-            (json.dumps(data, ensure_ascii=False), new_key, pid),
+            (json.dumps(data, ensure_ascii=False), new_key, new_pos, pid),
         )
         await db.commit()
+        renamed = new_key != old_row_key
         try:                          # embedding занулён → убрать stale-вектор из резидентного кеша
             import embcache           # (дистракторы), консистентно с delete/merge; reembed пере-
             embcache.remove_vec(pid)  # добавит свежий через set_pool_embedding→update_vec
         except Exception:
             pass
-        return {"ok": True, "norwegian": new_key}
     finally:
         await _release(db)
+    _invalidate_candidates()          # правка не должна светиться в кеше «похожих»/дистракторов
+    if renamed:                       # переименование → инвалидируем и compound-индекс (как delete)
+        try:
+            from .compound_index import invalidate
+            invalidate()
+        except Exception:
+            pass
+    return {"ok": True, "norwegian": new_key}
 
 
 async def update_pool_translate(pool_id: int, translate: dict):
@@ -649,13 +694,17 @@ async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
     db = await _conn()
     try:
         row = None
+        # видимость модерации применяется ТОЛЬКО при переданном user_id (запрос пользователя):
+        # неодобренное (approved=0) слово видит лишь автор — иначе перебором pool_id читались чужие
+        # pending. Без user_id (внутренние вызовы) фильтра нет («? IS NULL» → условие всегда истинно).
+        vis = "AND (COALESCE(approved,1) = 1 OR created_by = ? OR ? IS NULL)"
         if pool_id:
             async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
-                                  "FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+                                  f"FROM word_pool WHERE id = ? {vis}", (pool_id, user_id, user_id)) as cur:
                 row = await cur.fetchone()
         if row is None:
             async with db.execute(f"SELECT id, level, data, forms, freq, {has_tts_expr()} AS has_tts "
-                                  "FROM word_pool WHERE norwegian = ?", (key,)) as cur:
+                                  f"FROM word_pool WHERE norwegian = ? {vis}", (key, user_id, user_id)) as cur:
                 row = await cur.fetchone()
         if not row:
             return None
@@ -794,7 +843,9 @@ async def get_pool_candidates():
         return cached
     db = await _conn()
     try:
-        async with db.execute("SELECT id, norwegian, data, embedding FROM word_pool") as cur:
+        # только общая база (approved=1): неодобренные юзер-слова НЕ должны стать дистракторами/синонимами
+        async with db.execute(
+            "SELECT id, norwegian, data, embedding FROM word_pool WHERE COALESCE(approved,1) = 1") as cur:
             rows = await cur.fetchall()
     finally:
         await _release(db)
@@ -1260,6 +1311,7 @@ async def search_pool(prefix: str, limit: int = 10, lang: str = None):
     key = normalize_word(prefix)
     if not key:
         return []
+    limit = max(1, min(50, limit))   # защита: limit<1 → LIMIT -1 = без ограничения (весь пул), кап сверху
     db = await _conn()
     try:
         out, have = [], set()

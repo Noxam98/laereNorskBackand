@@ -731,7 +731,12 @@ async def vec_nearest_rows(target_raw, k):
             return []
         dist = {r["rowid"]: r["distance"] for r in knn}
         marks = ",".join("?" for _ in ids)
-        async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", ids) as cur:
+        # approved=0 (личное расширение автора, ещё на модерации) не должно всплывать соседом:
+        # это первичный источник дистракторов/синонимов (ranked_pool) — фильтруем невыверенные слова.
+        async with db.execute(
+            f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks}) AND COALESCE(approved,1)=1",
+            ids,
+        ) as cur:
             by_id = {r["id"]: r for r in await cur.fetchall()}
         return [{"id": i, "norwegian": by_id[i]["norwegian"], "data": by_id[i]["data"], "distance": dist.get(i)} for i in ids if i in by_id]
     finally:

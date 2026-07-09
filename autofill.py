@@ -381,7 +381,12 @@ async def dedup_loop():
                 except Exception:
                     return ""
             pa, pb = _pos_of(data), _pos_of(ndata)
-            if pa and pb and pa != pb:
+            # Авто-мёрж только когда ОБА pos заданы И равны. Разные части речи = омонимы (føde
+            # «еда»/«рожать») — не сливаем. Пустой pos (свежий омоним ещё НЕ классифицирован) тоже
+            # не мёржим: иначе разные смыслы могли бы слиться, а merge_pool_words (UPDATE OR IGNORE)
+            # потерял бы прогресс юзера на слитой записи. Откладываем (mark_dedup) — пусть сперва
+            # отработает классификация pos.
+            if not pa or not pb or pa != pb:
                 await mark_dedup(pid)
                 await asyncio.sleep(2)
                 continue

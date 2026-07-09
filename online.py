@@ -184,7 +184,8 @@ async def _candidates(room):
     n = max(s["count"] * 8, 60)
     if s["source"] == "ai":      # AI-подбор: набор уже подготовлен в лобби (_prepare_ai)
         ai_lang = getattr(room, "ai_lang", None) or room.host.lang
-        return room.ai_words or await ai_game_words(ai_lang, s["level"], s["topic"], s["count"])
+        return room.ai_words or await ai_game_words(ai_lang, s["level"], s["topic"], s["count"],
+                                                     created_by=room.host.user["id"], approved=0)
     if s["source"] == "dict":    # слова из словарей хоста (конкретный по id или все)
         return await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
     return await get_pool_duel_words(n, s["level"], s["topic"])  # общий пул по фильтрам
@@ -594,7 +595,8 @@ async def _prepare_ai(room):
     try:
         room.ai_status = "generating"
         await _send_room(room)
-        words = await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"], on_phase=phase)
+        words = await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"], on_phase=phase,
+                                    created_by=room.host.user["id"], approved=0)
         if asyncio.current_task().cancelled():
             return
         room.ai_words = words

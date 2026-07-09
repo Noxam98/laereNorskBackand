@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordBearer
 import bcrypt
 import jwt
 from db import (
-    get_user, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
+    get_user, username_taken_ci, create_user, set_user_theme, set_user_game_prefs, set_user_current_dict,
     get_user_by_google_sub, create_google_user, set_user_google, clear_user_google,
     set_user_password, set_user_name, set_online_prefs, set_user_game_mode,
     set_user_focus_topics,
@@ -43,6 +43,8 @@ ADMIN_USERS = {u.strip().lower() for u in os.getenv("ADMIN_USERS", "").split(","
 
 
 def is_admin(user) -> bool:
+    # .lower()-сравнение безопасно, ПОКА имена CI-уникальны (register/_unique_username → username_taken_ci):
+    # тогда ни один регистро-вариант админского имени не может принадлежать чужому аккаунту.
     return bool(user) and (user.get("username", "").lower() in ADMIN_USERS)
 
 
@@ -116,7 +118,7 @@ async def _unique_username(email: str) -> str:
     """Сгенерировать свободный username из локальной части email (с дедупом суффиксом)."""
     base = re.sub(r"[^a-z0-9_.-]", "", (email.split("@")[0] or "").lower()) or "user"
     username, n = base, 1
-    while await get_user(username):
+    while await username_taken_ci(username):   # CI-дедуп: google-имя не должно совпасть по регистру с занятым (в т.ч. админским)
         n += 1
         username = f"{base}{n}"
     return username
@@ -131,8 +133,8 @@ async def register(user: UserAuth):
         raise HTTPException(status_code=400, detail="Username cannot be empty")
     if len(user.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
-    if await get_user(user.username):
-        raise HTTPException(status_code=400, detail="Username already exists")
+    if await username_taken_ci(user.username):   # CI, а не точное совпадение: иначе «maksym» при
+        raise HTTPException(status_code=400, detail="Username already exists")  # существующем «Maksym» = эскалация в админа
     hashed = await asyncio.to_thread(hash_password, user.password)  # bcrypt CPU — в треде
     return await create_user(user.username, hashed)
 
