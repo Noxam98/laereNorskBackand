@@ -74,7 +74,7 @@ async def pool_by_freq_topics(limit: int, level, topics, up_to: bool = False):
         else:
             conds.append("wp.level = ?"); params.append(level)
     marks = ",".join("?" for _ in topics)
-    sql = (f"SELECT DISTINCT wp.id, wp.norwegian, wp.data, wp.freq FROM word_pool wp "
+    sql = (f"SELECT DISTINCT wp.id, wp.norwegian, wp.data, wp.freq, wp.level FROM word_pool wp "
            f"JOIN word_topics wt ON wt.pool_id = wp.id "
            f"WHERE {' AND '.join(conds)} AND wt.topic IN ({marks}) "
            f"ORDER BY wp.freq IS NULL, wp.freq DESC LIMIT ?")
@@ -91,7 +91,8 @@ async def pool_by_freq_topics(limit: int, level, topics, up_to: bool = False):
                 tr = d.get("translate", {}) or {}
                 if tr:
                     out.append({"pool_id": r["id"], "norwegian": r["norwegian"], "translate": tr,
-                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"]})
+                                "part_of_speech": d.get("part_of_speech", ""), "freq": r["freq"],
+                                "level": r["level"]})   # level НУЖЕН: иначе тема-слова обходят level-band (_below_level)
             return out
     finally:
         await _release(db)

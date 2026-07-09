@@ -21,6 +21,29 @@ async def _ins(no, level, freq):
         await _release(db)
 
 
+async def _mark(uid, pid, col):
+    db = await _conn()
+    try:
+        await db.execute("INSERT OR IGNORE INTO user_words (user_id,pool_id,created_at) VALUES (?,?,?)", (uid, pid, _now()))
+        await db.execute(f"UPDATE user_words SET {col}=1 WHERE user_id=? AND pool_id=?", (uid, pid))
+        await db.commit()
+    finally:
+        await _release(db)
+
+
+async def test_known_and_mastered_not_resuggested(fresh_db):
+    """known/mastered — жёсткий фильтр: suggest_words не подсыпает их заново (даже если нет dict_words)."""
+    uid, did = await pytest.seed_user()
+    await set_start_level(uid, "B1")
+    b1 = [await _ins(f"b1w{i}", "B1", 4.0 - i * 0.01) for i in range(6)]
+    await _mark(uid, b1[0], "known")       # «уже знаю» — не в dict_words
+    await _mark(uid, b1[1], "mastered")    # выучено
+    res = await suggest_words(uid, count=6, level="B1")
+    added = {w["pool_id"] for w in res["words"]}
+    assert b1[0] not in added, "known-слово не должно пере-предлагаться"
+    assert b1[1] not in added, "mastered-слово не должно пере-предлагаться"
+
+
 async def test_suggest_biases_to_user_level(fresh_db):
     uid, did = await pytest.seed_user()
     await set_start_level(uid, "B1")

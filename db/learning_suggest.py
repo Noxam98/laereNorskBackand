@@ -153,6 +153,12 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
         # персональная свалка «не учить» — НИКОГДА не предлагать этому юзеру (даже если модератор оставил)
         async with db.execute("SELECT pool_id FROM user_word_skips WHERE user_id = ?", (user_id,)) as cur:
             have |= {r["pool_id"] for r in await cur.fetchall()}
+        # «уже знаю» (known) и выученное (mastered) — ЖЁСТКИЙ фильтр: без него suggest заново подсыпал бы
+        # слово в скрытый словарь, хотя оно уже known/mastered (расчищенное возвращалось; см. plaсement-baseline).
+        async with db.execute(
+                "SELECT pool_id FROM user_words WHERE user_id = ? AND (COALESCE(known,0)=1 OR COALESCE(mastered,0)=1)",
+                (user_id,)) as cur:
+            have |= {r["pool_id"] for r in await cur.fetchall()}
     finally:
         await _release(db)
     # кандидаты по уровню, по ЧАСТОТНОСТИ. ВАЖНО: окно расширяем за все уже имеющиеся слова —
