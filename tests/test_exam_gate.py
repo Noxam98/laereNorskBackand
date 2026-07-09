@@ -106,6 +106,20 @@ async def test_pass_certifies_whole_pack_and_unblocks(fresh_db):
     assert await new_words_blocked(uid) is False   # порог теперь PACK, пачка пуста
 
 
+# (3b) сдача с ОДНИМ неверным ответом: балл на экране = фактические верные (напр. 29/30),
+# а не «30/30». Раньше фронт рисовал questions.length - demoted, а demoted при сдаче = 0.
+async def test_pass_reports_actual_correct_count(fresh_db):
+    uid, did = await seed_user()
+    pack = await _seed_mastered_pack(uid, did, PACK_FIRST)
+    answered = pack[-SAMPLE:]
+    answers = [{"pool_id": pid, "answer": (ru if i > 0 else "__неверно__")}
+               for i, (pid, no, ru) in enumerate(answered)]
+    res = await grade_gate_exam(uid, answers, lang="ru")
+    assert res["passed"] is True                 # SAMPLE-1 верных ≥ порога → сдал
+    assert res["total"] == SAMPLE                 # оценённых вопросов = размер выборки
+    assert res["correct"] == SAMPLE - 1           # ровно один промах виден в балле (не полный балл)
+
+
 # (4) провал демоутит промахи + равное число слабейших (всего 2×промаха)
 async def test_fail_demotes_double_unmasters_them(fresh_db):
     uid, did = await seed_user()
@@ -138,6 +152,8 @@ async def test_fail_demotes_double_unmasters_them(fresh_db):
     res = await grade_gate_exam(uid, answers, lang="ru")
     assert res["passed"] is False
     assert res["demoted"] == miss * 2          # промахи + равное число слабейших
+    assert res["correct"] == n_correct         # балл на экране = фактически верные, не число демоутов
+    assert res["total"] == SAMPLE
 
     # промахи перестали быть mastered и certified=0
     for pid in missed_pids:

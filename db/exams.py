@@ -328,6 +328,7 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
+        graded = correct_n + len(missed_pids)   # реально оценённых вопросов (после дедупа) — для балла на экране
     finally:
         await _release(db)
 
@@ -352,7 +353,8 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
                         [_due_str(FIRST_AUDIT_DAYS), float(FIRST_AUDIT_DAYS), user_id]
                         + [r["pool_id"] for r in pack])
                     await db.commit()
-                return {"passed": True}
+                # correct/total — ФАКТИЧЕСКИЙ балл прогона (не путать с demoted): показать «29/30», а не «30/30».
+                return {"passed": True, "correct": correct_n, "total": graded}
 
             # провал: демоут промахов + столько же самых слабых по силе из пачки (штраф ×2)
             missed = [by_pid[p] for p in missed_pids if p in by_pid]
@@ -364,7 +366,7 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
             for r in to_demote:
                 await _demote(db, user_id, r)
             await db.commit()
-            return {"passed": False, "demoted": len(to_demote)}
+            return {"passed": False, "demoted": len(to_demote), "correct": correct_n, "total": graded}
         finally:
             await _release(db)
 
