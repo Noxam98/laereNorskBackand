@@ -2,7 +2,7 @@
 Калибровка консервативна: тест НЕ должен завышать уровень. Вынесено из learning.py
 (движок-ядро остаётся там); реэкспортируется через learning.py и db.
 """
-from .core import _conn, _release
+from .core import _conn, _release, _now
 from .learning import LEVELS, PLACEMENT_INPUT_LEVELS, _fold_loose
 
 # Калибровка входного теста — консервативная (тест НЕ должен завышать уровень):
@@ -157,7 +157,33 @@ async def grade_placement(user_id, lang, answers):
         else:
             break
     await set_start_level(user_id, level)
+    # Плейсмент задаёт BASELINE «знаю»: сдал уровень L → топ-частотный КОР тиров НИЖЕ L считаем известным
+    # (сдача уровня подразумевает владение нижними — CEFR-лестница). known (НЕ mastered): уровень не двигает,
+    # обратимо, из подбора уходит (suggest_words.have чтит known). Иначе placed-B1 переучивал ~750 базовых.
+    await _seed_known_baseline(user_id, level)
     return {"level": level, "perLevel": per_lvl}
+
+
+async def _seed_known_baseline(user_id, level):
+    """Пометить known топ-частотные слова тиров СТРОГО НИЖЕ сданного (кап = LEVEL_TARGETS тира по частоте;
+    редкий хвост тира остаётся учащимся). INSERT OR IGNORE по PK (user_id,pool_id) НЕ трогает уже
+    выученные/учащиеся/known — прогресс и активное изучение сохранены; сеются только нетронутые слова."""
+    from .learning import LEVEL_TARGETS   # ленивый импорт (избегаем цикла на загрузке модуля)
+    li = LEVELS.index(level) if level in LEVELS else 0
+    if li == 0:
+        return
+    db = await _conn()
+    try:
+        for t in LEVELS[:li]:
+            cap = LEVEL_TARGETS.get(t, 300)
+            await db.execute(
+                "INSERT OR IGNORE INTO user_words (user_id, pool_id, created_at, known) "
+                "SELECT ?, id, ?, 1 FROM word_pool "
+                "WHERE level = ? AND data IS NOT NULL AND COALESCE(learn_excluded,0)=0 AND COALESCE(approved,1)=1 "
+                "ORDER BY freq IS NULL, freq DESC LIMIT ?", (user_id, _now(), t, cap))
+        await db.commit()
+    finally:
+        await _release(db)
 
 
 async def seed_starter(user_id, level, target=STARTER_GOAL):

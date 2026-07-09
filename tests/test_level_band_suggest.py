@@ -60,6 +60,40 @@ async def test_suggest_biases_to_user_level(fresh_db):
     assert b1_added >= 4, f"своего уровня мало: {b1_added}"
 
 
+async def test_placement_seeds_known_baseline(fresh_db):
+    """Сдал B1 → топ-частотный кор A1/A2 помечен known (не переучиваем), свой уровень не трогаем,
+    и suggest их больше не предлагает."""
+    from db.placement import _seed_known_baseline
+    uid, did = await pytest.seed_user()
+    a1 = {await _ins(f"a1w{i}", "A1", 6.0 - i * 0.01) for i in range(5)}
+    b1 = {await _ins(f"b1w{i}", "B1", 4.0 - i * 0.01) for i in range(5)}
+    await _seed_known_baseline(uid, "B1")
+    db = await _conn()
+    try:
+        async with db.execute("SELECT pool_id FROM user_words WHERE user_id=? AND known=1", (uid,)) as cur:
+            known = {r["pool_id"] for r in await cur.fetchall()}
+    finally:
+        await _release(db)
+    assert a1 <= known, "A1-кор помечен known"
+    assert not (b1 & known), "свой уровень (B1) baseline не трогает"
+    res = await suggest_words(uid, count=6, level="B1")
+    assert not (a1 & {w["pool_id"] for w in res["words"]}), "known A1 не пере-предлагается"
+
+
+async def test_suggest_includes_stretch_tier(fresh_db):
+    """~20% новых — стретч L+1 (растущий край i+1): B1-юзер видит и B2, не только ≤B1."""
+    uid, did = await pytest.seed_user()
+    await set_start_level(uid, "B1")
+    a1 = {await _ins(f"a1w{i}", "A1", 6.0 - i * 0.01) for i in range(10)}
+    b1 = {await _ins(f"b1w{i}", "B1", 4.0 - i * 0.01) for i in range(10)}
+    b2 = {await _ins(f"b2w{i}", "B2", 3.0 - i * 0.01) for i in range(10)}
+    res = await suggest_words(uid, count=6, level="B1")
+    added = {w["pool_id"] for w in res["words"]}
+    assert len(added & b2) >= 1, "должен быть стретч B2 (L+1)"
+    assert len(added & b1) >= 3, "большинство — своего уровня"
+    assert len(added & a1) <= 2, "ниже уровня — ограничено"
+
+
 async def test_suggest_falls_back_when_own_level_scarce(fresh_db):
     """Если слов своего уровня не хватает — квота снимается, добираем ниже-уровневыми (сессия не сохнет)."""
     uid, did = await pytest.seed_user()

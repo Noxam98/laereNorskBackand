@@ -203,22 +203,26 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
         from config import logger as _lg
         _lg.warning("suggest_words: компаунд-ранжирование пропущено", exc_info=True)
     added = []
-    # Смещение к УРОВНЮ. Частотный up_to заваливал placed-юзера (напр. B1) словами A1 («dag/bok/gjøre» —
-    # самые частотные), хотя это его ПОТОЛОК, а не то, что нужно доучивать. Приоритет — словам ЕГО
-    # уровня; слова НИЖЕ уровня («добор пробелов») — не более ~⅓ порции. Если своего уровня не хватило
-    # (исчерпан) — добираем ниже-уровневыми, чтобы сессия не сохла. A1-новичка не режем (li==0).
+    # Целевая ПОЛОСА вокруг уровня (i+1), а не потолок: большинство — НА уровне; ~20% — СТРЕТЧ L+1
+    # (растущий край; раньше недостижим — up_to смотрел только ≤L, и placed-B1 никогда не видел B2);
+    # ниже уровня («добор пробелов») — ~20% (known/mastered уже отфильтрованы в have). Частота сортирует
+    # ВНУТРИ полосы. A1-новичка не режем (li==0, ниже пусто). Нехватка → снимаем капы, потом fallthrough.
     li = LEVELS.index(lvl) if lvl in LEVELS else 0
-    below_cap = count if li == 0 else max(1, (count + 2) // 3)
+    below_cap = count if li == 0 else max(1, round(count * 0.2))
+    has_stretch = li + 1 < len(LEVELS)
+    stretch_cap = round(count * 0.2) if has_stretch else 0
+    stretch = await pool_by_freq(window, LEVELS[li + 1], up_to=False) if has_stretch else []
     below_added = 0
 
     def _below_level(w):
         wl = w.get("level")
         return bool(wl) and wl in LEVELS and LEVELS.index(wl) < li
 
-    async def _take(cands, respect_band=True):
+    async def _take(cands, cap=None, respect_band=True):
         nonlocal below_added
+        stop = cap if cap is not None else count
         for w in cands:
-            if len(added) >= count:
+            if len(added) >= stop:
                 return
             pid = w["pool_id"]
             if not pid or pid in have:
@@ -236,11 +240,13 @@ async def suggest_words(user_id, count=10, level=None, allow_func=True):
                 if below:
                     below_added += 1
 
-    await _take(cand)
-    if len(added) < count:   # своего уровня не хватило → снимаем квоту, добираем ниже-уровневыми из тех же кандидатов
+    # ≤L (в основном НА уровне + ≤below_cap ниже), оставляя место под стретч
+    await _take(cand, cap=count - stretch_cap)
+    if stretch:                              # +СТРЕТЧ L+1 (растущий край) — до полной порции
+        await _take(stretch, respect_band=False)
+    if len(added) < count:                   # стретча/уровня не хватило → добираем ≤L без капа
         await _take(cand, respect_band=False)
-    # Fallthrough: уровни ≤ lvl исчерпаны (всё уже в словаре юзера), но пул НЕ пуст — добираем ЛЮБЫМ
-    # уровнем по частоте, чтобы сессия не сохла (частотные/простые вперёд). Запрос только при нехватке.
+    # Fallthrough: всё ≤L+1 уже в словаре юзера — добираем ЛЮБЫМ уровнем по частоте (сессия не сохнет).
     if len(added) < count:
         await _take(await pool_by_freq(len(have) + max(count * 6, 60), None), respect_band=False)
     return {"added": len(added), "words": added, "level": lvl, "dict": "__auto__"}
