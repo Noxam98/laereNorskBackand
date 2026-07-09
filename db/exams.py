@@ -328,11 +328,17 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
                 correct_n += 1
             else:
                 missed_pids.append(pid)
+    finally:
+        await _release(db)
 
-        # мутацию user_words держим под пер-юзер локом (Фикс #7): read-modify-write иначе теряет
-        # апдейт против конкурентного /answer того же юзера (второй commit затирает первый).
-        from .learning import _user_lock   # ленивый: цикл learning ↔ exams
-        async with _user_lock(user_id):
+    # мутацию user_words — под пер-юзер локом (read-modify-write иначе теряет апдейт против
+    # конкурентного /answer). Лок берём БЕЗ открытого соединения (порядок lock→conn как в apply_result):
+    # держать permit пула, ожидая лок, = инверсия порядка и латентный дедлок. Снимок для грейда всё
+    # равно читался до лока — семантика не меняется.
+    from .learning import _user_lock   # ленивый: цикл learning ↔ exams
+    async with _user_lock(user_id):
+        db = await _conn()
+        try:
             # buildable==0 → выборка пуста: не сертифицируем даже при correct_n>=need (need=1 на пустом
             # экзамене был бы достижим эхом норв. слов). _pass_threshold(0) оставляем =1 (контракт).
             if buildable > 0 and correct_n >= need:
@@ -359,8 +365,8 @@ async def grade_gate_exam(user_id, answers, lang="ru"):
                 await _demote(db, user_id, r)
             await db.commit()
             return {"passed": False, "demoted": len(to_demote)}
-    finally:
-        await _release(db)
+        finally:
+            await _release(db)
 
 
 # ---------------- аудит-экзамен забывания (§2.4-B) ----------------
@@ -410,12 +416,18 @@ async def grade_audit(user_id, answers, lang="ru"):
         # двигать его audit_due / де-сертифицировать не-due слово (клиентские id не сверялись с выданными).
         by_pid = {r["pool_id"]: r for r in _audit_rows(rows)[:AUDIT_CAP]}
         known = await _known_vocab(db)
-        checked = refreshed = forgot = 0
-        seen = set()   # дедуп по pool_id: дубль не накручивает checked/refreshed и не разбавляет долю forgot
-        # мутацию user_words держим под пер-юзер локом (Фикс #7): иначе теряется апдейт против
-        # конкурентного /answer того же юзера (второй commit затирает первый).
-        from .learning import _user_lock   # ленивый: цикл learning ↔ exams
-        async with _user_lock(user_id):
+    finally:
+        await _release(db)
+
+    checked = refreshed = forgot = 0
+    seen = set()   # дедуп по pool_id: дубль не накручивает checked/refreshed и не разбавляет долю forgot
+    # мутацию user_words — под пер-юзер локом: иначе теряется апдейт против конкурентного /answer.
+    # Лок берём БЕЗ открытого соединения (порядок lock→conn как в apply_result): держать permit пула,
+    # ожидая лок, = инверсия порядка и латентный дедлок.
+    from .learning import _user_lock   # ленивый: цикл learning ↔ exams
+    async with _user_lock(user_id):
+        db = await _conn()
+        try:
             for a in (answers or []):
                 if not isinstance(a, dict):   # мусор в answers не должен ронять грейд (500)
                     continue
@@ -458,7 +470,7 @@ async def grade_audit(user_id, answers, lang="ru"):
                     (_due_str(THROTTLE_DAYS), user_id))
             await db.commit()
             return {"checked": checked, "refreshed": refreshed, "forgot": forgot, "throttle": throttle}
-    finally:
-        await _release(db)
+        finally:
+            await _release(db)
 
 

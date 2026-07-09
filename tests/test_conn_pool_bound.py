@@ -7,6 +7,8 @@
 import asyncio
 import contextvars
 
+import pytest
+
 import db.core as core
 from db.core import _conn, _release
 
@@ -89,3 +91,43 @@ async def test_slot_released_when_make_conn_fails(fresh_db, monkeypatch):
     except RuntimeError:
         pass
     assert core._POOL_SEM._value == 1                  # слот вернулся, не утёк
+
+
+# ── инвариант lock→conn: mutation-функции не держат слот пула, ожидая _user_lock ────────────────
+# Иначе conn→lock инверсия: задача с permit ждёт лок, apply_result с локом ждёт permit → дедлок.
+# Держим лок юзера сами и проверяем, что заблокированная mutation-функция слот УЖЕ отпустила.
+
+async def test_set_status_frees_slot_before_waiting_lock(fresh_db):
+    """set_status (know/reset) берёт соединение только ПОД локом — ожидая лок, слот не держит."""
+    from db.learning import _user_lock, set_status
+    uid, did = await pytest.seed_user()
+    pid, _ = await pytest.seed_word(did, "hus")
+    core._POOL_SEM = asyncio.Semaphore(1)
+    lk = _user_lock(uid)
+    await lk.acquire()                                 # держим лок юзера (как будто apply_result мутирует)
+    try:
+        t = asyncio.create_task(set_status(uid, pid, "reset"), context=contextvars.Context())
+        await asyncio.sleep(0.1)
+        assert not t.done()                            # set_status ждёт лок
+        assert core._POOL_SEM._value == 1              # но слот пула СВОБОДЕН (conn берётся только под локом)
+    finally:
+        lk.release()
+    await asyncio.wait_for(t, 5)                        # лок отпущен → завершается
+
+
+async def test_reset_set_ramp_frees_slot_before_waiting_lock(fresh_db):
+    """reset_set_ramp читает под своим соединением, ОТПУСКАЕТ его и лишь затем берёт лок."""
+    from db.learning import _user_lock
+    from db.sets_data import reset_set_ramp
+    uid, did = await pytest.seed_user()
+    core._POOL_SEM = asyncio.Semaphore(1)
+    lk = _user_lock(uid)
+    await lk.acquire()
+    try:
+        t = asyncio.create_task(reset_set_ramp(uid, did), context=contextvars.Context())
+        await asyncio.sleep(0.1)
+        assert not t.done()                            # ждёт лок
+        assert core._POOL_SEM._value == 1              # read-соединение отпущено ДО ожидания лока
+    finally:
+        lk.release()
+    await asyncio.wait_for(t, 5)

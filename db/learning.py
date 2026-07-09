@@ -524,45 +524,48 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
 
 async def set_status(user_id: int, pool_id: int, action: str):
     """action: know (в архив) | known (в корзину «Знаю») | reset (сброс) | unarchive (вернуть в ротацию)."""
-    db = await _conn()
-    try:
-        if action == "know":
-            m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
-            m["hist"] = "1" * CAPACITY
-            fields = "known=0, archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
-            args = (json.dumps(m, ensure_ascii=False), _due_str(120))
-        elif action == "known":
-            # «Уже знаю»: знакомое слово → корзина «Знаю» (known=1), ВНЕ ротации. Это НЕ «Выучено»:
-            # mastered НЕ ставим и прогресс уровня НЕ двигаем (см. status_of → 'known'). Срок повтора
-            # убираем (не всплывёт). Историю попыток не трогаем — слово просто «отложено как знакомое».
-            fields = "known=1, mastered=0, archived=0, due_at=NULL"
-            args = ()
-        elif action == "reset":
-            fields = ("known=0, archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
-                      "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, mastered=0, "
-                      "certified=0, was_certified=0, audit_due=NULL, audit_interval=0")
-            args = ()
-        elif action == "unarchive":
-            fields = "archived=0, due_at=?"
-            args = (_due_str(1),)
-        else:
-            return {"error": "bad action"}
-        # гарантируем строку
-        await db.execute("INSERT OR IGNORE INTO user_words (user_id, pool_id, created_at) VALUES (?,?,?)", (user_id, pool_id, _now()))
-        # know/reset мутируют те же поля (mastered/reps/modes/certified), что и apply_result → под ТОТ ЖЕ
-        # пер-юзер лок, иначе только что закоммиченный ответ можно затереть (last-writer-wins). Чистый
-        # тоггл archived (known/unarchive) с apply_result не конфликтует → без лока (документированный
-        # low risk). set_status зовётся из роутов (/status, /skip), НЕ из-под _user_lock → дедлока нет.
-        if action in ("know", "reset"):
-            async with _user_lock(user_id):
-                await db.execute(f"UPDATE user_words SET {fields} WHERE user_id = ? AND pool_id = ?", (*args, user_id, pool_id))
-                await db.commit()
-        else:
+    if action == "know":
+        m = {c: "1" for c in ALL_CELLS}   # все клетки рампы пройдены (и choice/build/input, и cloze)
+        m["hist"] = "1" * CAPACITY
+        fields = "known=0, archived=1, strength=100, reps=MAX(reps,3), modes=?, due_at=?, mastered=1"
+        args = (json.dumps(m, ensure_ascii=False), _due_str(120))
+    elif action == "known":
+        # «Уже знаю»: знакомое слово → корзина «Знаю» (known=1), ВНЕ ротации. Это НЕ «Выучено»:
+        # mastered НЕ ставим и прогресс уровня НЕ двигаем (см. status_of → 'known'). Срок повтора
+        # убираем (не всплывёт). Историю попыток не трогаем — слово просто «отложено как знакомое».
+        fields = "known=1, mastered=0, archived=0, due_at=NULL"
+        args = ()
+    elif action == "reset":
+        fields = ("known=0, archived=0, strength=0, reps=0, lapses=0, ease=2.5, interval_days=0, "
+                  "correct=0, incorrect=0, streak=0, modes=NULL, due_at=NULL, mastered=0, "
+                  "certified=0, was_certified=0, audit_due=NULL, audit_interval=0")
+        args = ()
+    elif action == "unarchive":
+        fields = "archived=0, due_at=?"
+        args = (_due_str(1),)
+    else:
+        return {"error": "bad action"}
+
+    async def _apply():
+        db = await _conn()
+        try:
+            await db.execute("INSERT OR IGNORE INTO user_words (user_id, pool_id, created_at) VALUES (?,?,?)", (user_id, pool_id, _now()))
             await db.execute(f"UPDATE user_words SET {fields} WHERE user_id = ? AND pool_id = ?", (*args, user_id, pool_id))
             await db.commit()
-        return {"ok": True}
-    finally:
-        await _release(db)
+        finally:
+            await _release(db)
+
+    # know/reset мутируют те же поля (mastered/reps/modes/certified), что и apply_result → под ТОТ ЖЕ
+    # пер-юзер лок, иначе только что закоммиченный ответ можно затереть (last-writer-wins). Лок берём
+    # БЕЗ открытого соединения (порядок lock→conn как в apply_result): держать permit пула, ожидая лок,
+    # = инверсия порядка и латентный дедлок. Чистый тоггл archived (known/unarchive) с apply_result не
+    # конфликтует → без лока (low risk). set_status зовётся из роутов, НЕ из-под _user_lock → реентранси нет.
+    if action in ("know", "reset"):
+        async with _user_lock(user_id):
+            await _apply()
+    else:
+        await _apply()
+    return {"ok": True}
 
 
 async def learning_add(user_id: int, pool_id: int):

@@ -118,10 +118,15 @@ async def reset_set_ramp(user_id: int, set_id: int):
             WHERE dw.dict_id = ? AND uw.mastered = 1
         """, (user_id, set_id)) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
-        # мутацию user_words держим под пер-юзер локом (Фикс #7): read-modify-write иначе теряет
-        # апдейт против конкурентного /answer того же юзера (второй commit затирает первый).
-        from .learning import _user_lock   # ленивый: тот же реестр локов, что у apply_result
-        async with _user_lock(user_id):
+    finally:
+        await _release(db)
+
+    # мутацию user_words — под пер-юзер локом; лок берём БЕЗ открытого соединения (порядок lock→conn
+    # как в apply_result): держать permit пула, ожидая лок, = инверсия порядка и латентный дедлок.
+    from .learning import _user_lock   # ленивый: тот же реестр локов, что у apply_result
+    async with _user_lock(user_id):
+        db = await _conn()
+        try:
             for r in rows:
                 try:
                     modes = json.loads(r["modes"]) if r["modes"] else {}
@@ -137,9 +142,9 @@ async def reset_set_ramp(user_id: int, set_id: int):
                     "strength = 0, reps = 0, interval_days = 0, correct = ?, due_at = ? WHERE id = ?",
                     (json.dumps(modes, ensure_ascii=False), corr, _now(), r["uid"]))
             await db.commit()
-        return {"ok": True, "reset": len(rows)}
-    finally:
-        await _release(db)
+        finally:
+            await _release(db)
+    return {"ok": True, "reset": len(rows)}
 
 
 async def sets_for_words(user_id: int, pool_ids):
