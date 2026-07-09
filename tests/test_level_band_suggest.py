@@ -21,6 +21,58 @@ async def _ins(no, level, freq):
         await _release(db)
 
 
+async def _fake_level_b1(u):
+    return "B1"
+
+
+async def _fake_level_a1(u):
+    return "A1"
+
+
+async def test_review_interval_scales_for_below_level(fresh_db, monkeypatch):
+    """Фаза 3: верный повтор ВЫУЧЕННОГО базового слова у продвинутого юзера растягивает интервал
+    (mastered A1 у B1-юзера, d=2 → ×2), у A1-юзера (d=0) — без масштаба."""
+    from db.learning import apply_result, REQUIRED_CELLS, CAPACITY
+
+    async def _setup_word(no):
+        uid, did = await pytest.seed_user(no)
+        pid = await _ins(no, "A1", 5.0)
+        db = await _conn()
+        try:
+            modes = {c: "1" for c in REQUIRED_CELLS}; modes["hist"] = "1" * CAPACITY
+            await db.execute("INSERT OR IGNORE INTO user_words (user_id,pool_id,created_at) VALUES (?,?,?)", (uid, pid, _now()))
+            await db.execute("UPDATE user_words SET mastered=1, interval_days=10, ease=2.5, reps=5, modes=? "
+                             "WHERE user_id=? AND pool_id=?", (json.dumps(modes), uid, pid))
+            await db.commit()
+        finally:
+            await _release(db)
+        return uid, pid
+
+    async def _iv(uid, pid):
+        db = await _conn()
+        try:
+            async with db.execute("SELECT interval_days FROM user_words WHERE user_id=? AND pool_id=?", (uid, pid)) as cur:
+                return (await cur.fetchone())["interval_days"]
+        finally:
+            await _release(db)
+
+    import importlib
+    LS = importlib.import_module("db.learning_suggest")   # реальный сабмодуль (атрибут db.learning_suggest затенён функцией)
+
+    uid_b1, pid_b1 = await _setup_word("scaleB1")
+    monkeypatch.setattr(LS, "estimate_level", _fake_level_b1)
+    await apply_result(uid_b1, pid_b1, True, mode="choice", direction="no2int")
+    iv_b1 = await _iv(uid_b1, pid_b1)
+
+    uid_a1, pid_a1 = await _setup_word("scaleA1")
+    monkeypatch.setattr(LS, "estimate_level", _fake_level_a1)
+    await apply_result(uid_a1, pid_a1, True, mode="choice", direction="no2int")
+    iv_a1 = await _iv(uid_a1, pid_a1)
+
+    assert iv_b1 > iv_a1, f"базовое у продвинутого должно повторяться реже: B1={iv_b1} vs A1={iv_a1}"
+    assert iv_b1 >= iv_a1 * 1.8, f"масштаб ~×2 при d=2: {iv_b1} vs {iv_a1}"
+
+
 async def _mark(uid, pid, col):
     db = await _conn()
     try:

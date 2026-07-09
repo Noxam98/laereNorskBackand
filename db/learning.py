@@ -358,8 +358,8 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
             r = await cur.fetchone()
         st = dict(r) if r else {"strength": 0, "reps": 0, "lapses": 0, "ease": 2.5, "interval_days": 0,
                                 "correct": 0, "incorrect": 0, "streak": 0, "archived": 0, "modes": None}
-        # класс слова (служебное → cloze-клетки) для корректной рампы/мастери
-        async with db.execute("SELECT norwegian, data, forms FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+        # класс слова (служебное → cloze-клетки) для корректной рампы/мастери (+level для масштаба повтора)
+        async with db.execute("SELECT norwegian, data, forms, level FROM word_pool WHERE id = ?", (pool_id,)) as cur:
             wp = await cur.fetchone()
         wrow = {"norwegian": (wp["norwegian"] if wp else None), "data": (wp["data"] if wp else None)}
         kind = ramp_kind_of(wrow)
@@ -452,6 +452,17 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
             due = _due_str(1)
         modes_json = json.dumps(modes, ensure_ascii=False)
         mastered_now = 1 if _is_mastered(wrow, modes) else 0   # хранимый флаг: ставим при mastered, снимаем при откате
+        # Фаза 3: повтор ТРИВИАЛЬНОГО базового слова у продвинутого юзера — растягиваем интервал (реже
+        # всплывает). Верный ПОВТОР уже-выученного слова, которое НИЖЕ уровня юзера на d тиров → interval
+        # ×(1+0.5·d): mastered A1 у B1-юзера (d=2) повторяется вдвое реже. Только daily-повтор (certified
+        # идут аудит-треком, get_due их не берёт). estimate_level читаем ДО upsert'а — не держим writer-лок.
+        if correct and st.get("mastered") and mastered_now and wp and (wp["level"] in LEVELS):
+            from .learning_suggest import estimate_level
+            _cur = await estimate_level(user_id)
+            _d = (LEVELS.index(_cur) - LEVELS.index(wp["level"])) if _cur in LEVELS else 0
+            if _d >= 1:
+                interval = min(_INTERVAL_CAP, round(interval * (1 + 0.5 * _d)))
+                due = _due_str(interval)
         # Решение «копить свежевыученное слово в форм-батч» зависит от грамм-настроек юзера
         # (get_user_grammar/_pos — cross-connection reads). Считаем его ЗАРАНЕЕ, ДО открытия writer-лока
         # upsert'ом ниже: эти await'ы ни от какой записи не зависят и не должны держать WAL-писателя
