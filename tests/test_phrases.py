@@ -93,7 +93,8 @@ async def test_phrase_ramp_cells(fresh_db):
             row = dict(await cur.fetchone())
     finally:
         await _release(db)
-    assert required_cells(row) == PHRASE_CELLS == ("choice_no2int", "order_int2no", "input_int2no")
+    assert required_cells(row) == PHRASE_CELLS == ("choice_no2int", "order_int2no",
+                                                   "build_int2no", "input_int2no")
 
 
 @pytest.mark.asyncio
@@ -107,16 +108,46 @@ async def test_phrase_without_distractors_falls_back_to_word_ramp(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_phrase_masters_through_three_cells(fresh_db):
+async def test_phrase_masters_through_four_cells(fresh_db):
+    """Рампа фразы: выбор → порядок слов → СБОРКА ИЗ БУКВ → свободный ввод."""
     uid, did = await seed_user()
     pid = await _seed_phrase(did)
     await apply_result(uid, pid, True, mode="study", direction=None)          # карточка — не в зачёт
     r = await apply_result(uid, pid, True, mode="choice", direction="no2int")
     assert r["mastered"] is False
     r = await apply_result(uid, pid, True, mode="order", direction="int2no")
+    assert r["mastered"] is False
+    r = await apply_result(uid, pid, True, mode="build", direction="int2no")  # новая ступень
     assert r["mastered"] is False                                            # ещё клетка input впереди
     r = await apply_result(uid, pid, True, mode="input", direction="int2no")
-    assert r["mastered"] is True                                             # все три клетки рампы пройдены
+    assert r["mastered"] is True                                             # все четыре клетки пройдены
+
+
+@pytest.mark.asyncio
+async def test_phrase_step_order_puts_build_before_input(fresh_db):
+    """После «порядка слов» следующей выдаётся именно сборка из букв, а не сразу ввод."""
+    from srs.steps import next_step
+    from srs.cells import PHRASE
+    modes = {"choice_no2int": "1", "order_int2no": "1"}
+    assert next_step(PHRASE, modes, attempts=3, audio_on=False) == ("build_int2no", "build", "int2no")
+    modes["build_int2no"] = "1"
+    assert next_step(PHRASE, modes, attempts=3, audio_on=False) == ("input_int2no", "input", "int2no")
+
+
+def test_phrase_legacy_ramp_stays_mastered():
+    """Grandfathering: кто сдал СТАРУЮ рампу (без сборки, финал — ввод по памяти), остаётся
+    выученным — новая ступень не воскрешает уже доученные фразы пачкой."""
+    from srs.status import is_mastered
+    from srs.cells import PHRASE
+    legacy = {"choice_no2int": "1", "order_int2no": "1", "input_int2no": "1"}   # build отсутствует
+    assert is_mastered(PHRASE, legacy) is True
+    assert next_step_none(legacy)
+
+
+def next_step_none(modes):
+    from srs.steps import next_step
+    from srs.cells import PHRASE
+    return next_step(PHRASE, modes, attempts=5, audio_on=False) is None
 
 
 @pytest.mark.asyncio
