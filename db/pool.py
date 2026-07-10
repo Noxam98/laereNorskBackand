@@ -469,18 +469,17 @@ async def replace_pool_word(old_norwegian: str, new_norwegian: str, data: dict,
 
 async def update_pool_translate(pool_id: int, translate: dict):
     """Записать обновлённый словарь translate в data слова; сбросить tts_tr_done,
-    чтобы фон озвучил новые языки."""
+    чтобы фон озвучил новые языки.
+
+    json_set по '$.translate', а не read-modify-write всего data: этот писатель — фоновый автофилл,
+    и его снимок мог устареть, затирая ключи, записанные тем временем из HTTP (напр. data.compound
+    от «Разобрать состав»). Точечная запись применяется к АКТУАЛЬНОЙ строке — lost update исчезает."""
     db = await _conn()
     try:
-        async with db.execute("SELECT data FROM word_pool WHERE id = ?", (pool_id,)) as cur:
-            row = await cur.fetchone()
-            if not row:
-                return
-        data = json.loads(row["data"])
-        data["translate"] = translate
         await db.execute(
-            "UPDATE word_pool SET data = ?, tts_tr_done = 0 WHERE id = ?",
-            (json.dumps(data, ensure_ascii=False), pool_id),
+            "UPDATE word_pool SET data = json_set(COALESCE(data,'{}'), '$.translate', json(?)), "
+            "tts_tr_done = 0 WHERE id = ?",
+            (json.dumps(translate, ensure_ascii=False), pool_id),
         )
         await db.commit()
     finally:
@@ -744,12 +743,21 @@ def _node_tr(data, lang: str):
 
 async def compound_tree(db, norwegian: str, data: dict = None, lang: str = "ru",
                         depth: int = _COMPOUND_MAX_DEPTH, seen=frozenset()):
-    """Рекурсивное дерево разбора составного слова: узел = {word, tr, fuge, children}.
+    """Рекурсивное дерево разбора составного слова: узел = {word, tr, fuge, lemma, children}.
     children непусты ТОЛЬКО если слово составное (ветвление бинарное: forledd/etterledd),
     fuge узла — соединитель между его детьми. Разбор каждого узла — через единый
     resolve_compound (банк → LLM-фолбэк), поэтому вручную разобранные подслова тоже ветвятся.
-    Защита: лимит глубины + seen (часть == предок / взаимная ссылка в банке → не зацикливаемся)."""
-    node = {"word": norwegian, "tr": _node_tr(data, lang), "fuge": "", "children": []}
+    Защита: лимит глубины + seen (часть == предок / взаимная ссылка в банке → не зацикливаемся).
+
+    lemma — САМОСТОЯТЕЛЬНОЕ ли это слово (лемма банка ИЛИ есть в пуле). Нужен, потому что
+    leddanalyse банка режет не только композицию, но и ДЕРИВАЦИЮ: urettferdig → 'u'+'rettferdig',
+    hensiktsmessig → …+'messig', sannsynlig+'…het'. Аффикс — не слово: фронт такой узел не делает
+    кликабельным и не запускает по нему LLM-генерацию карточки (иначе каждый дериват жёг общую
+    квоту Gemini и плодил мусорные записи approved=0). Тот же гейт стоит на LLM-разборе
+    (_analyze_compound: ordbank.is_lemma(x) or get_pool_id(x))."""
+    from db import ordbank
+    node = {"word": norwegian, "tr": _node_tr(data, lang), "fuge": "", "children": [],
+            "lemma": data is not None or ordbank.is_lemma(norwegian)}
     if depth <= 0:
         return node
     c = resolve_compound(norwegian, data)
@@ -759,7 +767,8 @@ async def compound_tree(db, norwegian: str, data: dict = None, lang: str = "ru",
     seen2 = seen | {norwegian}
     for part in (c["forledd"], c["etterledd"]):
         if not part or part in seen2:      # цикл — обрываем ветку листом, без рекурсии
-            node["children"].append({"word": part, "tr": [], "fuge": "", "children": []})
+            node["children"].append({"word": part, "tr": [], "fuge": "", "children": [],
+                                     "lemma": ordbank.is_lemma(part)})
             continue
         pdata = await _pool_data_of(db, part)
         node["children"].append(await compound_tree(db, part, pdata, lang, depth - 1, seen2))
@@ -1008,23 +1017,29 @@ async def set_pool_compound(pool_id: int, compound: dict = None):
     которых нет в ordbank leddanalyse (ручной LLM-разбор из карточки). compound=None → слово
     проверено и НЕ составное (флаг compound_checked, чтобы пункт меню исчез и не жёг квоту).
     Разбор кладём и в обратный индекс частей (word_pool_compounds) — как делает compound_index_loop,
-    иначе разблокировка композитов по выученным основам это слово не увидит (курсор мог его пройти)."""
+    иначе разблокировка композитов по выученным основам это слово не увидит (курсор мог его пройти).
+
+    Пишем ТОЧЕЧНО через json_set/json_remove, а не read-modify-write всего data: соседний писатель
+    того же JSON (update_pool_translate из автофилла) читает свой снимок и коммитом затирал бы наш
+    ключ (lost update). json_set применяется к АКТУАЛЬНОЙ строке в момент UPDATE — конфликт исчезает."""
     db = await _conn()
     try:
-        async with db.execute("SELECT norwegian, data FROM word_pool WHERE id = ?", (pool_id,)) as cur:
+        async with db.execute("SELECT norwegian FROM word_pool WHERE id = ?", (pool_id,)) as cur:
             row = await cur.fetchone()
         if not row:
             return
-        data = json.loads(row["data"]) if row["data"] else {}
         if compound and compound.get("forledd") and compound.get("etterledd"):
-            data["compound"] = {"forledd": compound["forledd"], "fuge": compound.get("fuge") or "",
-                                "etterledd": compound["etterledd"]}
+            comp = {"forledd": compound["forledd"], "fuge": compound.get("fuge") or "",
+                    "etterledd": compound["etterledd"]}
+            await db.execute(
+                "UPDATE word_pool SET data = json_set(json_set(COALESCE(data,'{}'), "
+                "'$.compound', json(?)), '$.compound_checked', json('true')) WHERE id = ?",
+                (json.dumps(comp, ensure_ascii=False), pool_id))
         else:
-            data.pop("compound", None)
             compound = None
-        data["compound_checked"] = True
-        await db.execute("UPDATE word_pool SET data = ? WHERE id = ?",
-                         (json.dumps(data, ensure_ascii=False), pool_id))
+            await db.execute(
+                "UPDATE word_pool SET data = json_set(json_remove(COALESCE(data,'{}'), '$.compound'), "
+                "'$.compound_checked', json('true')) WHERE id = ?", (pool_id,))
         await db.commit()
     finally:
         await _release(db)

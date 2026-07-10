@@ -1,6 +1,8 @@
 """Ручной разбор составного слова из карточки (для слов вне ordbank leddanalyse):
 персист в data.compound + обратный индекс, «не составное» помечается проверенным,
 и валидация LLM-разбора (складывается в слово + части — известные леммы)."""
+import json
+
 import pytest
 
 from db.core import _conn, _release
@@ -97,6 +99,46 @@ async def test_compound_tree_recurses_three_levels(fresh_db):
     assert sub["children"][0]["tr"] == ["ребёнок"]
     # плоские поля не сломаны (их читают cwSegs на фронте и флешкарта)
     assert m["compound"]["parts"] == ["barnehage", "lærer"]
+
+
+@pytest.mark.asyncio
+async def test_compound_tree_marks_affixes_as_non_lemma(fresh_db, monkeypatch):
+    """Банк режет и ДЕРИВАЦИЮ (urettferdig → 'u' + 'rettferdig'). Аффикс 'u' — не слово: узел
+    помечается lemma=false, фронт его не кликает и не генерит по нему карточку через LLM."""
+    from db import ordbank
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "urettferdig", ru="несправедливый", pos="adjective")
+    await seed_word(did, "rettferdig", ru="справедливый", pos="adjective")   # часть ЕСТЬ в пуле
+    await set_pool_compound(pid, {"forledd": "u", "fuge": "", "etterledd": "rettferdig"})
+    monkeypatch.setattr(ordbank, "is_lemma", lambda w: w in {"rettferdig", "urettferdig"})
+
+    m = await get_pool_meta("urettferdig", user_id=uid, lang="ru")
+    kids = {k["word"]: k for k in m["compound"]["children"]}
+    assert kids["u"]["lemma"] is False            # аффикс: не кликабелен
+    assert kids["rettferdig"]["lemma"] is True    # настоящее слово: кликабелен
+
+
+@pytest.mark.asyncio
+async def test_set_pool_compound_does_not_clobber_concurrent_translate(fresh_db):
+    """lost update: соседний писатель того же data-JSON (update_pool_translate) не должен терять
+    наш compound, и наоборот. set_pool_compound пишет точечно (json_set), а не весь data."""
+    from db.pool import update_pool_translate
+    uid, did = await seed_user()
+    pid, _ = await seed_word(did, "husbåt", ru="старый перевод")
+
+    # писатель B правит перевод; писатель A параллельно кладёт разбор — оба ключа должны выжить
+    await update_pool_translate(pid, {"no": ["husbåt"], "ru": ["плавучий дом"]})
+    await set_pool_compound(pid, {"forledd": "hus", "fuge": "", "etterledd": "båt"})
+
+    db = await _conn()
+    try:
+        async with db.execute("SELECT data FROM word_pool WHERE id=?", (pid,)) as cur:
+            data = json.loads((await cur.fetchone())["data"])
+    finally:
+        await _release(db)
+    assert data["compound"]["etterledd"] == "båt"          # разбор на месте
+    assert data["translate"]["ru"] == ["плавучий дом"]     # и перевод не затёрт
+    assert data["compound_checked"] is True
 
 
 @pytest.mark.asyncio
