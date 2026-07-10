@@ -1176,19 +1176,32 @@ async def pos_missing_forms(category: str, limit: int = 20):
         await _release(db)
 
 
-async def delete_pool_word(norwegian: str):
-    """Полностью удалить слово из общего пула (каскадом у всех) + почистить кэш запросов."""
+async def delete_pool_word(norwegian: str, pool_id: int = None):
+    """Удалить слово из общего пула (каскадом у всех) + почистить кэш запросов.
+
+    pool_id — ТОЧНАЯ запись омонима: админ жмёт «Удалить из базы» из карточки КОНКРЕТНОГО значения,
+    а раньше DELETE шёл по norwegian и сносил ВСЕХ омонимов (удаляя `mot`-предлог, теряли и
+    `mot`-«мужество»). Без pool_id поведение прежнее (снести все омонимы написания).
+    Вектор/резидентный кеш чистим для КАЖДОЙ удалённой записи: раньше читался один произвольный id,
+    и вектор второго омонима оставался в vec_words/embcache призраком-дистрактором на мёртвый id.
+    word_pool_compounds заводится без FK/CASCADE (db/core.py) → чистим явно, иначе сироты."""
     key = normalize_word(norwegian)
     if not key:
         return
     db = await _conn()
-    pid = None
+    pids = []
     try:
         await db.execute("PRAGMA foreign_keys = ON")
-        async with db.execute("SELECT id FROM word_pool WHERE norwegian = ?", (key,)) as cur:
-            r = await cur.fetchone()
-            pid = r["id"] if r else None
-        await db.execute("DELETE FROM word_pool WHERE norwegian = ?", (key,))
+        if pool_id:
+            sel, args = "SELECT id FROM word_pool WHERE id = ? AND norwegian = ?", (pool_id, key)
+        else:
+            sel, args = "SELECT id FROM word_pool WHERE norwegian = ?", (key,)
+        async with db.execute(sel, args) as cur:
+            pids = [r["id"] for r in await cur.fetchall()]
+        if pids:
+            marks = ",".join("?" for _ in pids)
+            await db.execute(f"DELETE FROM word_pool_compounds WHERE pool_id IN ({marks})", pids)
+            await db.execute(f"DELETE FROM word_pool WHERE id IN ({marks})", pids)
         await db.execute(
             "DELETE FROM query_cache WHERE query LIKE ? OR response LIKE ? OR response LIKE ?",
             (f"%{key}%", f"%{key}%", f"%{norwegian}%"),
@@ -1196,12 +1209,19 @@ async def delete_pool_word(norwegian: str):
         await db.commit()
     finally:
         await _release(db)
-    await vec_delete(pid)  # убрать из ANN-индекса
-    _invalidate_candidates()  # слово больше не должно всплывать в «похожих»
-    if pid:
-        try:                          # убрать из резидентного кеша эмбеддингов (дистракторы)
+    for pid in pids:
+        await vec_delete(pid)     # убрать из ANN-индекса — КАЖДУЮ удалённую запись
+    _invalidate_candidates()      # слово больше не должно всплывать в «похожих»
+    for pid in pids:
+        try:                      # убрать из резидентного кеша эмбеддингов (дистракторы)
             import embcache
             embcache.remove_vec(pid)
+        except Exception:
+            pass
+    if pids:
+        try:                      # индекс частей композитов потерял строки → сбросить TTL-кеш
+            from .compound_index import invalidate
+            invalidate()
         except Exception:
             pass
 

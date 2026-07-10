@@ -141,9 +141,11 @@ async def pool_topics(user=Depends(get_current_user)):
 
 
 @router.delete("/admin/pool/{word}")
-async def admin_delete_word(word: str, user=Depends(get_admin_user)):
-    """Полностью удалить слово из общего пула (у всех + кэш + ANN-индекс). Только админ."""
-    await delete_pool_word(word)
+async def admin_delete_word(word: str, pool_id: int = None, user=Depends(get_admin_user)):
+    """Полностью удалить слово из общего пула (у всех + кэш + ANN-индекс). Только админ.
+    pool_id — ТОЧНАЯ запись омонима (карточка, из которой жмут «Удалить»): без него сносились
+    ВСЕ омонимы написания (удаляя предлог `mot`, теряли и существительное «мужество»)."""
+    await delete_pool_word(word, pool_id=pool_id)
     return {"ok": True}
 
 
@@ -400,10 +402,12 @@ async def pool_description(word: str, model: str = None, pool_id: int = None, us
 
 
 @router.post("/pool/{word}/redescribe")
-async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(llm_rate_limit)):
+async def pool_redescribe(word: str, body: RedescribeBody, pool_id: int = None, user=Depends(llm_rate_limit)):
     """Перегенерировать описание слова (при неверном) с учётом подсказки пользователя
-    о правильном значении. Перезаписывает кэш описания в общем пуле."""
-    pid = await get_pool_id(word)
+    о правильном значении. Перезаписывает кэш описания в общем пуле.
+    pool_id — ТОЧНАЯ запись омонима (как у /description, /synonyms, /meta): без него бралась
+    старшая по id, и правка описания сущ. `mot` («мужество») затирала описание предлога `mot`."""
+    pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
     hint = (body.hint or "").strip()
@@ -421,10 +425,12 @@ async def pool_redescribe(word: str, body: RedescribeBody, user=Depends(llm_rate
 
 
 @router.post("/pool/{word}/ask")
-async def pool_ask(word: str, body: AskBody, user=Depends(llm_rate_limit)):
+async def pool_ask(word: str, body: AskBody, pool_id: int = None, user=Depends(llm_rate_limit)):
     """Свободный вопрос пользователя о слове — нейросеть отвечает с учётом части речи и
-    переводов (контекст значения), кратко, на языке интерфейса."""
-    pid = await get_pool_id(word)
+    переводов (контекст значения), кратко, на языке интерфейса.
+    pool_id — ТОЧНАЯ запись омонима: без него контекст брался у старшей по id, и на вопрос про
+    сущ. `mot` («мужество») нейросеть отвечала про предлог `mot` («к/на»)."""
+    pid = pool_id or await get_pool_id(word)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
     q = (body.question or "").strip()
