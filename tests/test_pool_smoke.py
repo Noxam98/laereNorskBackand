@@ -50,8 +50,22 @@ async def test_get_pool_meta_homograph_by_pool_id(fresh_db):
     m_verb = await P.get_pool_meta("ro", pool_id=verb)
     assert m_noun["pool_id"] == noun and m_noun["part_of_speech"] == "noun"
     assert m_verb["pool_id"] == verb and m_verb["part_of_speech"] == "verb"
-    # без pool_id — первая по norwegian (обратная совместимость для навигации по лемме)
-    assert (await P.get_pool_meta("ro"))["pool_id"] in (noun, verb)
+    # без pool_id — ТА ЖЕ запись, что берут описание/синонимы (get_pool_id → ORDER BY id)
+    assert (await P.get_pool_meta("ro"))["pool_id"] == await P.get_pool_id("ro") == noun
+
+
+async def test_get_pool_meta_homograph_pick_matches_get_pool_id(fresh_db):
+    """Выбор омонима по умолчанию ЕДИНЫЙ во всех путях карточки. Регресс: get_pool_meta шёл по
+    уникальному индексу (norwegian, pos) и брал омонима по АЛФАВИТУ части речи ('noun' <
+    'preposition'), а описание/синонимы — через get_pool_id (ORDER BY id). Карточка `mot`
+    показывала описание предлога с переводом «мужество» и POS noun (120 слов из 274 омонимов)."""
+    prep = await _seed("mot", "к", pos="preposition")     # добавлен ПЕРВЫМ → меньший id
+    noun = await _seed("mot", "мужество", pos="noun")     # алфавитно 'noun' < 'preposition'
+    assert prep < noun
+    assert await P.get_pool_id("mot") == prep
+    m = await P.get_pool_meta("mot")
+    assert m["pool_id"] == prep                            # не noun, несмотря на алфавит pos
+    assert m["part_of_speech"] == "preposition" and m["translate"]["ru"] == ["к"]
 
 
 async def test_queries(fresh_db):
