@@ -188,3 +188,64 @@ def test_race_int2no_lemma_only_without_forms():
     room = types.SimpleNamespace(settings={"answer": "type", "dir": "int2no", "source": "pool"}, host=p)
     item = {"no": "hund", "translate": {"ru": ["собака"]}, "pos": ""}   # нет forms, нет pos → ordbank пуст
     assert online._race_check(room, item, p, {"text": "hund"}) is True
+
+
+# ------------------------------------------------- гонка: падение → подъём (воспроизвести ответ)
+def _race_room(answer="type", dir_="int2no"):
+    """Комната-гонка с двумя словами и одним игроком на старте (без сокетов и БД)."""
+    ws = FakeWS([])
+    p = types.SimpleNamespace(ws=ws, lang="ru", user={"id": 1, "username": "u", "display_name": ""},
+                              animal="fox", race_queue=[0, 1], race_correct=0, race_state="neutral",
+                              race_rank=0, race_token=1, race_fallen=None, streak=0)
+    words = [{"no": "hund", "translate": {"ru": ["собака"]}, "pos": ""},
+             {"no": "katt", "translate": {"ru": ["кошка"]}, "pos": ""}]
+    room = types.SimpleNamespace(settings={"answer": answer, "dir": dir_, "source": "pool", "game": "race"},
+                                 host=p, players=[p], race_words=words, race_ranks=0,
+                                 race_over=asyncio.Event(), race_grace_task=None)
+    return room, p, ws
+
+
+async def test_race_wrong_answer_fells_animal_and_reveals_correct_word():
+    """Ошибка → зверь ЛЕЖИТ: сервер шлёт верный ответ и НЕ выдаёт следующее слово."""
+    room, p, ws = _race_room()
+    await online._race_answer(room, p, {"token": 1, "text": "неверно"})
+
+    res = next(m for m in ws.sent if m["type"] == "race_result")
+    assert res["correct"] is False and res["answer"] == "hund"   # показали верное слово
+    assert p.race_fallen is not None and p.race_state == "stalled"
+    assert not [m for m in ws.sent if m["type"] == "race_word"]   # следующее слово НЕ выдано
+    assert [m for m in ws.sent if m["type"] == "race_pos"][-1]["positions"][0]["fallen"] is True
+
+
+async def test_race_fallen_player_cannot_answer_next_word():
+    """Пока лежишь — обычные ответы не принимаются (нельзя «проехать» падение)."""
+    room, p, ws = _race_room()
+    await online._race_answer(room, p, {"token": 1, "text": "неверно"})
+    before = len(ws.sent)
+    await online._race_answer(room, p, {"token": 1, "text": "hund"})   # верный, но зверь лежит
+    assert len(ws.sent) == before and p.race_correct == 0
+
+
+async def test_race_recover_requires_correct_word_then_serves_next():
+    """Неверный подъём не поднимает; верный — поднимает и только тогда даёт следующее слово."""
+    room, p, ws = _race_room()
+    await online._race_answer(room, p, {"token": 1, "text": "неверно"})
+
+    await online._race_recover(room, p, {"token": 1, "text": "katt"})   # чужое слово
+    bad = [m for m in ws.sent if m["type"] == "race_recover"][-1]
+    assert bad["ok"] is False and p.race_fallen is not None
+    assert not [m for m in ws.sent if m["type"] == "race_word"]
+
+    await online._race_recover(room, p, {"token": 1, "text": "Hund "})  # верное (нормализуется)
+    good = [m for m in ws.sent if m["type"] == "race_recover"][-1]
+    assert good["ok"] is True and p.race_fallen is None and p.race_state == "restarting"
+    assert [m for m in ws.sent if m["type"] == "race_word"]             # поднялся → поехали дальше
+
+
+async def test_race_recover_does_not_award_progress():
+    """Подъём — обучающий шаг, а не очко: прогресс не растёт, слово вернулось в конец очереди."""
+    room, p, _ = _race_room()
+    await online._race_answer(room, p, {"token": 1, "text": "неверно"})
+    await online._race_recover(room, p, {"token": 1, "text": "hund"})
+    assert p.race_correct == 0
+    assert p.race_queue == [1, 0]      # промах уехал в конец, следующим идёт katt

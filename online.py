@@ -395,9 +395,12 @@ async def _build_race(room, cand, langs):
 
 
 def _race_positions(room):
+    # fallen — зверь ЛЕЖИТ и ждёт, пока игрок воспроизведёт верный ответ. Клиент по этому флагу
+    # держит анимацию падения (а не гасит её по таймеру), в т.ч. у соперников.
     return [{"id": p.user["id"], "name": _name(p.user), "animal": p.animal,
              "progress": getattr(p, "race_correct", 0), "total": len(room.race_words),
              "state": getattr(p, "race_state", "neutral"),
+             "fallen": bool(getattr(p, "race_fallen", None)),
              "finished": bool(getattr(p, "race_rank", 0)),
              "place": getattr(p, "race_rank", 0) or None} for p in room.players]
 
@@ -480,10 +483,23 @@ async def _race_grace(room):
     room.race_over.set()
 
 
+def _race_correct_text(room, item, p):
+    """Верный ответ СЛОВОМ — показываем упавшему игроку, чтобы он его воспроизвёл и поднял зверя."""
+    lang = _plang(room, p)
+    if room.settings["answer"] == "choice":
+        pl = _q_payload(item, 0, 1, lang, 0)
+        return pl["options"][_q_correct(item, lang)]
+    if room.settings["dir"] == "int2no":
+        return item["no"]
+    return (item["translate"].get(lang) or [""])[0]
+
+
 async def _race_answer(room, p, msg):
     """Обработка ответа игрока в гонке (вызывается из WS-цикла)."""
     if getattr(p, "race_rank", 0) or not getattr(p, "race_queue", None):
         return
+    if getattr(p, "race_fallen", None):
+        return   # зверь лежит — сначала подъём (race_recover), новые ответы не принимаем
     if msg.get("token") != getattr(p, "race_token", 0):
         return   # устаревший токен (двойной/запоздалый ответ) — игнор
     item = room.race_words[p.race_queue[0]]
@@ -501,17 +517,41 @@ async def _race_answer(room, p, msg):
             p.race_state = "moving"
         await _send(p.ws, {"type": "race_result", "correct": True, "token": p.race_token, "keys": rkeys})
     else:
-        p.race_queue.append(p.race_queue.pop(0))  # неверное слово — в конец очереди
+        # Ошибка → зверь ПАДАЕТ и лежит, пока игрок не воспроизведёт показанный верный ответ
+        # (race_recover). Слово при этом уходит в конец очереди — встретится ещё раз.
+        p.race_queue.append(p.race_queue.pop(0))
         p.race_state = "stalled"
-        await _send(p.ws, {"type": "race_result", "correct": False, "token": p.race_token, "keys": rkeys})
+        p.race_fallen = item
+        await _send(p.ws, {"type": "race_result", "correct": False, "token": p.race_token,
+                           "keys": rkeys, "answer": _race_correct_text(room, item, p)})
     await _race_broadcast(room)
-    if p.race_state != "finished":
-        await _race_serve(room, p)               # следующее слово → клиент «заводит» машину
+    # следующее слово — только если стоим на ногах (упавшему его выдаст _race_recover)
+    if not getattr(p, "race_fallen", None) and p.race_state != "finished":
+        await _race_serve(room, p)
     # условия завершения гонки
     if all(getattr(q, "race_rank", 0) for q in room.players):
         room.race_over.set()
     elif room.race_ranks >= 1 and getattr(room, "race_grace_task", None) is None:
         room.race_grace_task = asyncio.create_task(_race_grace(room))
+
+
+async def _race_recover(room, p, msg):
+    """Подъём упавшего зверя: игрок обязан воспроизвести показанный верный ответ (ввести/выбрать).
+    Проверяет СЕРВЕР — клиент лишь показывает слово, поэтому «поднять» обманом нельзя.
+    Не совпало — лежим дальше (можно пробовать сколько угодно, это обучающий шаг, не наказание)."""
+    item = getattr(p, "race_fallen", None)
+    if not item or getattr(p, "race_rank", 0):
+        return
+    if msg.get("token") != getattr(p, "race_token", 0):
+        return   # токен упавшего слова (новый ещё не выдан) — защита от запоздалых кадров
+    if not _race_check(room, item, p, msg):
+        await _send(p.ws, {"type": "race_recover", "ok": False, "token": p.race_token})
+        return
+    p.race_fallen = None
+    p.race_state = "restarting"                  # встал → клиент играет подъём
+    await _send(p.ws, {"type": "race_recover", "ok": True, "token": p.race_token})
+    await _race_broadcast(room)
+    await _race_serve(room, p)                   # и только теперь — следующее слово
 
 
 async def run_race(room):
@@ -542,6 +582,7 @@ async def run_race(room):
             p.race_state = "neutral"
             p.race_rank = 0
             p.race_token = 0
+            p.race_fallen = None    # зверь на ногах (иначе рестарт гонки унаследовал бы падение)
         for p in room.players:
             await _send(p.ws, {"type": "race_go", "total": len(words)})
         await _race_broadcast(room)
@@ -825,6 +866,11 @@ async def ws_online(ws: WebSocket):
                     room = me.room
                     if room.state == "playing":
                         await _race_answer(room, me, msg)
+
+                elif t == "race_recover" and me.room and me.room.settings["game"] == "race":
+                    room = me.room       # подъём упавшего зверя: воспроизвести верный ответ
+                    if room.state == "playing":
+                        await _race_recover(room, me, msg)
 
                 elif t == "answer":
                     room = me.room
