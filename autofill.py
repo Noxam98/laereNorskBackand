@@ -451,11 +451,13 @@ def _free_zipf():
 
 
 async def compound_index_loop():
-    """Наполняет обратный индекс частей составных слов (word_pool_compounds) из ordbank: идём
-    по пулу ВПЕРЁД по id (курсор в app_settings), новые слова подхватываются на следующих кругах.
-    Без LLM/сети — ordbank.compound() локальный lookup. Нужен для разблокировки композитов по
-    выученным основам (session/compounds + suggest_compounds)."""
-    from db import get_setting, set_setting, ordbank
+    """Наполняет обратный индекс частей составных слов (word_pool_compounds): идём по пулу
+    ВПЕРЁД по id (курсор в app_settings), новые слова подхватываются на следующих кругах.
+    Без LLM/сети — resolve_compound() локальный lookup (банк + уже сохранённый в data.compound
+    LLM-разбор). Нужен для разблокировки композитов по выученным основам
+    (session/compounds + suggest_compounds)."""
+    from db import get_setting, set_setting
+    from db.pool import resolve_compound
     from db.compound_index import pool_batch_after, set_pool_compounds
     await asyncio.sleep(30)
     while True:
@@ -468,7 +470,7 @@ async def compound_index_loop():
                 await asyncio.sleep(6 * 3600)   # весь пул пройден — редкая проверка новых слов
                 continue
             rows = [(pid, no, c["forledd"], c["etterledd"])
-                    for pid, no in batch if (c := ordbank.compound(no))]
+                    for pid, no, d in batch if (c := resolve_compound(no, d))]
             await set_pool_compounds(rows)
             await set_setting("compound_idx_cursor", str(batch[-1][0]))
         except Exception as e:

@@ -11,7 +11,7 @@ from db import (
     get_cached_query, cache_query, set_cached_query, update_pool_word, replace_pool_word,
     pending_words, pending_count, set_word_approval,
     reported_words, reported_count, resolve_report,
-    set_pool_forms, set_pool_meta, set_pool_compound,
+    set_pool_forms, set_pool_meta, set_pool_compound, resolve_compound,
 )
 from auth import get_current_user, get_admin_user, is_admin
 from ratelimit import llm_rate_limit, tts_rate_limit
@@ -492,12 +492,14 @@ async def pool_compound(word: str, pool_id: int = None, user=Depends(llm_rate_li
     """Разбор составного слова по запросу пользователя (LLM) — для слов, которых нет в ordbank
     leddanalyse. Валидный разбор пишем в data.compound (карточка покажет кликабельные части),
     «не составное» тоже помечаем проверенным (пункт меню исчезает, квота не жжётся повторно)."""
-    from db import ordbank
     key = normalize_word(word)
     pid = pool_id or await get_pool_id(key)
     if not pid:
         raise HTTPException(status_code=404, detail="Not in pool")
-    existing = ordbank.compound(key)   # авторитетный разбор банка — если есть, LLM не зовём
+    p = await get_pool_by_id(pid, user_id=user["id"])
+    # разбор уже есть (банк ИЛИ ранее сохранённый LLM) → отдаём его, LLM не зовём. Идёт через
+    # единый резолвер: прямой повторный POST на уже разобранное слово не жжёт квоту заново.
+    existing = resolve_compound(key, (p or {}).get("data"))
     if existing:
         return {"is_compound": True, "compound": existing}
     mark_activity()

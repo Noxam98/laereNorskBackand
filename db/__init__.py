@@ -34,7 +34,7 @@ from .pool import (
     pending_words, pending_count, set_word_approval,
     report_word, skip_word, reported_words, reported_count, resolve_report,
     set_pool_forms, pos_missing_forms, nouns_missing_countability, merge_pool_forms, countability_progress, set_pool_pos, pos_uncategorized, clear_nonformable_forms, clear_all_forms,
-    set_pool_compound,
+    set_pool_compound, resolve_compound,
 )
 from .cache import (
     get_cached_query, cache_query, set_cached_query, clear_query_cache, get_usage, get_usage_like, incr_usage,

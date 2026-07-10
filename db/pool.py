@@ -682,6 +682,28 @@ async def get_pool_topics_counts():
         await _release(db)
 
 
+def resolve_compound(norwegian: str, data: dict = None):
+    """ЕДИНСТВЕННАЯ точка правды по разбору составного слова. Порядок источников:
+      1. ordbank leddanalyse (авторитет, ~106k) — для слов, которые банк знает;
+      2. data.compound — LLM-разбор (ручной из карточки / генерация) для нюордов ВНЕ банка.
+    Форма ответа одна и та же ({forledd, fuge, etterledd, marked, parts}), поэтому вызывающему
+    всё равно, откуда пришёл разбор. Раньше фолбэк на data.compound знал ТОЛЬКО get_pool_meta,
+    а флешкарта и compound_index_loop звали ordbank.compound() напрямую — и не видели
+    LLM-разобранные слова. Все читатели обязаны идти через этот резолвер.
+    Банк НЕ копируем в users.db: ordbank.db пересобирается целиком (ordbank.yml + bank_repair),
+    копия стала бы протухающим зеркалом с обязанностью ре-импорта."""
+    from db import ordbank
+    c = ordbank.compound(norwegian)
+    if c:
+        return c
+    lc = (data or {}).get("compound")
+    if isinstance(lc, dict) and lc.get("forledd") and lc.get("etterledd"):
+        fl, el = lc["forledd"], lc["etterledd"]
+        return {"forledd": fl, "fuge": lc.get("fuge") or "", "etterledd": el,
+                "marked": None, "parts": [fl, el]}
+    return None
+
+
 async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
     """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле.
     inLearning — есть ли слово в Учёбе пользователя (в любом его словаре).
@@ -717,16 +739,7 @@ async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
                 (row["id"], user_id)) as cur:
                 in_learning = (await cur.fetchone()) is not None
         d = json.loads(row["data"]) if row["data"] else {}
-        from db import ordbank
-        # разбор составного слова: авторитетно из банка (leddanalyse), а для нюордов вне банка —
-        # фолбэк на разбор от LLM-генерации (data.compound, уже провалидирован normalize_word_item).
-        compound = ordbank.compound(key)
-        if compound is None:
-            lc = d.get("compound")
-            if isinstance(lc, dict) and lc.get("forledd") and lc.get("etterledd"):
-                compound = {"forledd": lc["forledd"], "fuge": lc.get("fuge") or "",
-                            "etterledd": lc["etterledd"], "marked": None,
-                            "parts": [lc["forledd"], lc["etterledd"]]}
+        compound = resolve_compound(key, d)   # банк → LLM-фолбэк (единый резолвер)
         # формы: сущ./глаг./прил. — из word_pool.forms (ordbank); местоимения/притяжательные форм в
         # колонке не имеют → берём курируемую парадигму (obj для личных, neuter/plural для притяж.),
         # чтобы карточка показывала формы ВСЕХ частей речи, у которых они есть в системе.

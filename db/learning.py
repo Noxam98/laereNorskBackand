@@ -1120,9 +1120,10 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
         )
         if mode == "study":
             # карточка-знакомство: если слово составное — доносим разбор для «ага»-момента
-            # (barn + hage), фронт покажет его на флешкарте. Локальный lookup банка, <1мс.
-            from db import ordbank
-            cw = ordbank.compound(e["row"]["norwegian"])
+            # (barn + hage), фронт покажет его на флешкарте. Единый резолвер: банк + LLM-фолбэк
+            # (иначе вручную разобранные слова вне банка на флешкарте частей не показывали).
+            from db.pool import resolve_compound
+            cw = resolve_compound(e["row"]["norwegian"], data)
             if cw:
                 el["compound"] = cw
         if mode == "order":

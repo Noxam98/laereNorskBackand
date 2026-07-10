@@ -26,13 +26,23 @@ def invalidate():
 
 
 async def pool_batch_after(after_id: int, limit: int = 300):
-    """Пул-слова с id > after_id (курсор compound_index_loop) → [(id, norwegian)]."""
+    """Пул-слова с id > after_id (курсор compound_index_loop) → [(id, norwegian, data)].
+    data нужна лупу для единого резолвера (db.pool.resolve_compound): без неё он видел бы
+    только банк и пропускал LLM-разобранные слова вне ordbank."""
+    import json
     db = await _conn()
     try:
         async with db.execute(
-                "SELECT id, norwegian FROM word_pool WHERE id > ? ORDER BY id LIMIT ?",
+                "SELECT id, norwegian, data FROM word_pool WHERE id > ? ORDER BY id LIMIT ?",
                 (after_id, limit)) as cur:
-            return [(r["id"], r["norwegian"]) for r in await cur.fetchall()]
+            out = []
+            for r in await cur.fetchall():
+                try:
+                    d = json.loads(r["data"]) if r["data"] else {}
+                except Exception:
+                    d = {}
+                out.append((r["id"], r["norwegian"], d))
+            return out
     finally:
         await _release(db)
 
