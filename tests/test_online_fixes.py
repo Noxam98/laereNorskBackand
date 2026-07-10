@@ -196,7 +196,7 @@ def _race_room(answer="type", dir_="int2no"):
     ws = FakeWS([])
     p = types.SimpleNamespace(ws=ws, lang="ru", user={"id": 1, "username": "u", "display_name": ""},
                               animal="fox", race_queue=[0, 1], race_correct=0, race_state="neutral",
-                              race_rank=0, race_token=1, race_fallen=None, streak=0)
+                              race_rank=0, race_token=1, race_fallen=None, streak=0, gone=False)
     words = [{"no": "hund", "translate": {"ru": ["собака"]}, "pos": ""},
              {"no": "katt", "translate": {"ru": ["кошка"]}, "pos": ""}]
     room = types.SimpleNamespace(settings={"answer": answer, "dir": dir_, "source": "pool", "game": "race"},
@@ -240,6 +240,77 @@ async def test_race_recover_requires_correct_word_then_serves_next():
     good = [m for m in ws.sent if m["type"] == "race_recover"][-1]
     assert good["ok"] is True and p.race_fallen is None and p.race_state == "restarting"
     assert [m for m in ws.sent if m["type"] == "race_word"]             # поднялся → поехали дальше
+
+
+# ------------------------------------------------- реконнект: слот и состояние держатся в игре
+def _player(uid, ws=None, **kw):
+    p = types.SimpleNamespace(ws=ws or FakeWS([]), lang="ru", gone=False, reap=None, ready=False,
+                              user={"id": uid, "username": f"u{uid}", "display_name": ""},
+                              animal="fox", score=0, streak=0, room=None,
+                              race_queue=[0, 1], race_correct=0, race_state="neutral",
+                              race_rank=0, race_token=1, race_fallen=None)
+    for k, v in kw.items():
+        setattr(p, k, v)
+    return p
+
+
+def test_transplant_carries_game_state_to_new_socket():
+    """Возврат = новый объект Player: всё нажитое (счёт/очередь/упавший зверь) должно переехать."""
+    old = _player(1, race_correct=3, race_queue=[2, 0], race_rank=0, score=770, streak=4,
+                  race_fallen={"no": "hund"}, race_token=9, animal="lynx")
+    new = _player(1)
+    online._transplant(old, new)
+    assert new.race_correct == 3 and new.race_queue == [2, 0] and new.score == 770
+    assert new.streak == 4 and new.race_fallen == {"no": "hund"} and new.race_token == 9
+    assert new.animal == "lynx"
+
+
+def test_live_skips_disconnected_players():
+    """Отвалившийся в окне реконнекта не подвешивает раунд/гонку: условия считаются по живым."""
+    a, b = _player(1), _player(2, gone=True)
+    room = types.SimpleNamespace(players=[a, b])
+    assert online._live(room) == [a]
+
+
+async def test_drop_in_lobby_removes_but_in_game_keeps_slot(monkeypatch):
+    """В лобби обрыв = выход. В игре — слот держится (gone), состояние живо, ждём реконнекта."""
+    monkeypatch.setattr(online, "_broadcast_rooms", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(online, "_send_room", lambda r: asyncio.sleep(0))
+    monkeypatch.setattr(online, "RECONNECT_GRACE", 30)
+
+    p = _player(1, race_correct=2)
+    lobby = types.SimpleNamespace(id="r1", state="lobby", players=[p], host=p, task=None,
+                                  settings={"game": "race", "maxPlayers": 4})
+    p.room = lobby
+    online._rooms["r1"] = lobby
+    await online._drop(p)
+    assert p.room is None and p.gone is False and lobby.players == []   # лобби: обычный выход
+
+    q = _player(2, race_correct=5)
+    other = _player(3)
+    game = types.SimpleNamespace(id="r2", state="playing", players=[q, other], host=q, task=None,
+                                 settings={"game": "race", "maxPlayers": 4},
+                                 race_over=asyncio.Event(), race_words=[1, 2])
+    q.room = game; other.room = game
+    online._rooms["r2"] = game
+    await online._drop(q)
+    try:
+        assert q.gone is True and q.room is game           # слот держим
+        assert q in game.players and q.race_correct == 5   # состояние живо
+        assert online._live(game) == [other]               # но раунд его не ждёт
+        assert q.reap is not None
+    finally:
+        q.reap.cancel()
+        online._rooms.pop("r2", None)
+
+
+async def test_race_positions_show_disconnected_as_dnf():
+    """Соперникам отвалившийся показывается «отключился», но прогресс и место сохранены."""
+    a = _player(1, race_correct=4, gone=True, race_fallen={"no": "hund"})
+    room = types.SimpleNamespace(players=[a], race_words=[1, 2, 3, 4, 5])
+    pos = online._race_positions(room)[0]
+    assert pos["state"] == "dnf" and pos["progress"] == 4
+    assert pos["fallen"] is False      # пока его нет — падение не мигает у соперников
 
 
 async def test_race_recover_does_not_award_progress():

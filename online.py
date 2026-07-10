@@ -39,6 +39,7 @@ COUNTDOWN = 5           # сек обратного отсчёта перед с
 REVEAL_PAUSE = 4        # сек показа таблицы между вопросами
 RACE_GRACE = 25         # сек «добивания» остальным после финиша лидера (гонка)
 RACE_MAX = 300          # предохранитель: жёсткий потолок длительности гонки
+RECONNECT_GRACE = 90    # сек: сколько держим слот и состояние отвалившегося игрока В ИГРЕ
 
 ANIMALS = ["fox", "hare", "reindeer", "wolf", "elk", "lynx"]  # бегуны гонки (выбор в лобби)
 
@@ -100,6 +101,10 @@ class Player:
         self.streak = 0     # верных ответов подряд (для бонуса и показа «🔥 N»)
         self.animal = None  # выбранный зверь для гонки
         self.room = None
+        # Разрыв связи В ИГРЕ не выкидывает из комнаты: слот и всё игровое состояние держатся
+        # RECONNECT_GRACE секунд, вернуться может ТОЛЬКО тот же user_id (см. _drop/_reap/rejoin).
+        self.gone = False
+        self.reap = None    # таск отложенного удаления
 
 
 class Room:
@@ -295,6 +300,7 @@ async def run_quiz(room):
             for p in room.players:
                 await _send(p.ws, {"type": "game_error", "msg": "not_enough_words"})
             return
+        room._questions = questions   # нужен _quiz_resync при возврате игрока после обрыва
         qtime = s["qtime"]
 
         for i, q in enumerate(questions):
@@ -399,8 +405,10 @@ def _race_positions(room):
     # держит анимацию падения (а не гасит её по таймеру), в т.ч. у соперников.
     return [{"id": p.user["id"], "name": _name(p.user), "animal": p.animal,
              "progress": getattr(p, "race_correct", 0), "total": len(room.race_words),
-             "state": getattr(p, "race_state", "neutral"),
-             "fallen": bool(getattr(p, "race_fallen", None)),
+             # gone — связь оборвалась, слот держим до конца окна реконнекта: соперникам
+             # показываем «отключился», но прогресс и место сохраняются (он может вернуться)
+             "state": "dnf" if getattr(p, "gone", False) else getattr(p, "race_state", "neutral"),
+             "fallen": bool(getattr(p, "race_fallen", None)) and not getattr(p, "gone", False),
              "finished": bool(getattr(p, "race_rank", 0)),
              "place": getattr(p, "race_rank", 0) or None} for p in room.players]
 
@@ -422,25 +430,28 @@ def _race_standings(room):
             for i, p in enumerate(ranked)]
 
 
-async def _race_serve(room, p):
-    """Отдать игроку текущее слово очереди (с новым токеном — против гонок/двойных ответов)."""
-    if not p.race_queue:
-        return
-    p.race_token += 1
-    item = room.race_words[p.race_queue[0]]
+def _race_word_msg(room, p, item):
+    """Сообщение race_word для конкретного item (токен уже увеличен вызывающим)."""
     s = room.settings
     lang = _plang(room, p)
     if s["answer"] == "choice":
         # #3: keys (норв. ключи) НЕ шлём в вопросе (в no2int keys.index(prompt) = ответ) — они уедут в race_result.
         pl = _q_payload(item, p.race_correct, len(room.race_words), lang, 0)
-        await _send(p.ws, {"type": "race_word", "token": p.race_token, "mode": "choice",
-                           "dir": pl["dir"], "prompt": pl["prompt"], "options": pl["options"],
-                           "i": p.race_correct, "total": len(room.race_words)})
-    else:
-        prompt = (item["translate"].get(lang) or [""])[0] if s["dir"] == "int2no" else item["no"]
-        await _send(p.ws, {"type": "race_word", "token": p.race_token, "mode": "type",
-                           "dir": s["dir"], "prompt": prompt,
-                           "i": p.race_correct, "total": len(room.race_words)})
+        return {"type": "race_word", "token": p.race_token, "mode": "choice",
+                "dir": pl["dir"], "prompt": pl["prompt"], "options": pl["options"],
+                "i": p.race_correct, "total": len(room.race_words)}
+    prompt = (item["translate"].get(lang) or [""])[0] if s["dir"] == "int2no" else item["no"]
+    return {"type": "race_word", "token": p.race_token, "mode": "type",
+            "dir": s["dir"], "prompt": prompt,
+            "i": p.race_correct, "total": len(room.race_words)}
+
+
+async def _race_serve(room, p):
+    """Отдать игроку текущее слово очереди (с новым токеном — против гонок/двойных ответов)."""
+    if not p.race_queue:
+        return
+    p.race_token += 1
+    await _send(p.ws, _race_word_msg(room, p, room.race_words[p.race_queue[0]]))
 
 
 def _race_accepted_no(item):
@@ -528,11 +539,42 @@ async def _race_answer(room, p, msg):
     # следующее слово — только если стоим на ногах (упавшему его выдаст _race_recover)
     if not getattr(p, "race_fallen", None) and p.race_state != "finished":
         await _race_serve(room, p)
-    # условия завершения гонки
-    if all(getattr(q, "race_rank", 0) for q in room.players):
+    # условия завершения гонки (по ЖИВЫМ: отвалившийся в окне реконнекта не подвешивает комнату)
+    live = _live(room)
+    if live and all(getattr(q, "race_rank", 0) for q in live):
         room.race_over.set()
     elif room.race_ranks >= 1 and getattr(room, "race_grace_task", None) is None:
         room.race_grace_task = asyncio.create_task(_race_grace(room))
+
+
+async def _race_resync(room, p):
+    """Вернуть игрока в идущую ГОНКУ после реконнекта: включить экран гонки, восстановить позиции
+    и текущее задание. Если зверь лежал — переиздаём слово, на котором упали (клиенту нужны его
+    варианты), и следом само падение с верным ответом: подъём продолжится с того же места."""
+    await _send(p.ws, {"type": "race_go", "total": len(room.race_words), "resync": True})
+    item = getattr(p, "race_fallen", None)
+    if item is not None:
+        p.race_token += 1
+        await _send(p.ws, _race_word_msg(room, p, item))
+        rkeys = _q_keys(item, _plang(room, p)) if room.settings["answer"] == "choice" else None
+        await _send(p.ws, {"type": "race_result", "correct": False, "token": p.race_token,
+                           "keys": rkeys, "answer": _race_correct_text(room, item, p)})
+    else:
+        await _race_serve(room, p)
+    await _race_broadcast(room)
+
+
+async def _quiz_resync(room, p):
+    """Вернуть игрока в идущий КВИЗ: текущий вопрос с ОСТАВШИМСЯ временем (раунд общий, ждать
+    нельзя). Ответ за пропущенное время не восстанавливаем — его просто нет."""
+    q = getattr(room, "_questions", None)
+    cur = getattr(room, "_cur", -1)
+    if not q or not (0 <= cur < len(q)) or getattr(room, "_qstart", None) is None:
+        return
+    left = room.settings["qtime"] - (time.monotonic() - room._qstart)
+    if left <= 0.5:
+        return   # раунд уже кончается — дождёмся следующего вопроса, он придёт сам
+    await _send(p.ws, _q_payload(q[cur], cur, len(q), _plang(room, p), int(left)))
 
 
 async def _race_recover(room, p, msg):
@@ -665,10 +707,71 @@ def _kick_ai(room):
 
 # ----------------------------- Подключения -----------------------------
 
+def _live(room):
+    """Игроки, чьё соединение живо: отвалившиеся (gone) не должны подвешивать раунд/гонку."""
+    return [p for p in room.players if not p.gone]
+
+
+# Поля, переезжающие на новое соединение вернувшегося игрока (всё, что нажито в этой игре).
+_TRANSPLANT = ("animal", "ready", "score", "streak",
+               "race_queue", "race_correct", "race_state", "race_rank", "race_token", "race_fallen")
+
+
+def _transplant(old, new):
+    """Перенести игровое состояние отвалившегося игрока на его НОВОЕ соединение (тот же user_id).
+    Объект Player создаётся на каждое подключение, поэтому старый слот заменяем новым, а не
+    переподвязываем сокет: остальной WS-цикл работает со своим `me`."""
+    for f in _TRANSPLANT:
+        if hasattr(old, f):
+            setattr(new, f, getattr(old, f))
+
+
+async def _drop(me):
+    """Соединение оборвалось. В ЛОББИ — обычный выход. В ИГРЕ — держим слот и всё состояние
+    (счёт/очередь гонки/упавшего зверя) RECONNECT_GRACE секунд: тот же user_id может вернуться
+    (rejoin) и продолжить с места. По истечении окна — обычный _leave."""
+    room = me.room
+    if not room or room.state != "playing":
+        await _leave(me)
+        return
+    me.gone = True
+    if me.reap:
+        me.reap.cancel()
+    me.reap = asyncio.create_task(_reap(me))
+    # ушедший не должен подвешивать комнату: пересчитываем условия завершения по ЖИВЫМ
+    if room.settings["game"] == "race" and getattr(room, "race_over", None):
+        await _race_broadcast(room)
+        live = _live(room)
+        if live and all(getattr(q, "race_rank", 0) for q in live):
+            room.race_over.set()
+    if room.settings["game"] == "quiz" and getattr(room, "_qevent", None):
+        live = _live(room)
+        if live and all(p.ws in room._answers for p in live):
+            room._qevent.set()
+    await _send_room(room)
+    await _broadcast_rooms()
+
+
+async def _reap(me):
+    """Окно реконнекта истекло — выкидываем игрока по-настоящему."""
+    try:
+        await asyncio.sleep(RECONNECT_GRACE)
+    except asyncio.CancelledError:
+        return
+    me.reap = None      # ДО _leave: иначе он отменит этот же таск, оборвав себя на первом await
+    async with _lock:
+        if me.gone and me.room:
+            await _leave(me)
+
+
 async def _leave(me):
     room = me.room
     if not room:
         return
+    if me.reap:
+        me.reap.cancel()
+        me.reap = None
+    me.gone = False
     me.room = None
     if me in room.players:
         room.players.remove(me)
@@ -688,12 +791,14 @@ async def _leave(me):
     # гонка: ушедший игрок не должен подвешивать комнату — пересчитываем условие финиша
     if room.state == "playing" and room.settings["game"] == "race" and getattr(room, "race_over", None):
         await _race_broadcast(room)
-        if all(getattr(q, "race_rank", 0) for q in room.players):
+        live = _live(room)
+        if live and all(getattr(q, "race_rank", 0) for q in live):
             room.race_over.set()
     # #10: quiz — если после ухода игрока ответили ВСЕ оставшиеся, завершаем вопрос досрочно
     # (условие all-answered раньше проверялось только в answer-хендлере → раунд ждал таймаут зря).
     if room.state == "playing" and room.settings["game"] == "quiz" and getattr(room, "_qevent", None):
-        if room.players and all(p.ws in room._answers for p in room.players):
+        live = _live(room)
+        if live and all(p.ws in room._answers for p in live):
             room._qevent.set()
     await _send_room(room)
     await _broadcast_rooms()
@@ -839,15 +944,55 @@ async def ws_online(ws: WebSocket):
                         me.lang = lang
 
                 elif t == "rejoin":
-                    # реконнект: фронт после обрыва просит вернуть в активную комнату по id.
-                    # Только лобби (в идущую игру чисто вернуть нельзя — ресинк вне охвата) → иначе
-                    # отправляем в браузер комнат. Дедуп по user_id: убираем застрявшую запись с
-                    # мёртвым сокетом (если старый _leave ещё не отработал), чтобы не задвоить игрока.
+                    # Реконнект: фронт после обрыва просит вернуть в комнату по id.
+                    #  • лобби — как раньше: занимаем свободный слот (дедуп по user_id, чтобы не
+                    #    задвоить игрока застрявшей записью с мёртвым сокетом);
+                    #  • идущая игра — возвращаем ТОЛЬКО того же user_id, чей слот держится
+                    #    (gone=True в окне RECONNECT_GRACE): переносим состояние на новый сокет
+                    #    и ресинкаем экран. Чужому/новому игроку в идущую игру — нельзя.
                     room = _rooms.get(msg.get("roomId"))
-                    if room and room.state == "lobby" and me.room is not room:
+                    resynced = False
+                    if room and room.state == "playing":
+                        async with _lock:
+                            old = next((p for p in room.players
+                                        if p.user["id"] == uid and p is not me), None)
+                            if old is not None:
+                                if me.room and me.room is not room:
+                                    await _leave(me)
+                                _transplant(old, me)          # счёт/очередь/упавший зверь → на новый сокет
+                                answers = getattr(room, "_answers", None)
+                                if answers and old.ws in answers:
+                                    answers[me.ws] = answers.pop(old.ws)   # ответ квиза привязан к ws
+                                if old.reap:
+                                    old.reap.cancel()
+                                    old.reap = None
+                                old.room = None
+                                room.players[room.players.index(old)] = me
+                                if room.host is old:
+                                    room.host = me
+                                me.room = room
+                                me.gone = False
+                                resynced = True
+                        if resynced:
+                            await _send_room(room)
+                            if room.settings["game"] == "race":
+                                await _race_resync(room, me)
+                            else:
+                                await _quiz_resync(room, me)
+                            await _broadcast_rooms()
+                    elif room and room.state == "lobby" and me.room is not room:
                         async with _lock:
                             if me.room:
                                 await _leave(me)
+                            # застрявшие записи того же юзера (мёртвый сокет / переживший игру gone):
+                            # снимаем их таск удаления и отвязываем от комнаты, иначе он позже
+                            # дёрнет _leave по чужой уже записи
+                            for stale in [p for p in room.players if p.user["id"] == uid]:
+                                if stale.reap:
+                                    stale.reap.cancel()
+                                    stale.reap = None
+                                stale.room = None
+                                stale.gone = False
                             room.players = [p for p in room.players if p.user["id"] != uid]
                             if len(room.players) < room.settings["maxPlayers"]:
                                 me.ready = False
@@ -857,9 +1002,8 @@ async def ws_online(ws: WebSocket):
                         if me.room is room:
                             await _send_room(room)
                             await _broadcast_rooms()
-                        else:
-                            await _send(ws, {"type": "left"})
-                    else:
+                            resynced = True
+                    if not resynced:
                         await _send(ws, {"type": "left"})
 
                 elif t == "answer" and me.room and me.room.settings["game"] == "race":
@@ -905,4 +1049,4 @@ async def ws_online(ws: WebSocket):
         if _conns[uid] <= 0:
             _conns.pop(uid, None)
         async with _lock:
-            await _leave(me)
+            await _drop(me)   # в игре — держим слот и состояние до конца окна реконнекта
