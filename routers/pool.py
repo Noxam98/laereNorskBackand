@@ -701,8 +701,9 @@ async def pool_rediff(body: RediffBody, user=Depends(llm_rate_limit)):
 
 
 @router.get("/pool/{word}/meta")
-async def pool_meta(word: str, pool_id: int = None, user=Depends(get_current_user)):
+async def pool_meta(word: str, pool_id: int = None, lang: str = None, user=Depends(get_current_user)):
     """Темы и уровень слова (для показа в карточке). pool_id — точная запись омонима (напр. `ro`
-    сущ./глаг.), иначе первая по norwegian."""
-    meta = await get_pool_meta(word, user_id=user["id"], pool_id=pool_id)
+    сущ./глаг.), иначе первая по norwegian. lang — язык переводов в дереве разбора композита."""
+    lg = lang if lang in LANG_SET else "ru"
+    meta = await get_pool_meta(word, user_id=user["id"], pool_id=pool_id, lang=lg)
     return meta or {"level": None, "topics": []}

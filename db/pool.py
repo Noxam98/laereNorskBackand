@@ -704,7 +704,54 @@ def resolve_compound(norwegian: str, data: dict = None):
     return None
 
 
-async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
+_COMPOUND_MAX_DEPTH = 5   # уровней разложения: реальные композиты редко глубже 3, 5 — с запасом
+
+
+async def _pool_data_of(db, norwegian: str):
+    """data слова из пула по лемме (для рекурсии дерева). Нет в пуле → None (разбор всё равно
+    возьмётся из банка, просто без перевода)."""
+    async with db.execute("SELECT data FROM word_pool WHERE norwegian = ? LIMIT 1", (norwegian,)) as cur:
+        r = await cur.fetchone()
+    if not r or not r["data"]:
+        return None
+    try:
+        return json.loads(r["data"])
+    except Exception:
+        return None
+
+
+def _node_tr(data, lang: str):
+    """До 2 переводов узла на языке интерфейса (фолбэк ru→en). Нет в пуле → []."""
+    tr = (data or {}).get("translate") or {}
+    arr = tr.get(lang) or tr.get("ru") or tr.get("en") or []
+    return [t for t in arr[:2] if t]
+
+
+async def compound_tree(db, norwegian: str, data: dict = None, lang: str = "ru",
+                        depth: int = _COMPOUND_MAX_DEPTH, seen=frozenset()):
+    """Рекурсивное дерево разбора составного слова: узел = {word, tr, fuge, children}.
+    children непусты ТОЛЬКО если слово составное (ветвление бинарное: forledd/etterledd),
+    fuge узла — соединитель между его детьми. Разбор каждого узла — через единый
+    resolve_compound (банк → LLM-фолбэк), поэтому вручную разобранные подслова тоже ветвятся.
+    Защита: лимит глубины + seen (часть == предок / взаимная ссылка в банке → не зацикливаемся)."""
+    node = {"word": norwegian, "tr": _node_tr(data, lang), "fuge": "", "children": []}
+    if depth <= 0:
+        return node
+    c = resolve_compound(norwegian, data)
+    if not c:
+        return node
+    node["fuge"] = c["fuge"]
+    seen2 = seen | {norwegian}
+    for part in (c["forledd"], c["etterledd"]):
+        if not part or part in seen2:      # цикл — обрываем ветку листом, без рекурсии
+            node["children"].append({"word": part, "tr": [], "fuge": "", "children": []})
+            continue
+        pdata = await _pool_data_of(db, part)
+        node["children"].append(await compound_tree(db, part, pdata, lang, depth - 1, seen2))
+    return node
+
+
+async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None, lang: str = "ru"):
     """Темы и уровень слова из пула (для показа в карточке). None — нет в пуле.
     inLearning — есть ли слово в Учёбе пользователя (в любом его словаре).
     ОМОНИМЫ: пул хранит отдельную запись на (norwegian, pos), поэтому по одному norwegian их бывает
@@ -740,6 +787,11 @@ async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None):
                 in_learning = (await cur.fetchone()) is not None
         d = json.loads(row["data"]) if row["data"] else {}
         compound = resolve_compound(key, d)   # банк → LLM-фолбэк (единый резолвер)
+        if compound:
+            # + рекурсивное дерево частей: подслово, которое само составное, ветвится дальше
+            # (карточка показывает это в попапе части). Плоские поля не трогаем — их читают
+            # cwSegs на фронте и флешкарта.
+            compound = {**compound, "children": (await compound_tree(db, key, d, lang))["children"]}
         # формы: сущ./глаг./прил. — из word_pool.forms (ordbank); местоимения/притяжательные форм в
         # колонке не имеют → берём курируемую парадигму (obj для личных, neuter/plural для притяж.),
         # чтобы карточка показывала формы ВСЕХ частей речи, у которых они есть в системе.

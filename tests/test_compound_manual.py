@@ -75,6 +75,46 @@ async def test_session_flashcard_gets_llm_compound(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_compound_tree_recurses_three_levels(fresh_db):
+    """Подслово, которое само составное, ветвится дальше: barnehagelærer → barnehage(+lærer),
+    а barnehage → barn(+e)+hage. Переводы узлов — на языке интерфейса."""
+    uid, did = await seed_user()
+    top, _ = await seed_word(did, "barnehagelærer", ru="воспитатель")
+    mid, _ = await seed_word(did, "barnehage", ru="детский сад")
+    await seed_word(did, "lærer", ru="учитель")
+    await seed_word(did, "barn", ru="ребёнок")
+    await seed_word(did, "hage", ru="сад")
+    await set_pool_compound(top, {"forledd": "barnehage", "fuge": "", "etterledd": "lærer"})
+    await set_pool_compound(mid, {"forledd": "barn", "fuge": "e", "etterledd": "hage"})
+
+    m = await get_pool_meta("barnehagelærer", user_id=uid, lang="ru")
+    kids = m["compound"]["children"]
+    assert [k["word"] for k in kids] == ["barnehage", "lærer"]
+    assert kids[1]["children"] == [] and kids[1]["tr"] == ["учитель"]     # lærer — лист
+    sub = kids[0]
+    assert sub["fuge"] == "e" and sub["tr"] == ["детский сад"]
+    assert [g["word"] for g in sub["children"]] == ["barn", "hage"]        # 3-й уровень
+    assert sub["children"][0]["tr"] == ["ребёнок"]
+    # плоские поля не сломаны (их читают cwSegs на фронте и флешкарта)
+    assert m["compound"]["parts"] == ["barnehage", "lærer"]
+
+
+@pytest.mark.asyncio
+async def test_compound_tree_guards_cycles(fresh_db):
+    """Часть, ссылающаяся на предка (кривой разбор), обрывается листом — без бесконечной рекурсии."""
+    uid, did = await seed_user()
+    xx, _ = await seed_word(did, "xx")
+    x, _ = await seed_word(did, "x")
+    await set_pool_compound(xx, {"forledd": "x", "fuge": "", "etterledd": "y"})
+    await set_pool_compound(x, {"forledd": "xx", "fuge": "", "etterledd": "z"})   # ссылка назад
+    m = await get_pool_meta("xx", user_id=uid, lang="ru")
+    xnode = m["compound"]["children"][0]
+    assert xnode["word"] == "x"
+    back = xnode["children"][0]
+    assert back["word"] == "xx" and back["children"] == []   # предок → лист
+
+
+@pytest.mark.asyncio
 async def test_pool_batch_after_carries_data(fresh_db):
     """compound_index_loop получает data — иначе резолвер видел бы только банк."""
     from db.compound_index import pool_batch_after
