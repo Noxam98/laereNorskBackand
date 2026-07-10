@@ -106,6 +106,24 @@ async def test_by_id_and_meta_hide_other_users_pending(fresh_db):
     assert (await get_pool_meta("hemmelig")) is not None      # внутренний вызов — не фильтруем
 
 
+async def test_search_pool_hides_other_users_pending(fresh_db):
+    """Автокомплит (search_pool) обязан чтить ту же видимость, что и список Базы. Регресс:
+    он читал word_pool без фильтра → чужое approved=0 приходило с inPool=True. Утекало само
+    существование чужих pending, а в Базе загоралась кнопка «Показать» на карточку, которой
+    в списке нет (список-то фильтрует)."""
+    from db.pool import search_pool
+    await _insert("hemmelig", ru="секрет", approved=0, created_by=OWNER)
+    await _insert("hus", ru="дом", approved=1)
+
+    def words(res):
+        return {x["word"] for x in res if x.get("inPool")}
+
+    assert "hemmelig" in words(await search_pool("hemmelig", 10, "ru", user_id=OWNER))       # автор видит своё
+    assert "hemmelig" not in words(await search_pool("hemmelig", 10, "ru", user_id=OTHER))   # чужой — нет
+    assert "hemmelig" not in words(await search_pool("hemmelig", 10, "ru"))                  # аноним — нет
+    assert "hus" in words(await search_pool("hus", 10, "ru", user_id=OTHER))                 # общая база — всем
+
+
 async def test_by_id_approved_word_visible_to_all(fresh_db):
     pid = await _insert("apen", ru="открытый", approved=1, created_by=OWNER)
     assert (await get_pool_by_id(pid, user_id=OTHER)) is not None   # общая база видна всем

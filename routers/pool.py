@@ -269,7 +269,8 @@ async def admin_neighbors(user=Depends(get_admin_user)):
 @router.get("/pool/search")
 async def pool_search(q: str, limit: int = 10, lang: str = None, user=Depends(get_current_user)):
     limit = max(1, min(50, limit))   # без клампа ?limit=-1 = LIMIT без ограничения (весь пул → DoS)
-    return {"results": await search_pool(q, limit, lang)}
+    # user_id обязателен: без него автокомплит отдавал чужие неодобренные слова (approved=0)
+    return {"results": await search_pool(q, limit, lang, user_id=user["id"])}
 
 
 _LEVELS = None
