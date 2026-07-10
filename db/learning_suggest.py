@@ -359,9 +359,12 @@ async def suggest_phrases(user_id, count=PHRASE_BUFFER, level=None):
         marks = ",".join("?" for _ in allowed)
         # 'A1'<'A2'<'B1'… лексикографически; DESC = БЛИЖЕ К УРОВНЮ первыми (B1-юзеру B1-фразы, а не A1-завал).
         # Младшие фразы допустимы (словосочетания), но идут В ХВОСТЕ, а не заваливают продвинутого.
+        # approved=1 — как в pool_by_freq/pool_by_freq_topics: фразы авто-подмешиваются в Учёбу
+        # ДРУГИМ юзерам, чужая неодобренная фраза не должна всплывать у них (и в OrderGame).
         async with db.execute(
             f"SELECT id, norwegian, data FROM word_pool "
-            f"WHERE pos='phrase' AND COALESCE(learn_excluded,0)=0 AND level IN ({marks}) "
+            f"WHERE pos='phrase' AND COALESCE(learn_excluded,0)=0 AND COALESCE(approved,1)=1 "
+            f"AND level IN ({marks}) "
             f"ORDER BY level DESC, id", allowed) as cur:
             cands = [dict(r) for r in await cur.fetchall()]
     finally:

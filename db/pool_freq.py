@@ -66,7 +66,10 @@ async def pool_by_freq_topics(limit: int, level, topics, up_to: bool = False):
     up_to=True — кумулятивно (уровни ≤ level), как в pool_by_freq."""
     if not topics:
         return []
-    conds, params = ["wp.data IS NOT NULL", "COALESCE(wp.learn_excluded, 0) = 0"], []
+    # approved=1 — как в pool_by_freq: подбор новых слов идёт ДРУГИМ юзерам, чужое неодобренное
+    # слово не должно всплывать у них в Учёбе (личное расширение видно только автору).
+    conds, params = ["wp.data IS NOT NULL", "COALESCE(wp.learn_excluded, 0) = 0",
+                     "COALESCE(wp.approved, 1) = 1"], []
     if level:
         if up_to and level in _CEFR:
             tiers = _CEFR[:_CEFR.index(level) + 1]

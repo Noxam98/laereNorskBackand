@@ -147,11 +147,25 @@ async def _owns_dict(db, user_id, dict_id):
         return (await cur.fetchone()) is not None
 
 
+async def _pool_visible(db, user_id, pool_id):
+    """Виден ли pool_id этому пользователю: общая база (approved=1) ИЛИ его собственное
+    неодобренное слово. Гейт на ПРИЁМНИКЕ pool_id: сток «добавить в словарь/набор» принимает
+    id прямо от клиента, а id последовательны — без проверки чужое approved=0 слово кладётся
+    в свой словарь перебором, после чего его содержимое читается внутренними (нефильтрующими)
+    путями сессии/карточки. Выдача (список/поиск/мета) слово прячет — приёмник обязан тоже."""
+    async with db.execute(
+        "SELECT 1 FROM word_pool WHERE id = ? AND (COALESCE(approved,1) = 1 OR created_by = ?) LIMIT 1",
+        (pool_id, user_id)) as cur:
+        return (await cur.fetchone()) is not None
+
+
 # Личные наборы («sets») вынесены в db/sets_data.py (реэкспорт в конце файла).
 async def add_word_to_dict(user_id: int, dict_id: int, pool_id: int):
     db = await _conn()
     try:
         if not await _owns_dict(db, user_id, dict_id):
+            return {"error": "Not found"}
+        if not await _pool_visible(db, user_id, pool_id):   # чужое approved=0 не кладём (см. _pool_visible)
             return {"error": "Not found"}
         try:
             cur = await db.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?, ?, ?)", (dict_id, pool_id, _now()))

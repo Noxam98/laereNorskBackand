@@ -5,7 +5,7 @@ CRUD набора + слова в нём + сборка слов набора с
 import json
 import aiosqlite
 from .core import _conn, _release, _now
-from .dictionaries import _owns_dict
+from .dictionaries import _owns_dict, _pool_visible
 
 
 # ---------------- личные наборы для изучения («sets» = словари с hidden=0) ----------------
@@ -41,6 +41,8 @@ async def add_words_to_set(user_id: int, set_id: int, pool_ids):
             return {"error": "Not found"}
         added = 0
         for pid in [int(p) for p in (pool_ids or []) if p]:
+            if not await _pool_visible(db, user_id, pid):   # чужое approved=0 в набор не кладём
+                continue
             try:
                 await db.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?, ?, ?)", (set_id, pid, _now()))
                 added += 1

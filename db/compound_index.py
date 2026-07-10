@@ -80,18 +80,24 @@ async def load_index():
         gen_before = _GEN
         db = await _conn()
         try:
+            # approved=1 ЖЁСТКО и на ЧТЕНИИ (index/learnable глобальны — их видят ВСЕ юзеры):
+            # чужой неодобренный композит иначе разблокировался бы в Учёбе у других (suggest_compounds).
+            # Фильтруем на чтении, а не при наполнении: аппрув слова включает его без переиндексации.
             async with db.execute(
                     "SELECT c.pool_id, c.norwegian, c.forledd, c.etterledd, COALESCE(w.freq,0) AS freq "
-                    "FROM word_pool_compounds c JOIN word_pool w ON w.id = c.pool_id") as cur:
+                    "FROM word_pool_compounds c JOIN word_pool w ON w.id = c.pool_id "
+                    "WHERE COALESCE(w.approved,1) = 1") as cur:
                 index = [{"pool_id": r["pool_id"], "no": r["norwegian"],
                           "forledd": (r["forledd"] or "").lower(),
                           "etterledd": (r["etterledd"] or "").lower(),
                           "freq": r["freq"]} for r in await cur.fetchall()]
             async with db.execute(
                     "SELECT DISTINCT p FROM ("
-                    "  SELECT LOWER(forledd) AS p FROM word_pool_compounds"
-                    "  UNION SELECT LOWER(etterledd) FROM word_pool_compounds) parts "
-                    "WHERE p IN (SELECT norwegian FROM word_pool)") as cur:
+                    "  SELECT LOWER(c.forledd) AS p FROM word_pool_compounds c "
+                    "    JOIN word_pool w ON w.id = c.pool_id WHERE COALESCE(w.approved,1) = 1"
+                    "  UNION SELECT LOWER(c.etterledd) FROM word_pool_compounds c "
+                    "    JOIN word_pool w ON w.id = c.pool_id WHERE COALESCE(w.approved,1) = 1) parts "
+                    "WHERE p IN (SELECT norwegian FROM word_pool WHERE COALESCE(approved,1) = 1)") as cur:
                 learnable = {r["p"] for r in await cur.fetchall()}
         finally:
             await _release(db)
@@ -118,10 +124,12 @@ async def compounds_unlocked_by(db, user_id, norwegian):
     key = (norwegian or "").strip().lower()
     if not key:
         return 0
-    # LOWER(): старые дампы клали части с заглавной, key всегда lower (иначе часть не матчит)
+    # LOWER(): старые дампы клали части с заглавной, key всегда lower (иначе часть не матчит).
+    # JOIN + approved=1: чужой неодобренный композит не считаем «открывшимся» (как в load_index).
     async with db.execute(
-            "SELECT pool_id, LOWER(forledd) AS forledd, LOWER(etterledd) AS etterledd "
-            "FROM word_pool_compounds WHERE LOWER(forledd) = ? OR LOWER(etterledd) = ?",
+            "SELECT c.pool_id, LOWER(c.forledd) AS forledd, LOWER(c.etterledd) AS etterledd "
+            "FROM word_pool_compounds c JOIN word_pool w ON w.id = c.pool_id "
+            "WHERE COALESCE(w.approved,1) = 1 AND (LOWER(c.forledd) = ? OR LOWER(c.etterledd) = ?)",
             (key, key)) as cur:
         rows = await cur.fetchall()
     if not rows:

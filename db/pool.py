@@ -504,9 +504,14 @@ async def get_pool_sample(limit: int = 120):
 
 
 async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = None):
-    """Случайные слова пула с переводами (для онлайн-игр). Фильтры: уровень CEFR, тема.
-    [{norwegian, translate{lang:[...]}, part_of_speech}]."""
-    conds, params = ["data IS NOT NULL"], []
+    """Случайные слова пула с переводами (для онлайн-игр и входного теста). Фильтры: уровень CEFR, тема.
+    [{norwegian, translate{lang:[...]}, part_of_speech}].
+
+    approved=1 ЖЁСТКО: это кросс-юзерный общий контент (вопросы викторины видят все игроки комнаты,
+    плейсмент — новички), единственного user_id тут нет, поэтому личные расширения (approved=0)
+    неуместны в принципе. Соседи-источники вопросов/дистракторов фильтруют так же (pool_by_freq,
+    get_pool_candidates, load_pool_embeddings, vec_nearest_rows)."""
+    conds, params = ["data IS NOT NULL", "COALESCE(approved,1) = 1"], []
     if level:
         conds.append("level = ?"); params.append(level)
     if topic:
@@ -940,13 +945,20 @@ async def get_pool_candidates():
 
 # --- Поддержка резидентного кеша эмбеддингов (embcache): дистракторы без живого KNN ---
 async def get_pool_words_by_ids(ids):
-    """{id: {norwegian, data(dict)}} по списку id — батч-загрузка слов-соседей для дистракторов."""
+    """{id: {norwegian, data(dict)}} по списку id — батч-загрузка слов-соседей для дистракторов.
+
+    approved=1 ЖЁСТКО: дистракторы — кросс-юзерный контент. Зеркальный путь vec_nearest_rows
+    (db/core.py) approved=0 отсекает, а сюда id приходят из резидентного embcache, куда вектор
+    approved=0 слова попадает синхронно при persist_pool (set_pool_embedding→update_vec) и живёт
+    до рестарта — без этого фильтра чужое неодобренное слово всплывало дистрактором."""
     if not ids:
         return {}
     marks = ",".join("?" for _ in ids)
     db = await _conn()
     try:
-        async with db.execute(f"SELECT id, norwegian, data FROM word_pool WHERE id IN ({marks})", list(ids)) as cur:
+        async with db.execute(
+                f"SELECT id, norwegian, data FROM word_pool "
+                f"WHERE id IN ({marks}) AND COALESCE(approved,1) = 1", list(ids)) as cur:
             return {r["id"]: {"norwegian": r["norwegian"],
                               "data": json.loads(r["data"]) if r["data"] else {}}
                     for r in await cur.fetchall()}
@@ -1319,10 +1331,13 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
             fids = await fuzzy_pool_ids(db, q, limit)
             if fids:
                 marks = ",".join("?" for _ in fids)
+                # видимость модерации — как в основном запросе и в семантическом фолбэке ниже:
+                # fuzzy_pool_ids строит индекс по ВСЕМУ пулу, включая чужие approved=0
+                fvis, fvparams = _vis_cond(user_id)
                 async with db.execute(
                     f"SELECT id, norwegian, data, level, forms, {has_tts_expr()} AS has_tts,"
                     f"(embedding IS NOT NULL) AS has_emb, (description IS NOT NULL) AS has_desc "
-                    f"FROM word_pool WHERE id IN ({marks})", fids,
+                    f"FROM word_pool WHERE id IN ({marks}) AND {fvis}", (*fids, *fvparams),
                 ) as cur:
                     frows = await cur.fetchall()
                 pos_order = {pid: n for n, pid in enumerate(fids)}  # сохранить порядок по fuzzy-скору
