@@ -693,6 +693,19 @@ async def _prepare_ai(room):
     await _send_room(room)
 
 
+def _ai_inputs(s):
+    """Поля настроек, ОПРЕДЕЛЯЮЩИЕ содержимое AI-набора: смена любого требует перегенерации.
+    Язык хоста тоже влияет, но он не меняется через настройки комнаты (фиксируется в _kick_ai)."""
+    return (s.get("source"), s.get("level"), s.get("topic"), s.get("count"))
+
+
+def _ai_needs_regen(old, new):
+    """Перегенерировать AI-набор при апдейте настроек ТОЛЬКО если новый источник — ai и изменился
+    вход подбора (источник/уровень/тема/кол-во). Имя/лимит игроков/время/приватность/тип игры набор
+    не трогают — иначе каждое сохранение настроек зря гоняло LLM (квота!) и сбрасывало готовность."""
+    return new.get("source") == "ai" and _ai_inputs(old) != _ai_inputs(new)
+
+
 def _kick_ai(room):
     """(Пере)запустить подготовку AI-набора. Сбрасывает готовность игроков (набор сменился)."""
     if room.ai_task and not room.ai_task.done():
@@ -886,12 +899,15 @@ async def ws_online(ws: WebSocket):
                     # менять настройки может только хост и только в лобби; хост при выходе
                     # владельца переназначается оставшемуся (см. _leave).
                     if room and room.host is me and room.state == "lobby":
+                        old = room.settings
                         room.settings = _norm_settings(msg.get("settings"))
                         nm = (msg.get("name") or "").strip()[:40]
                         if nm:
                             room.name = nm
                         if room.settings["source"] == "ai":
-                            _kick_ai(room)   # настройки сменились → перегенерировать набор
+                            # перегенерируем ТОЛЬКО при смене входа подбора (не на каждое сохранение)
+                            if _ai_needs_regen(old, room.settings):
+                                _kick_ai(room)
                         else:
                             if room.ai_task and not room.ai_task.done():
                                 room.ai_task.cancel()

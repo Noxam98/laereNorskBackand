@@ -242,6 +242,28 @@ async def test_race_recover_requires_correct_word_then_serves_next():
     assert [m for m in ws.sent if m["type"] == "race_word"]             # поднялся → поехали дальше
 
 
+# ------------------------------------------------- AI-набор: перегенерация только по входу подбора
+def test_ai_regen_only_on_relevant_settings_change():
+    """update_settings перезапускал генерацию на ЛЮБОЕ сохранение настроек AI-комнаты. Теперь —
+    только когда изменился вход подбора (источник/уровень/тема/кол-во)."""
+    S = online._norm_settings
+    base = S({"source": "ai", "level": "A1", "topic": "food", "count": 7, "game": "quiz"})
+
+    # неважные поля (тип игры/лимит/время/приватность/имя) — набор не трогаем
+    irrelevant = S({"source": "ai", "level": "A1", "topic": "food", "count": 7,
+                    "game": "race", "maxPlayers": 8, "qtime": 30, "private": True})
+    assert online._ai_needs_regen(base, irrelevant) is False
+
+    # уровень / тема / количество — перегенерируем
+    for chg in ({"level": "B2"}, {"topic": "travel"}, {"count": 12}):
+        assert online._ai_needs_regen(base, S({"source": "ai", "level": "A1", "topic": "food",
+                                               "count": 7, **chg})) is True
+
+    # включили AI из пула — перегенерируем; сменили AI на пул — нет (набор гасит ветка else)
+    assert online._ai_needs_regen(S({"source": "pool"}), base) is True
+    assert online._ai_needs_regen(base, S({"source": "pool"})) is False
+
+
 # ------------------------------------------------- реконнект: слот и состояние держатся в игре
 def _player(uid, ws=None, **kw):
     p = types.SimpleNamespace(ws=ws or FakeWS([]), lang="ru", gone=False, reap=None, ready=False,
