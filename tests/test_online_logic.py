@@ -33,6 +33,13 @@ def test_norm_settings_selected_words_are_unique_and_define_count():
     assert s["count"] == 2
     assert online._norm_settings({"source": "unknown"})["source"] == "pool"
 
+    d = online._norm_settings({
+        "source": "dict", "dictMode": "selected",
+        "dictPoolIds": list(range(1, 60)),
+    })
+    assert d["dictPoolIds"] == list(range(1, 41))
+    assert d["count"] == 40
+
 
 def test_word_inputs_track_only_word_composition():
     a = online._norm_settings({"source": "pool", "topic": "food", "count": 7})

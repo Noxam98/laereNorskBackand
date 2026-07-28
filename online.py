@@ -15,7 +15,10 @@ from collections import defaultdict
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from config import logger
 from auth import SECRET_KEY, ALGORITHM
-from db import get_user, get_pool_duel_words, get_online_words_by_ids, get_user_quiz_words, save_match, ordbank
+from db import (
+    get_user, get_pool_duel_words, get_online_words_by_ids,
+    get_user_quiz_words, get_user_quiz_words_by_ids, save_match, ordbank,
+)
 from llm import ranked_pool
 from fuzzy import word_forms   # поверхностные формы слова (лемма + словоформы) для приёма ответа гонки
 from ratelimit import _hit     # in-memory скользящее окно (кап частоты create поверх WS)
@@ -125,6 +128,7 @@ class Room:
         settings = dict(self.settings)
         if ws is not self.host.ws:
             settings.pop("poolIds", None)  # точный ручной список нужен только хосту для редактирования
+            settings.pop("dictPoolIds", None)
         return {"type": "room", "room": {
             "id": self.id, "name": self.name, "settings": settings, "state": self.state,
             "hostId": self.host.user["id"],
@@ -185,6 +189,9 @@ async def _candidates(room):
     if s["source"] == "selected":
         return await get_online_words_by_ids(s.get("poolIds"), room.host.user["id"])
     if s["source"] == "dict":    # слова из словарей хоста (конкретный по id или все)
+        if s.get("dictMode") == "selected":
+            return await get_user_quiz_words_by_ids(
+                room.host.user["id"], s.get("dictId"), s.get("dictPoolIds"))
         return await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
     return await get_pool_duel_words(n, s["level"], s["topic"])  # общий пул по фильтрам
 
@@ -664,6 +671,18 @@ def _live(room):
     return [p for p in room.players if not p.gone]
 
 
+async def _selection_valid(settings, user_id):
+    """Ручной состав должен содержать ≥3 реально доступных слова после серверной проверки."""
+    if settings["source"] == "selected":
+        words = await get_online_words_by_ids(settings["poolIds"], user_id)
+        return len(words) >= COUNT_MIN
+    if settings["source"] == "dict" and settings.get("dictMode") == "selected":
+        words = await get_user_quiz_words_by_ids(
+            user_id, settings.get("dictId"), settings.get("dictPoolIds"))
+        return len(words) >= COUNT_MIN
+    return True
+
+
 # Поля, переезжающие на новое соединение вернувшегося игрока (всё, что нажито в этой игре).
 _TRANSPLANT = ("animal", "ready", "score", "streak",
                "race_queue", "race_correct", "race_state", "race_rank", "race_token", "race_fallen")
@@ -799,7 +818,7 @@ async def ws_online(ws: WebSocket):
                         await _send(ws, {"type": "error", "msg": "rate_limited"})
                         continue
                     settings = _norm_settings(msg.get("settings"))
-                    if settings["source"] == "selected" and len(await get_online_words_by_ids(settings["poolIds"], uid)) < COUNT_MIN:
+                    if not await _selection_valid(settings, uid):
                         await _send(ws, {"type": "error", "msg": "not_enough_words"})
                         continue
                     async with _lock:
@@ -840,7 +859,7 @@ async def ws_online(ws: WebSocket):
                     # владельца переназначается оставшемуся (см. _leave).
                     if room and room.host is me and room.state == "lobby":
                         new = _norm_settings(msg.get("settings"))
-                        if new["source"] == "selected" and len(await get_online_words_by_ids(new["poolIds"], uid)) < COUNT_MIN:
+                        if not await _selection_valid(new, uid):
                             await _send(ws, {"type": "error", "msg": "not_enough_words"})
                             continue
                         old = room.settings

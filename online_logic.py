@@ -11,7 +11,7 @@ import math
 QUESTION_TIME = 15      # дефолт сек на вопрос (если не задано в настройках комнаты)
 MIN_PLAYERS = 2
 MAX_PLAYERS_CAP = 8
-COUNT_MIN, COUNT_MAX = 3, 20
+COUNT_MIN, COUNT_MAX = 3, 40
 QTIME_MIN, QTIME_MAX = 5, 30   # границы длительности вопроса
 GAME_KEYS = ("quiz", "race")   # допустимые типы игр; реестр-диспетчер GAMES (runner'ы) живёт в online.py
 
@@ -26,16 +26,27 @@ def _clamp(v, lo, hi, default):
 def _norm_settings(s):
     s = s or {}
     source = s.get("source") if s.get("source") in ("pool", "dict", "selected") else "pool"
-    pool_ids = []
-    for raw in s.get("poolIds") if isinstance(s.get("poolIds"), list) else []:
-        try:
-            pid = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if pid > 0 and pid not in pool_ids:
-            pool_ids.append(pid)
-        if len(pool_ids) >= COUNT_MAX:
-            break
+    def ids_of(key):
+        out = []
+        for raw in s.get(key) if isinstance(s.get(key), list) else []:
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if pid > 0 and pid not in out:
+                out.append(pid)
+            if len(out) >= COUNT_MAX:
+                break
+        return out
+
+    pool_ids = ids_of("poolIds")
+    dict_pool_ids = ids_of("dictPoolIds")
+    dict_mode = "selected" if s.get("dictMode") == "selected" else "random"
+    count = _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7)
+    if source == "selected":
+        count = len(pool_ids)
+    elif source == "dict" and dict_mode == "selected":
+        count = len(dict_pool_ids)
     return {
         "game": s.get("game") if s.get("game") in GAME_KEYS else "quiz",
         "answer": "choice" if s.get("answer") == "choice" else "type",  # гонка: печать / выбор из 4
@@ -43,10 +54,12 @@ def _norm_settings(s):
         "source": source,                                 # тема Базы / личный набор / ручной выбор
         "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
         "dictName": str(s.get("dictName") or "").strip()[:60],
+        "dictMode": dict_mode,
         "poolIds": pool_ids,
+        "dictPoolIds": dict_pool_ids,
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
-        "count": len(pool_ids) if source == "selected" else _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
+        "count": count,
         "qtime": _clamp(s.get("qtime"), QTIME_MIN, QTIME_MAX, QUESTION_TIME),
         "maxPlayers": _clamp(s.get("maxPlayers"), MIN_PLAYERS, MAX_PLAYERS_CAP, 4),
         "private": bool(s.get("private")),
@@ -55,8 +68,8 @@ def _norm_settings(s):
 
 def _word_inputs(s):
     """Поля, меняющие состав партии: при их правке готовность игроков нужно сбросить."""
-    return (s.get("source"), s.get("dictId"), s.get("level"), s.get("topic"), s.get("count"),
-            tuple(s.get("poolIds") or ()))
+    return (s.get("source"), s.get("dictId"), s.get("dictMode"), s.get("level"), s.get("topic"),
+            s.get("count"), tuple(s.get("poolIds") or ()), tuple(s.get("dictPoolIds") or ()))
 
 
 def _q_payload(q, i, total, lang, qtime):

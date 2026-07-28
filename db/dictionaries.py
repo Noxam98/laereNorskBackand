@@ -34,6 +34,48 @@ async def get_user_quiz_words(user_id: int, dict_id=None, limit: int = 80):
         await _release(db)
 
 
+async def get_user_quiz_words_by_ids(user_id: int, dict_id: int, pool_ids):
+    """Точный состав онлайн-партии из личного набора.
+
+    JOIN одновременно проверяет владельца набора и членство каждого pool_id; присланное клиентом
+    слово из другого набора или чужой приватной записи в игру не попадёт.
+    """
+    ids = []
+    for raw in pool_ids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0 and pid not in ids:
+            ids.append(pid)
+    if not ids or not dict_id:
+        return []
+    marks = ",".join("?" for _ in ids)
+    db = await _conn()
+    try:
+        async with db.execute(
+                f"SELECT wp.id, wp.norwegian, wp.data, wp.embedding, dw.override "
+                f"FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                f"JOIN word_pool wp ON wp.id = dw.pool_id "
+                f"WHERE d.user_id = ? AND d.id = ? AND wp.id IN ({marks})",
+                (user_id, dict_id, *ids)) as cur:
+            rows = {}
+            for r in await cur.fetchall():
+                base = json.loads(r["data"]) if r["data"] else {}
+                tr = dict(base.get("translate", {}) or {})
+                if r["override"]:
+                    ov = json.loads(r["override"])
+                    if ov.get("translate"):
+                        tr = {**tr, **ov["translate"]}
+                if tr:
+                    rows[r["id"]] = {"norwegian": r["norwegian"], "translate": tr,
+                                     "part_of_speech": base.get("part_of_speech", ""),
+                                     "embedding": r["embedding"]}
+            return [rows[pid] for pid in ids if pid in rows]
+    finally:
+        await _release(db)
+
+
 async def create_dictionary(user_id: int, name: str):
     name = (name or "").strip()
     if not name:
