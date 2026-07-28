@@ -12,6 +12,8 @@ from . import quota
 
 _llm_client = None
 _embed_client = None
+_NO_SAMPLING_MODELS = {"gemini-3.6-flash", "gemini-3.5-flash-lite"}
+_REASONING_EFFORT = {"gemini-3.6-flash": "low", "gemini-3.5-flash-lite": "minimal"}
 
 
 def get_client():
@@ -123,16 +125,22 @@ async def ask_model(system_prompt, user_prompt, model=None, api_key=None):
 async def ask_json(system_prompt, user_prompt, schema, purpose="user", label="LLM-запрос", model=None,
                    temperature=None, max_tokens=None):
     """Запрос с гарантированным JSON по схеме (structured output). Фолбэк — извлечение из текста.
-    purpose — профиль ("user" | "autofill"); model — override; temperature — для детерминизма
-    (0 = стабильный вывод, напр. грамм. формы). max_tokens — ВАЖНО для cloze: ограничивает вывод
-    (без него reasoning-модели зависают/обрезают JSON). Ключ/429 — внутри."""
+    purpose — профиль ("user" | "autofill"); model — override; temperature применяется только
+    к старым/сторонним моделям: новые Gemini sampling-параметры запретили. Для них явно задаём
+    низкий/minimal reasoning, чтобы короткие structured-output ответы не съедались размышлением.
+    max_tokens — ВАЖНО для cloze: ограничивает вывод (без него reasoning-модели
+    зависают/обрезают JSON). Ключ/429 — внутри."""
     msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    extra = {} if temperature is None else {"temperature": temperature}
-    if max_tokens is not None:
-        extra["max_tokens"] = max_tokens
 
     async def attempt(m, key):
         client = get_client().with_options(api_key=key or "not-needed")
+        extra = {}
+        if temperature is not None and m not in _NO_SAMPLING_MODELS:
+            extra["temperature"] = temperature
+        if m in _REASONING_EFFORT:
+            extra["reasoning_effort"] = _REASONING_EFFORT[m]
+        if max_tokens is not None:
+            extra["max_tokens"] = max_tokens
         try:
             resp = await client.chat.completions.create(
                 model=m or LLM_MODEL, messages=msgs,

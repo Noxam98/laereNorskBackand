@@ -8,11 +8,11 @@ import os
 # но дефолты — рабочие прод-значения, так что без env всё работает само.
 GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", GEMINI_OPENAI_URL)
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")   # основная текстовая модель
-USER_TEXT_MODEL = "gemini-3.1-flash-lite"                     # профиль user (интерактив: описания, генерация слов)
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")   # основная текстовая модель
+USER_TEXT_MODEL = "gemini-3.5-flash-lite"                     # профиль user (интерактив: описания, генерация слов)
 # Запасная модель: когда квота основной исчерпана (429 на всех ключах) — пробуем её
 # (по той же схеме ключей/аккаунтов). Можно переопределить через env.
-LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gemini-3.5-flash")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gemini-3.6-flash")
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", GEMINI_OPENAI_URL)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "gemini-embedding-2")
 

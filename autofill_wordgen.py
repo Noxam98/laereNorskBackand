@@ -1,6 +1,9 @@
 """Генерация и импорт слов в пул: по теме/уровню, по явному списку, OCR с фото; + восстановление «ё».
 Зависит только от db/llm/task (не от autofill); реэкспортируется в autofill для воркеров и роутеров.
 """
+import asyncio
+import json
+import os
 import random
 import re
 import errors
@@ -12,9 +15,9 @@ from llm import (
     WORDS_SCHEMA, normalize_word_item, apply_item_meta, LANG_NAMES, TOPIC_TAGS,
 )
 from db import (
-    get_or_create_pool, get_pool_id, get_pool_words_by_names,
+    get_or_create_pool, get_pool_id, get_pool_by_id, get_pool_words_by_names,
     get_import_pool_candidates,
-    set_pool_embedding, mark_sem_embed,
+    normalize_word, set_pool_embedding, mark_sem_embed, set_pool_forms, set_pool_meta,
 )
 
 
@@ -96,9 +99,9 @@ async def ai_game_words(lang, level, topic, count, on_phase=None, created_by=Non
     return await get_pool_words_by_names(names)
 
 
-# модель для генерации набора: 3.5-flash (качество) → фолбэк 3.1-flash-lite (если 429/нет квоты)
-SET_GEN_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
-VISION_MODELS = ["gemini-3.5-flash"]   # OCR/распознавание с фото — только vision-способная модель (не lite)
+# Генерация набора: сильная 3.6 Flash → дешёвый 3.5 Flash-Lite при 429/перегрузке.
+SET_GEN_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+VISION_MODELS = ["gemini-3.6-flash"]   # OCR важнее точность; Lite остаётся для массовых текстовых задач
 WORDS_ONLY_SCHEMA = {"name": "words", "schema": {"type": "object", "properties": {
     "words": {"type": "array", "items": {"type": "string"}}}, "required": ["words"]}}
 TEXT_ITEMS_SCHEMA = {"name": "import_items", "schema": {"type": "object", "properties": {
@@ -310,8 +313,121 @@ def _clean_import_items(items, limit=50):
     return out
 
 
+_LEVELS = None
+
+
+def _bank_level(word, pos):
+    """Уровень из опубликованного словника; грузим файл лениво только при новом слове из банка."""
+    global _LEVELS
+    if _LEVELS is None:
+        try:
+            path = os.path.join(os.path.dirname(__file__), "data", "levels-v1.json")
+            with open(path, encoding="utf-8") as src:
+                _LEVELS = json.load(src).get("levels", {})
+        except Exception:
+            _LEVELS = {}
+    return _LEVELS.get(f"{word}|{pos}")
+
+
+def _bank_candidate(word):
+    """Однозначное соответствие Ordbank: лемма либо словоформа → лемма.
+
+    Несколько частей речи/лемм не угадываем — такой случай остаётся AI, где перевод и контекст
+    помогают выбрать нужный омоним.
+    """
+    from db import ordbank
+
+    key = normalize_word(word)
+    direct = [(key, pos, ordbank.lookup(key, pos)) for pos in ("noun", "verb", "adjective")]
+    candidates = [(lemma, pos, forms) for lemma, pos, forms in direct if forms]
+    if not candidates:
+        candidates = [
+            (lemma, pos, ordbank.lookup(lemma, pos))
+            for lemma, pos in ordbank.exact_form(key)
+        ]
+        candidates = [(lemma, pos, forms) for lemma, pos, forms in candidates if forms]
+    unique = {(lemma, pos): forms for lemma, pos, forms in candidates}
+    if len(unique) != 1:
+        return None
+    (lemma, pos), forms = next(iter(unique.items()))
+    return {"input_key": key, "word": lemma, "pos": pos, "forms": forms}
+
+
+async def resolve_bank_words(items, lang="ru", created_by=None, concurrency=4):
+    """Разрешить список через штатную цепочку Ordbank/Lexin до обращения к AI.
+
+    Возвращает только однозначно разрешённые элементы. Lexin ограничен по параллельности, затем
+    новые записи и эмбеддинги сохраняются одной пачкой через тот же примитив, что AI-генерация.
+    """
+    entries = _clean_import_items(items, len(items or []) or 1)
+    gate = asyncio.Semaphore(max(1, min(int(concurrency or 1), 6)))
+
+    async def prepare(entry):
+        bank = _bank_candidate(entry["word"])
+        if not bank:
+            return None
+        pid = await get_pool_id(bank["word"], bank["pos"])
+        if pid:
+            current = await get_pool_by_id(pid, user_id=created_by)
+            if current:
+                return {
+                    **bank, "entry": entry, "pid": pid, "created": False, "source": "pool",
+                    "translate": current.get("translate", {}) or {},
+                }
+        provided = entry["translation"]
+        if provided:
+            translations, source = {lang: [provided]}, "ordbank"
+        else:
+            import lexin as lexin_live
+            async with gate:
+                translations = await lexin_live.lookup(bank["word"], bank["pos"])
+            source = "lexin"
+        if not translations:
+            return None
+        translations = {**translations, "no": [bank["word"]]}
+        if provided:
+            translations[lang] = [provided]
+        return {
+            **bank, "entry": entry, "pid": None, "created": None, "source": source,
+            "translate": translations,
+            "pool_item": {
+                "word": bank["word"], "part_of_speech": bank["pos"], "translate": translations,
+            },
+        }
+
+    prepared = [item for item in await asyncio.gather(*(prepare(entry) for entry in entries)) if item]
+    new_items = [item["pool_item"] for item in prepared if item.get("pool_item")]
+    details = await _persist_word_items(
+        new_items, len(new_items), created_by=created_by, approved=0, detailed=True,
+    ) if new_items else []
+    created_by_pid = {item["pid"]: bool(item["created"]) for item in details}
+
+    resolved = []
+    for item in prepared:
+        pid = item["pid"] or await get_pool_id(item["word"], item["pos"])
+        current = await get_pool_by_id(pid, user_id=created_by) if pid else None
+        if not current:
+            continue
+        if item.get("pool_item"):
+            await set_pool_forms(pid, item["forms"])
+            level = _bank_level(item["word"], item["pos"])
+            if level:
+                await set_pool_meta(pid, level=level)
+        resolved.append({
+            "input_key": item["input_key"],
+            "input": item["entry"]["word"],
+            "word": item["word"],
+            "pid": pid,
+            "created": created_by_pid.get(pid, False),
+            "source": item["source"],
+            "via_form": item["input_key"] if item["input_key"] != item["word"] else None,
+            "translate": current.get("translate", {}) or item["translate"],
+        })
+    return resolved
+
+
 async def import_words_from_list(words, lang="ru", limit=50, created_by=None):
-    """Переиспользовать однозначные слова пула до LLM, новые/омонимы обогатить пачками.
+    """Переиспользовать пул и Ordbank/Lexin до LLM, новые/омонимы обогатить пачками.
 
     Возвращает детальный отчёт: роут на его основе показывает частичный успех, а не закрывает
     импорт как полностью успешный после сбоя одной пачки.
@@ -341,6 +457,32 @@ async def import_words_from_list(words, lang="ru", limit=50, created_by=None):
                 }
         else:
             pending.append(item)
+
+    bank_resolved = {
+        item["input_key"]: item
+        for item in await resolve_bank_words(pending, lang=lang, created_by=created_by)
+    }
+    unresolved = []
+    for item in pending:
+        resolved = bank_resolved.get(normalize_word(item["word"]))
+        if not resolved:
+            unresolved.append(item)
+            continue
+        pid = resolved["pid"]
+        if pid not in seen:
+            seen.add(pid); pids.append(pid)
+            if resolved["created"]:
+                created += 1
+            else:
+                reused += 1
+        if item["translation"] and not resolved["created"]:
+            overrides[pid] = {
+                "translate": {
+                    **resolved["translate"],
+                    lang: [item["translation"]],
+                },
+            }
+    pending = unresolved
 
     lang_name = LANG_NAMES.get(lang, lang)
     for i in range(0, len(pending), 20):

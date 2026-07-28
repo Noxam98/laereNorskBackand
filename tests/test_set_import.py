@@ -3,7 +3,7 @@
 import httpx
 import pytest_asyncio
 
-from db import get_or_create_pool
+from db import get_or_create_pool, get_pool_by_id
 from tests.conftest import seed_user
 
 
@@ -119,3 +119,64 @@ async def test_import_deduplicates_before_processing(client, monkeypatch):
     assert r.json()["summary"]["added"] == 1
     word = r.json()["words"][0]
     assert word["translate"]["ru"] == ["машина"]
+
+
+async def test_import_uses_ordbank_lexin_before_llm(client, monkeypatch):
+    import autofill_wordgen
+    import lexin as lexin_live
+    from db import ordbank
+
+    forms = {"pos": "verb", "present": "går", "past": "gikk", "perfect": "har gått"}
+    monkeypatch.setattr(ordbank, "lookup",
+                        lambda word, pos: forms if (word, pos) == ("gå", "verb") else None)
+    monkeypatch.setattr(ordbank, "exact_form",
+                        lambda word: [("gå", "verb")] if word == "gikk" else [])
+
+    async def fake_lexin(word, pos):
+        assert (word, pos) == ("gå", "verb")
+        return {"ru": ["идти"], "en": ["go"]}
+
+    async def must_not_call(*_args, **_kwargs):
+        raise AssertionError("слово из Ordbank/Lexin не должно идти в LLM")
+
+    monkeypatch.setattr(lexin_live, "lookup", fake_lexin)
+    monkeypatch.setattr(autofill_wordgen, "ask_json", must_not_call)
+    monkeypatch.setattr(autofill_wordgen.llm, "embed_enabled", lambda: False)
+    c, _uid, did = client
+
+    r = await c.post(f"/sets/{did}/import-words", json={"words": ["gikk"], "lang": "ru"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["summary"]["created"] == 1
+    assert body["summary"]["failed"] == 0
+    assert body["words"][0]["norwegian"] == "gå"
+    assert body["words"][0]["translate"]["ru"] == ["идти"]
+    pool = await get_pool_by_id(body["words"][0]["pool_id"])
+    assert pool["forms"]["past"] == "gikk"
+
+
+async def test_import_pair_uses_ordbank_without_lexin_or_llm(client, monkeypatch):
+    import autofill_wordgen
+    import lexin as lexin_live
+    from db import ordbank
+
+    forms = {"pos": "noun", "gender": "ei", "def_sg": "boka"}
+    monkeypatch.setattr(ordbank, "lookup",
+                        lambda word, pos: forms if (word, pos) == ("bok", "noun") else None)
+    monkeypatch.setattr(ordbank, "exact_form", lambda _word: [])
+
+    async def must_not_call(*_args, **_kwargs):
+        raise AssertionError("готовая пара из Ordbank не должна обращаться к провайдеру")
+
+    monkeypatch.setattr(lexin_live, "lookup", must_not_call)
+    monkeypatch.setattr(autofill_wordgen, "ask_json", must_not_call)
+    monkeypatch.setattr(autofill_wordgen.llm, "embed_enabled", lambda: False)
+    c, _uid, did = client
+
+    r = await c.post(f"/sets/{did}/import-words", json={
+        "items": [{"word": "bok", "translation": "книга"}],
+        "lang": "ru",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["summary"]["created"] == 1
+    assert r.json()["words"][0]["translate"]["ru"] == ["книга"]

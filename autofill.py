@@ -37,7 +37,7 @@ from autofill_enrich import (  # noqa: E402,F401 — реэкспорт для �
 )
 from autofill_wordgen import (  # noqa: E402,F401 — реэкспорт для воркеров/роутеров
     ai_game_words, generate_set_words, words_from_image, words_from_text, words_from_list, restore_yo,
-    items_from_text, import_words_from_list, ImportProviderError,
+    items_from_text, import_words_from_list, resolve_bank_words, ImportProviderError,
     _persist_word_items, _embed_new,
 )
 
