@@ -6,6 +6,7 @@
 выкл → слова учатся только явно, кнопкой «Учить набор» (GET /sets/{id}/session).
 CRUD — тонкие обёртки над db.dictionaries (логика жива с Фазы 1, в Фазе 2 убрали лишь роуты)."""
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from auth import get_current_user
 from ratelimit import llm_rate_limit
 from activity import mark_activity
@@ -16,6 +17,27 @@ from db import (
 )
 
 router = APIRouter()
+
+
+class SetOcrBody(BaseModel):
+    image: str
+    hint: str = ""
+
+
+class SetParseTextBody(BaseModel):
+    text: str
+    hint: str = ""
+
+
+class SetImportItem(BaseModel):
+    word: str
+    translation: str = ""
+
+
+class SetImportBody(BaseModel):
+    words: list[str] = Field(default_factory=list)
+    items: list[SetImportItem] = Field(default_factory=list)
+    lang: str = "ru"
 
 
 def _bad(res):
@@ -146,48 +168,71 @@ def _parse_data_url(s):
 
 
 @router.post("/sets/{set_id}/ocr")
-async def sets_ocr(set_id: int, body: dict, user=Depends(llm_rate_limit)):
+async def sets_ocr(set_id: int, body: SetOcrBody, user=Depends(llm_rate_limit)):
     """Шаг 1 импорта с фото: распознать норвежские слова на изображении (Gemini vision).
     Возвращает ТОЛЬКО список слов — пользователь правит/удаляет, затем шлёт на /import-words.
     body: {image: data-URL|base64, hint?: уточнение промта}."""
     mark_activity()
     if (await get_set_words(user["id"], set_id)) is None:
         raise HTTPException(status_code=404, detail="Not found")
-    image = (body or {}).get("image")
+    image = body.image
     if not image:
         raise HTTPException(status_code=400, detail="No image")
     if not isinstance(image, str) or len(image) > 8_000_000:   # ~8 МБ base64 — не шлём в vision гигантские блобы
         raise HTTPException(status_code=413, detail="Image too large")
-    hint = (body or {}).get("hint") or ""
+    hint = body.hint
     if len(hint) > 500:                    # кап фритекста-подсказки в LLM-промпт
         raise HTTPException(status_code=413, detail="Hint too long")
     mime, b64 = _parse_data_url(image)
-    from autofill import words_from_image   # ленивый импорт — избегаем циклов на старте
-    return {"words": await words_from_image(b64, mime, hint)}
+    from autofill import ImportProviderError, words_from_image   # лениво — избегаем циклов на старте
+    try:
+        return {"words": await words_from_image(b64, mime, hint, limit=20)}
+    except ImportProviderError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @router.post("/sets/{set_id}/import-words")
-async def sets_import_words(set_id: int, body: dict, user=Depends(llm_rate_limit)):
+async def sets_import_words(set_id: int, body: SetImportBody, user=Depends(llm_rate_limit)):
     """Шаг 2 импорта с фото: отредактированный список слов → обогащение обычным генератором → в набор.
     body: {words: [str], lang?: язык переводов}."""
     mark_activity()
     if (await get_set_words(user["id"], set_id)) is None:
         raise HTTPException(status_code=404, detail="Not found")
     # кап на слово (≤80): не пускаем гигантский фритекст в LLM-промпт; общий список режет words_from_list (≤50)
-    words = [w for w in ((body or {}).get("words") or [])
-             if isinstance(w, str) and w.strip() and len(w.strip()) <= 80]
-    if not words:
+    raw = [item.model_dump() for item in body.items] if body.items else body.words
+    if len(raw) > 50:
+        raise HTTPException(status_code=413, detail="Too many words")
+    if any(len((item.get("word") if isinstance(item, dict) else item).strip()) > 80 for item in raw):
+        raise HTTPException(status_code=413, detail="Word too long")
+    if any(len(item.get("translation", "").strip()) > 240 for item in raw if isinstance(item, dict)):
+        raise HTTPException(status_code=413, detail="Translation too long")
+    if len(body.lang) > 10:
+        raise HTTPException(status_code=422, detail="Invalid language")
+    if not any((item.get("word") if isinstance(item, dict) else item).strip() for item in raw):
         raise HTTPException(status_code=400, detail="No words")
-    from autofill import words_from_list   # ленивый импорт — избегаем циклов на старте
+    from autofill import import_words_from_list   # ленивый импорт — избегаем циклов на старте
     # модерация: импортированные слова → в личное расширение автора (approved=0), не в общую Базу
-    pids = await words_from_list(words, (body or {}).get("lang") or "ru", created_by=user["id"])
-    if pids:
-        await add_words_to_set(user["id"], set_id, pids)
-    return {"words": await get_set_words(user["id"], set_id), "added": len(pids)}
+    report = await import_words_from_list(raw, body.lang or "ru", created_by=user["id"])
+    add = await add_words_to_set(user["id"], set_id, report["pool_ids"], report["overrides"])
+    summary = {
+        "requested": report["requested"],
+        "added": add.get("added", 0),
+        "already_in_set": add.get("already", 0),
+        "reused_from_pool": report["reused"],
+        "created": report["created"],
+        "skipped": add.get("not_visible", 0),
+        "failed": len(report["failed"]),
+    }
+    return {
+        "words": await get_set_words(user["id"], set_id),
+        "added": summary["added"],      # старый ключ сохраняем для совместимости фронтов
+        "summary": summary,
+        "failed": report["failed"],
+    }
 
 
 @router.post("/sets/{set_id}/parse-text")
-async def sets_parse_text(set_id: int, body: dict, user=Depends(llm_rate_limit)):
+async def sets_parse_text(set_id: int, body: SetParseTextBody, user=Depends(llm_rate_limit)):
     """Импорт из текста, шаг 1: вытащить норвежские слова из произвольного текста (чат-лог, список
     через запятую/перенос, строки «norsk — перевод», даже на другом языке без перевода). Возвращает
     ТОЛЬКО список слов — пользователь правит/удаляет, затем шлёт на /import-words (как с фото).
@@ -195,16 +240,20 @@ async def sets_parse_text(set_id: int, body: dict, user=Depends(llm_rate_limit))
     mark_activity()
     if (await get_set_words(user["id"], set_id)) is None:
         raise HTTPException(status_code=404, detail="Not found")
-    text = (body or {}).get("text")
-    if not isinstance(text, str) or not text.strip():
+    text = body.text
+    if not text.strip():
         raise HTTPException(status_code=400, detail="No text")
-    if len(text) > 20000:
+    if len(text) > 8000:
         raise HTTPException(status_code=413, detail="Text too large")
-    hint = (body or {}).get("hint") or ""
+    hint = body.hint
     if len(hint) > 500:                    # кап фритекста-подсказки в LLM-промпт
         raise HTTPException(status_code=413, detail="Hint too long")
-    from autofill import words_from_text   # ленивый импорт — избегаем циклов на старте
-    return {"words": await words_from_text(text, hint)}
+    from autofill import ImportProviderError, items_from_text   # лениво — избегаем циклов на старте
+    try:
+        items = await items_from_text(text, hint)
+    except ImportProviderError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"words": [item["word"] for item in items], "items": items}
 
 
 @router.post("/sets/{set_id}/reset")

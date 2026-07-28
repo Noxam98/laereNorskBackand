@@ -234,7 +234,8 @@ async def _lemma_redirect(db, key, pos):
     return cands[0] if len(cands) == 1 else None
 
 
-async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None, approved: int = 1):
+async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None, approved: int = 1,
+                             return_created: bool = False):
     """Вернуть id записи пула для (норвежское слово + часть речи), создав её при необходимости.
     Запись определяется парой (norwegian, pos) — омонимы (føde «еда»/«рожать») = разные записи.
     created_by/approved задаются только для НОВОЙ записи (существующую не трогаем — иначе можно
@@ -250,12 +251,12 @@ async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None,
         async with db.execute("SELECT id FROM word_pool WHERE norwegian = ? AND COALESCE(pos,'') = ?", (key, pos)) as cur:
             row = await cur.fetchone()
             if row:
-                return row["id"]
+                return (row["id"], False) if return_created else row["id"]
         # новое слово: если это ФОРМА существующей леммы (dager→dag, gir→gi) — привязываем к лемме,
         # дубль-форму не создаём (юзер всё равно получает слово — лемму из базы)
         lemma_id = await _lemma_redirect(db, key, pos)
         if lemma_id:
-            return lemma_id
+            return (lemma_id, False) if return_created else lemma_id
         # частотность проставляем СРАЗУ при создании — из корпус-лексикона (нет в нём → 0.0)
         cur = await db.execute(
             "INSERT INTO word_pool (norwegian, data, created_at, pos, created_by, approved, freq) "
@@ -268,7 +269,7 @@ async def get_or_create_pool(norwegian: str, data: dict, created_by: int = None,
             invalidate()
         except Exception:
             pass
-        return cur.lastrowid
+        return (cur.lastrowid, True) if return_created else cur.lastrowid
     finally:
         await _release(db)
 
@@ -554,6 +555,41 @@ async def get_pool_words_by_names(names):
                     tr = {}
                 if tr:
                     out.append({"norwegian": r["norwegian"], "translate": tr, "embedding": r["embedding"]})
+            return out
+    finally:
+        await _release(db)
+
+
+async def get_import_pool_candidates(user_id: int, names):
+    """Кандидаты для импорта по норвежскому написанию, сгруппированные по normalize_word.
+
+    Возвращаем только общие слова и личное расширение текущего пользователя. Один кандидат можно
+    переиспользовать без LLM; несколько кандидатов означают омонимы — часть речи должен уточнить LLM.
+    """
+    keys = list(dict.fromkeys(normalize_word(n) for n in (names or []) if normalize_word(n)))
+    if not keys:
+        return {}
+    marks = ",".join("?" for _ in keys)
+    db = await _conn()
+    try:
+        async with db.execute(
+            f"SELECT id, norwegian, pos, data FROM word_pool "
+            f"WHERE norwegian IN ({marks}) AND (COALESCE(approved, 1) = 1 OR created_by = ?)",
+            [*keys, user_id],
+        ) as cur:
+            out = {key: [] for key in keys}
+            for row in await cur.fetchall():
+                key = normalize_word(row["norwegian"])
+                try:
+                    data = json.loads(row["data"]) if row["data"] else {}
+                except Exception:
+                    data = {}
+                out.setdefault(key, []).append({
+                    "id": row["id"],
+                    "norwegian": row["norwegian"],
+                    "pos": row["pos"] or "",
+                    "translate": data.get("translate", {}) or {},
+                })
             return out
     finally:
         await _release(db)

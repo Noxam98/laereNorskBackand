@@ -2,6 +2,7 @@
 Зависит только от db/llm/task (не от autofill); реэкспортируется в autofill для воркеров и роутеров.
 """
 import random
+import re
 import errors
 import llm
 import runtime
@@ -12,6 +13,7 @@ from llm import (
 )
 from db import (
     get_or_create_pool, get_pool_id, get_pool_words_by_names,
+    get_import_pool_candidates,
     set_pool_embedding, mark_sem_embed,
 )
 
@@ -99,6 +101,15 @@ SET_GEN_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
 VISION_MODELS = ["gemini-3.5-flash"]   # OCR/распознавание с фото — только vision-способная модель (не lite)
 WORDS_ONLY_SCHEMA = {"name": "words", "schema": {"type": "object", "properties": {
     "words": {"type": "array", "items": {"type": "string"}}}, "required": ["words"]}}
+TEXT_ITEMS_SCHEMA = {"name": "import_items", "schema": {"type": "object", "properties": {
+    "items": {"type": "array", "items": {"type": "object", "properties": {
+        "word": {"type": "string"}, "translation": {"type": "string"},
+    }, "required": ["word", "translation"]}},
+}, "required": ["items"]}}
+
+
+class ImportProviderError(RuntimeError):
+    """Провайдер не обработал импорт: роут должен отличить это от честного пустого результата."""
 
 
 async def _embed_new(new_emb, on_phase=None):
@@ -115,27 +126,29 @@ async def _embed_new(new_emb, on_phase=None):
             await mark_sem_embed(pid)
 
 
-async def _persist_word_items(items, n, created_by=None, approved=1):
+async def _persist_word_items(items, n, created_by=None, approved=1, detailed=False):
     """Положить items (формат WORDS_SCHEMA) в общий пул: перевод/мета/эмбеддинги. → pool_id без дублей.
     created_by/approved пробрасываются в get_or_create_pool: пользовательские импорты/генерация кладут
     слова в личное расширение автора (approved=0), фоновые вызовы оставляют дефолт (approved=1)."""
-    pids, seen, new_emb = [], set(), []
+    pids, details, seen, new_emb = [], [], set(), []
     for it in items:
         if not (isinstance(it, dict) and it.get("word") and not it.get("error")):
             continue
-        existed = await get_pool_id(it["word"])
         data_item = normalize_word_item(it)
-        pid = await get_or_create_pool(it["word"], data_item, created_by=created_by, approved=approved)
+        pid, created = await get_or_create_pool(
+            it["word"], data_item, created_by=created_by, approved=approved, return_created=True,
+        )
         if not pid or pid in seen:
             continue
         await apply_item_meta(pid, it)
         seen.add(pid); pids.append(pid)
-        if not existed:
+        details.append({"pid": pid, "word": it["word"], "created": created})
+        if created:
             new_emb.append((pid, semantic_embed_text(data_item) or it["word"]))
         if len(pids) >= n:
             break
     await _embed_new(new_emb)   # вектора новым словам — чтобы сразу участвовали в подборе/похожих
-    return pids
+    return details if detailed else pids
 
 
 async def generate_set_words(topic, level, count, lang="ru", created_by=None):
@@ -178,7 +191,7 @@ async def words_from_image(image_b64, mime="image/jpeg", hint="", limit=30):
         data = await ask_json(sys, user, WORDS_ONLY_SCHEMA, purpose="user", model=VISION_MODELS, label="OCR слов с фото")
     except Exception as e:
         errors.report(e, "words_from_image")
-        return []
+        raise ImportProviderError("ocr_failed") from e
     raw = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
     out, seen = [], set()
     for w in raw:
@@ -189,6 +202,70 @@ async def words_from_image(image_b64, mime="image/jpeg", hint="", limit=30):
         if len(out) >= limit:
             break
     return out
+
+
+_PAIR_RE = re.compile(r"^\s*(?:[-*•]\s*)?(.{1,80}?)\s+(?:—|–|=)\s+(.{1,240}?)\s*$")
+
+
+def _explicit_text_items(text, limit=50):
+    """Без LLM разобрать чистый список «norsk — перевод», сохранив пользовательский перевод."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    items = []
+    for line in lines:
+        match = _PAIR_RE.match(line)
+        if not match:
+            return None
+        items.append({"word": match.group(1).strip(), "translation": match.group(2).strip()})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _clean_text_items(raw, limit=50):
+    out, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        word = (item.get("word") or "").strip()
+        translation = (item.get("translation") or "").strip()
+        key = word.lower()
+        if not word or key in seen:
+            continue
+        seen.add(key)
+        out.append({"word": word, "translation": translation})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def items_from_text(text, hint="", limit=50):
+    """Извлечь структурированные слова, не теряя явно указанный пользователем перевод."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    explicit = _explicit_text_items(text, limit)
+    if explicit is not None:
+        return _clean_text_items(explicit, limit)
+    sys = (
+        "Du rydder opp i en fritekstliste med gloser for en norskelever. "
+        "Returner hvert element som {word, translation}. word skal være norsk bokmål i grunnform. "
+        "For «X — Y», «X – Y» eller «X = Y» skal translation være Y NØYAKTIG som brukeren skrev den. "
+        "For norske ord uten oversettelse skal translation være en tom streng. Hvis listen bare er på "
+        "et annet språk, oversett ordet til norsk og behold originalen som translation. Ignorer navn, "
+        "tidsstempler, nummerering, lenker, rene symboler og duplikater."
+    )
+    extra = (hint or "").strip()
+    user = (f"{extra}\n\n" if extra else "") + f"Tekst:\n{text}"
+    try:
+        data = await ask_json(sys, user, TEXT_ITEMS_SCHEMA, purpose="user",
+                              model=SET_GEN_MODELS, label="разбор слов из текста")
+    except Exception as e:
+        errors.report(e, "items_from_text")
+        raise ImportProviderError("parse_failed") from e
+    raw = data.get("items", []) if isinstance(data, dict) else []
+    return _clean_text_items(raw, limit)
 
 
 async def words_from_text(text, hint="", limit=50):
@@ -196,39 +273,7 @@ async def words_from_text(text, hint="", limit=50):
     именами, списки через запятую/перенос, строки «norsk — перевод» (берём норвежскую сторону) и даже
     список на другом языке без перевода (тогда переводим на норвежский). Возвращает ТОЛЬКО список
     норвежских слов (без перевода) — дальше их обогащает words_from_list. hint — необязательное уточнение."""
-    text = (text or "").strip()
-    if not text:
-        return []
-    text = text[:8000]   # длинные простыни в LLM не шлём
-    sys = (
-        "Du er en assistent for norskelever som rydder opp i en fritekstliste med gloser. "
-        "Brukeren limer inn vilkårlig tekst: chatt-logg med tidsstempler og navn, punktlister, "
-        "ord skilt med komma eller linjeskift, ofte i formatet «norsk ord — oversettelse». "
-        "Trekk ut KUN glosene som skal læres, etter disse reglene: "
-        "1) Ignorer tidsstempler som [28.06.2026 08:02], avsendernavn (Oksana:), nummerering, "
-        "punkttegn, lenker og rene symboler/tall. "
-        "2) For en linje «X — Y» (også X – Y, X: Y, X = Y) er X selve glosen og Y oversettelsen — behold KUN X. "
-        "3) Gi hvert ord/uttrykk på NORSK (bokmål) i grunnform/oppslagsform. Hvis glosen ikke er norsk "
-        "(f.eks. en ren liste på russisk uten norsk), oversett den til norsk. "
-        "4) Ingen duplikater, ingen oversettelse, ingen forklaring — bare de norske ordene."
-    )
-    extra = (hint or "").strip()
-    user = (f"{extra}\n\n" if extra else "") + f"Tekst:\n{text}"
-    try:
-        data = await ask_json(sys, user, WORDS_ONLY_SCHEMA, purpose="user", model=SET_GEN_MODELS, label="разбор слов из текста")
-    except Exception as e:
-        errors.report(e, "words_from_text")
-        return []
-    raw = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    out, seen = [], set()
-    for w in raw:
-        w = w.strip() if isinstance(w, str) else ""
-        k = w.lower()
-        if w and k not in seen:
-            seen.add(k); out.append(w)
-        if len(out) >= limit:
-            break
-    return out
+    return [item["word"] for item in await items_from_text(text, hint, limit)]
 
 
 async def words_from_list(words, lang="ru", limit=50, created_by=None):
@@ -236,26 +281,127 @@ async def words_from_list(words, lang="ru", limit=50, created_by=None):
     НЕ выдумывает новых слов — только то, что в списке. Длинные списки (импорт текстом) обрабатываем
     пачками по 20 — размер, под который настроены модель/схема. Пользовательский импорт → личное
     расширение автора (approved=0, created_by=user), модерация до общей Базы. → список pool_id (без дублей)."""
-    words = [w for w in (words or []) if isinstance(w, str) and w.strip()][:limit]
-    if not words:
-        return []
+    report = await import_words_from_list(words, lang, limit, created_by)
+    return report["pool_ids"]
+
+
+def _clean_import_items(items, limit=50):
+    out, by_key = [], {}
+    for value in items or []:
+        if isinstance(value, str):
+            word, translation = value.strip(), ""
+        elif isinstance(value, dict):
+            word = (value.get("word") or "").strip()
+            translation = (value.get("translation") or value.get("provided_translation") or "").strip()
+        else:
+            continue
+        if not word or len(word) > 80:
+            continue
+        key = word.lower()
+        if key in by_key:
+            if translation and not by_key[key]["translation"]:
+                by_key[key]["translation"] = translation
+            continue
+        item = {"word": word, "translation": translation}
+        by_key[key] = item
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def import_words_from_list(words, lang="ru", limit=50, created_by=None):
+    """Переиспользовать однозначные слова пула до LLM, новые/омонимы обогатить пачками.
+
+    Возвращает детальный отчёт: роут на его основе показывает частичный успех, а не закрывает
+    импорт как полностью успешный после сбоя одной пачки.
+    """
+    entries = _clean_import_items(words, limit)
+    if not entries:
+        return {
+            "pool_ids": [], "requested": 0, "reused": 0, "created": 0,
+            "failed": [], "overrides": {},
+        }
+    candidates = await get_import_pool_candidates(created_by, [item["word"] for item in entries])
+    pids, seen, pending, failed = [], set(), [], []
+    overrides = {}
+    reused = created = 0
+    for item in entries:
+        matches = candidates.get(item["word"].lower(), [])
+        if len(matches) == 1:
+            pid = matches[0]["id"]
+            if pid not in seen:
+                seen.add(pid); pids.append(pid); reused += 1
+            if item["translation"]:
+                overrides[pid] = {
+                    "translate": {
+                        **matches[0]["translate"],
+                        lang: [item["translation"]],
+                    },
+                }
+        else:
+            pending.append(item)
+
     lang_name = LANG_NAMES.get(lang, lang)
-    pids, seen = [], set()
-    for i in range(0, len(words), 20):
-        chunk = words[i:i + 20]
-        lst = "; ".join(chunk)
-        prompt = (f"Вот ГОТОВЫЙ список норвежских слов (bokmål): {lst}. "
+    for i in range(0, len(pending), 20):
+        chunk = pending[i:i + 20]
+        lines = "\n".join(
+            f"- {item['word']}" + (f" — {item['translation']}" if item["translation"] else "")
+            for item in chunk
+        )
+        prompt = (f"Вот ГОТОВЫЙ список норвежских слов (bokmål):\n{lines}\n"
                   f"Для КАЖДОГО слова из списка дай перевод на язык: {lang_name}, часть речи и уровень CEFR, "
                   f"приведи к нормальной (словарной) форме. НЕ добавляй слов, которых нет в списке; "
-                  f"нераспознаваемое/не-норвежское — пропусти.")
+                  f"нераспознаваемое/не-норвежское — пропусти. Если после тире уже дан перевод, "
+                  f"сохрани его без перефразирования.")
         try:
             data = await ask_json(task, f"Текст запроса от пользователя: >>{prompt}<<", WORDS_SCHEMA,
                                   purpose="user", model=SET_GEN_MODELS, label="обогащение списка слов")
         except Exception as e:
             errors.report(e, "words_from_list")
+            failed.extend({
+                "word": item["word"], "translation": item["translation"], "reason": "provider_failed",
+            } for item in chunk)
             continue
         items = data.get("words", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        for pid in await _persist_word_items(items, len(chunk), created_by=created_by, approved=0):
+        translations = {item["word"].lower(): item["translation"] for item in chunk if item["translation"]}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            provided = translations.get((item.get("word") or "").strip().lower())
+            if provided:
+                item.setdefault("translate", {})[lang] = [provided]
+        details = await _persist_word_items(items, len(chunk), created_by=created_by,
+                                            approved=0, detailed=True)
+        for detail in details:
+            pid = detail["pid"]
             if pid not in seen:
                 seen.add(pid); pids.append(pid)
-    return pids
+                created += int(detail["created"])
+            provided = translations.get(detail["word"].strip().lower())
+            if provided and not detail["created"]:
+                known = next(
+                    (candidate for group in candidates.values() for candidate in group
+                     if candidate["id"] == pid),
+                    None,
+                )
+                overrides[pid] = {
+                    "translate": {
+                        **((known or {}).get("translate", {})),
+                        lang: [provided],
+                    },
+                }
+        if len(details) < len(chunk):
+            returned = {(item.get("word") or "").strip().lower() for item in items if isinstance(item, dict)}
+            missing = [item for item in chunk if item["word"].lower() not in returned]
+            failed.extend({
+                "word": item["word"], "translation": item["translation"], "reason": "not_recognized",
+            } for item in missing)
+    return {
+        "pool_ids": pids,
+        "requested": len(entries),
+        "reused": reused,
+        "created": created,
+        "failed": failed,
+        "overrides": overrides,
+    }

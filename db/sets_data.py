@@ -33,23 +33,38 @@ async def list_user_sets(user_id: int):
         await _release(db)
 
 
-async def add_words_to_set(user_id: int, set_id: int, pool_ids):
-    """Массово добавить слова пула в набор (дубли игнорируем). Возвращает {added}."""
+async def add_words_to_set(user_id: int, set_id: int, pool_ids, overrides=None):
+    """Массово добавить слова пула в набор с честными счётчиками результата."""
     db = await _conn()
     try:
         if not await _owns_dict(db, user_id, set_id):
             return {"error": "Not found"}
-        added = 0
+        added = already = not_visible = 0
+        seen = set()
         for pid in [int(p) for p in (pool_ids or []) if p]:
-            if not await _pool_visible(db, user_id, pid):   # чужое approved=0 в набор не кладём
+            if pid in seen:
                 continue
+            seen.add(pid)
+            if not await _pool_visible(db, user_id, pid):   # чужое approved=0 в набор не кладём
+                not_visible += 1
+                continue
+            override = (overrides or {}).get(pid) or (overrides or {}).get(str(pid))
+            override_json = json.dumps(override, ensure_ascii=False) if override else None
             try:
-                await db.execute("INSERT INTO dict_words (dict_id, pool_id, created_at) VALUES (?, ?, ?)", (set_id, pid, _now()))
+                await db.execute(
+                    "INSERT INTO dict_words (dict_id, pool_id, override, created_at) VALUES (?, ?, ?, ?)",
+                    (set_id, pid, override_json, _now()),
+                )
                 added += 1
             except aiosqlite.IntegrityError:
-                pass  # уже в наборе
+                already += 1
+                if override_json:
+                    await db.execute(
+                        "UPDATE dict_words SET override = ? WHERE dict_id = ? AND pool_id = ?",
+                        (override_json, set_id, pid),
+                    )
         await db.commit()
-        return {"ok": True, "added": added}
+        return {"ok": True, "added": added, "already": already, "not_visible": not_visible}
     finally:
         await _release(db)
 
@@ -76,7 +91,7 @@ async def get_set_words(user_id: int, set_id: int):
             return None
         from .learning import required_cells   # ленивый импорт — избегаем цикла на загрузке модуля
         async with db.execute("""
-            SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level,
+            SELECT wp.id AS pool_id, wp.norwegian, wp.data, wp.level, dw.override,
                    uw.mastered AS mastered, uw.correct AS correct, uw.incorrect AS incorrect,
                    uw.strength AS strength, uw.modes AS modes
             FROM dict_words dw
@@ -87,6 +102,11 @@ async def get_set_words(user_id: int, set_id: int):
             out = []
             for r in await cur.fetchall():
                 data = json.loads(r["data"]) if r["data"] else {}
+                if r["override"]:
+                    try:
+                        data = {**data, **(json.loads(r["override"]) or {})}
+                    except Exception:
+                        pass
                 attempts = (r["correct"] or 0) + (r["incorrect"] or 0)
                 status = "mastered" if r["mastered"] == 1 else ("learning" if attempts > 0 else "new")
                 try:
