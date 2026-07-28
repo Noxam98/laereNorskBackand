@@ -25,19 +25,38 @@ def _clamp(v, lo, hi, default):
 
 def _norm_settings(s):
     s = s or {}
+    source = s.get("source") if s.get("source") in ("pool", "dict", "selected") else "pool"
+    pool_ids = []
+    for raw in s.get("poolIds") if isinstance(s.get("poolIds"), list) else []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0 and pid not in pool_ids:
+            pool_ids.append(pid)
+        if len(pool_ids) >= COUNT_MAX:
+            break
     return {
         "game": s.get("game") if s.get("game") in GAME_KEYS else "quiz",
         "answer": "choice" if s.get("answer") == "choice" else "type",  # гонка: печать / выбор из 4
         "dir": "int2no" if s.get("dir") == "int2no" else "no2int",
-        "source": s.get("source") if s.get("source") in ("pool", "dict", "ai") else "pool",  # pool / словари хоста / AI-подбор
+        "source": source,                                 # тема Базы / личный набор / ручной выбор
         "dictId": int(s["dictId"]) if str(s.get("dictId") or "").isdigit() else None,  # None=все словари хоста
+        "dictName": str(s.get("dictName") or "").strip()[:60],
+        "poolIds": pool_ids,
         "level": (s.get("level") or "") or None,     # A1..C2 или None=любой
         "topic": (s.get("topic") or "") or None,     # ключ темы или None=любая
-        "count": _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
+        "count": len(pool_ids) if source == "selected" else _clamp(s.get("count"), COUNT_MIN, COUNT_MAX, 7),
         "qtime": _clamp(s.get("qtime"), QTIME_MIN, QTIME_MAX, QUESTION_TIME),
         "maxPlayers": _clamp(s.get("maxPlayers"), MIN_PLAYERS, MAX_PLAYERS_CAP, 4),
         "private": bool(s.get("private")),
     }
+
+
+def _word_inputs(s):
+    """Поля, меняющие состав партии: при их правке готовность игроков нужно сбросить."""
+    return (s.get("source"), s.get("dictId"), s.get("level"), s.get("topic"), s.get("count"),
+            tuple(s.get("poolIds") or ()))
 
 
 def _q_payload(q, i, total, lang, qtime):

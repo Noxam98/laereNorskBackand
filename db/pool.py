@@ -537,6 +537,45 @@ async def get_pool_duel_words(limit: int = 80, level: str = None, topic: str = N
         await _release(db)
 
 
+async def get_online_words_by_ids(ids, user_id: int):
+    """Слова ручной онлайн-подборки в заданном порядке.
+
+    Общие слова доступны всем; личное неодобренное слово — только его автору. Проверка нужна
+    повторно на сервере, даже если фронт получил id из авторизованного `/pool`.
+    """
+    ordered = []
+    for raw in ids or []:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0 and pid not in ordered:
+            ordered.append(pid)
+    if not ordered:
+        return []
+    marks = ",".join("?" for _ in ordered)
+    db = await _conn()
+    try:
+        async with db.execute(
+                f"SELECT id, norwegian, data, embedding FROM word_pool "
+                f"WHERE id IN ({marks}) AND (COALESCE(approved,1) = 1 OR created_by = ?)",
+                (*ordered, user_id)) as cur:
+            rows = {}
+            for r in await cur.fetchall():
+                try:
+                    data = json.loads(r["data"]) if r["data"] else {}
+                except Exception:
+                    data = {}
+                tr = data.get("translate", {}) or {}
+                if tr:
+                    rows[r["id"]] = {"norwegian": r["norwegian"], "translate": tr,
+                                     "part_of_speech": data.get("part_of_speech", ""),
+                                     "embedding": r["embedding"]}
+            return [rows[pid] for pid in ordered if pid in rows]
+    finally:
+        await _release(db)
+
+
 async def get_pool_words_by_names(names):
     """Слова пула по списку норвежских имён: [{norwegian, translate, embedding}] (для AI-набора)."""
     if not names:

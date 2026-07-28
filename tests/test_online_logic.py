@@ -27,6 +27,21 @@ def test_norm_settings_validates_and_clamps():
     assert online._norm_settings(None)["game"] == "quiz"        # None → дефолтные настройки
 
 
+def test_norm_settings_selected_words_are_unique_and_define_count():
+    s = online._norm_settings({"source": "selected", "poolIds": [8, "3", 8, -1, "bad"]})
+    assert s["poolIds"] == [8, 3]
+    assert s["count"] == 2
+    assert online._norm_settings({"source": "unknown"})["source"] == "pool"
+
+
+def test_word_inputs_track_only_word_composition():
+    a = online._norm_settings({"source": "pool", "topic": "food", "count": 7})
+    b = online._norm_settings({"source": "pool", "topic": "food", "count": 7, "qtime": 30})
+    c = online._norm_settings({"source": "pool", "topic": "travel", "count": 7})
+    assert online._word_inputs(a) == online._word_inputs(b)
+    assert online._word_inputs(a) != online._word_inputs(c)
+
+
 def test_q_correct_and_keys_by_direction():
     per_lang = {"per_lang": True, "correct": {"ru": "собака"}, "keys": {"ru": ["собака"]}}
     assert online._q_correct(per_lang, "ru") == "собака"

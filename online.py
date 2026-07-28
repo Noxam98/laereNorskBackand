@@ -15,20 +15,19 @@ from collections import defaultdict
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from config import logger
 from auth import SECRET_KEY, ALGORITHM
-from db import get_user, get_pool_duel_words, get_user_quiz_words, save_match, ordbank
+from db import get_user, get_pool_duel_words, get_online_words_by_ids, get_user_quiz_words, save_match, ordbank
 from llm import ranked_pool
-from autofill import ai_game_words
 from fuzzy import word_forms   # поверхностные формы слова (лемма + словоформы) для приёма ответа гонки
 from ratelimit import _hit     # in-memory скользящее окно (кап частоты create поверх WS)
 # Чистые правила игры (очки, нормализация ответа, кламп настроек, payload вопроса) — без сокетов.
 from online_logic import (
-    _clamp, _norm_settings, _q_payload, _q_correct, _q_keys, _gain, _norm_answer,
+    _clamp, _norm_settings, _word_inputs, _q_payload, _q_correct, _q_keys, _gain, _norm_answer,
     GAME_KEYS, QUESTION_TIME, MIN_PLAYERS, MAX_PLAYERS_CAP, COUNT_MIN, COUNT_MAX, QTIME_MIN, QTIME_MAX,
 )
 
 router = APIRouter()
 
-# --- Анти-абьюз (комнаты/AI жгут LLM-квоту): кап живых WS на юзера + кап частоты create. ---
+# --- Анти-абьюз: кап живых WS на юзера + кап частоты create. ---
 _MAX_CONNS_PER_USER = int(os.getenv("ONLINE_MAX_CONNS", "3"))   # ≤ N одновременных сокетов на юзера
 _CREATE_MAX = int(os.getenv("ONLINE_CREATE_MAX", "10"))         # ≤ N создаваний комнат
 _CREATE_WINDOW = int(os.getenv("ONLINE_CREATE_WINDOW", "60"))   # за окно (сек)
@@ -61,12 +60,8 @@ def _name(user):
     return (user.get("display_name") or "").strip() or user["username"]
 
 
-def _plang(room, p):
-    """Эффективный язык игрока для сборки вопроса/проверки. AI-набор переводится ТОЛЬКО на язык
-    хоста (см. _kick_ai/_candidates), поэтому AI-комната целиком играет на языке набора — иначе
-    джойнер другого языка отфильтровывал бы все слова (was: not_enough_words в разноязыких)."""
-    if room.settings["source"] == "ai":
-        return getattr(room, "ai_lang", None) or room.host.lang
+def _plang(_room, p):
+    """Язык конкретного игрока для вопроса и проверки ответа."""
     return p.lang
 
 
@@ -116,23 +111,23 @@ class Room:
         self.host = host
         self.state = "lobby"          # lobby | countdown | playing | ended
         self.task = None              # активная игра/отсчёт
-        self.ai_status = None         # для AI-комнаты: generating | indexing | ready | error
-        self.ai_words = None          # подготовленный набор слов (AI)
-        self.ai_task = None           # задача подготовки AI-набора
-        self.ai_lang = None           # язык, на который сгенерён AI-набор (фиксируется при _kick_ai)
 
     def summary(self):
         return {"id": self.id, "name": self.name, "game": self.settings["game"],
                 "answer": self.settings["answer"],
                 "players": len(self.players), "max": self.settings["maxPlayers"],
                 "level": self.settings["level"] or "", "topic": self.settings["topic"] or "",
+                "sourceName": self.settings.get("dictName") or "",
                 "count": self.settings["count"], "dir": self.settings["dir"], "state": self.state,
                 "qtime": self.settings["qtime"], "source": self.settings["source"], "private": self.settings["private"]}
 
     def detail_for(self, ws):
+        settings = dict(self.settings)
+        if ws is not self.host.ws:
+            settings.pop("poolIds", None)  # точный ручной список нужен только хосту для редактирования
         return {"type": "room", "room": {
-            "id": self.id, "name": self.name, "settings": self.settings, "state": self.state,
-            "hostId": self.host.user["id"], "aiStatus": self.ai_status,
+            "id": self.id, "name": self.name, "settings": settings, "state": self.state,
+            "hostId": self.host.user["id"],
             "players": [{"name": _name(p.user), "ready": p.ready, "score": p.score, "animal": p.animal,
                          "isHost": p is self.host, "isYou": p.ws is ws} for p in self.players],
         }}
@@ -184,13 +179,11 @@ async def _cancel_countdown(room):
 # ----------------------------- Источник слов (общий для quiz/race) -----------------------------
 
 async def _candidates(room):
-    """Кандидаты-слова под настройки комнаты: AI-набор (готов в лобби) / словари хоста / общий пул."""
+    """Кандидаты под настройки комнаты: ручной выбор / личный набор / тема общей Базы."""
     s = room.settings
     n = max(s["count"] * 8, 60)
-    if s["source"] == "ai":      # AI-подбор: набор уже подготовлен в лобби (_prepare_ai)
-        ai_lang = getattr(room, "ai_lang", None) or room.host.lang
-        return room.ai_words or await ai_game_words(ai_lang, s["level"], s["topic"], s["count"],
-                                                     created_by=room.host.user["id"], approved=0)
+    if s["source"] == "selected":
+        return await get_online_words_by_ids(s.get("poolIds"), room.host.user["id"])
     if s["source"] == "dict":    # слова из словарей хоста (конкретный по id или все)
         return await get_user_quiz_words(room.host.user["id"], s.get("dictId"), n)
     return await get_pool_duel_words(n, s["level"], s["topic"])  # общий пул по фильтрам
@@ -277,7 +270,7 @@ async def _build_quiz(cand, langs, count, direction):
 
 async def run_quiz(room):
     # #9: инициализируем _answers/_cur/_qstart/_qevent ДО playing — иначе answer c q:-1, пришедший
-    # пока готовится AI-набор, падал на отсутствии room._answers. #2: любой сбой раунда обязан
+    # пока готовятся вопросы, падал на отсутствии room._answers. #2: любой сбой раунда обязан
     # разморозить комнату — тело обёрнуто в try/finally с гарантированным _reset_to_lobby.
     room._answers = {}
     room._cur = -1
@@ -291,8 +284,8 @@ async def run_quiz(room):
             p.streak = 0
         await _broadcast_rooms()
         s = room.settings
-        langs = [_plang(room, room.host)] if s["source"] == "ai" else list({p.lang for p in room.players})
-        for p in room.players:   # пока готовим слова (особенно AI-подбор — несколько секунд)
+        langs = list({p.lang for p in room.players})
+        for p in room.players:
             await _send(p.ws, {"type": "preparing"})
         cand = await _candidates(room)
         questions = await _build_quiz(cand, langs, s["count"], s["dir"])
@@ -395,7 +388,7 @@ async def _build_race(room, cand, langs):
         if not all((w["translate"].get(l) or []) for l in langs):
             continue   # нужен перевод на всех языках комнаты (и для промпта, и для проверки)
         # pos — для приёма словоформ в int2no (ordbank-lookup, см. _race_accepted_no). У pool-слов
-        # он есть; у словарей/AI может отсутствовать (тогда примем только лемму).
+        # он есть; у личных наборов может отсутствовать (тогда примем только лемму).
         out.append({"no": w["norwegian"], "translate": w["translate"], "pos": w.get("part_of_speech", "")})
     return out
 
@@ -598,7 +591,7 @@ async def _race_recover(room, p, msg):
 
 async def run_race(room):
     # #2/#4: тело в try/finally — любой сбой раунда обязан разморозить комнату И отменить grace-таск
-    # (иначе CancelledError на race_over.wait минует cancel и таск сливает Gemini-квоту вхолостую).
+    # (иначе CancelledError на race_over.wait минует cancel и оставляет фоновый таск).
     room.race_grace_task = None
     room.race_over = asyncio.Event()
     room.state = "playing"
@@ -606,7 +599,7 @@ async def run_race(room):
     try:
         await _broadcast_rooms()
         s = room.settings
-        langs = [_plang(room, room.host)] if s["source"] == "ai" else list({p.lang for p in room.players})
+        langs = list({p.lang for p in room.players})
         for p in room.players:
             await _send(p.ws, {"type": "preparing"})
         cand = await _candidates(room)
@@ -662,60 +655,6 @@ async def run_race(room):
 # Реестр игр — добавлять новые типы сюда (ключ → корутина run(room)).
 GAMES = {"quiz": run_quiz, "race": run_race}   # тип игры → async-runner (диспетчер сокет-потока)
 assert set(GAMES) == set(GAME_KEYS), "GAMES (runner'ы) рассинхронились с GAME_KEYS (валидатор настроек)"
-
-
-# ----------------------------- AI-набор слов (готовится в лобби) -----------------------------
-
-async def _prepare_ai(room):
-    """Сгенерировать AI-набор слов в лобби с прогрессом: generating → indexing → ready.
-    «Готов»/старт заблокированы, пока статус не ready."""
-    s = room.settings
-
-    async def phase(p):
-        room.ai_status = p
-        await _send_room(room)
-
-    try:
-        room.ai_status = "generating"
-        await _send_room(room)
-        words = await ai_game_words(room.host.lang, s["level"], s["topic"], s["count"], on_phase=phase,
-                                    created_by=room.host.user["id"], approved=0)
-        if asyncio.current_task().cancelled():
-            return
-        room.ai_words = words
-        room.ai_status = "ready" if words else "error"
-    except asyncio.CancelledError:
-        return
-    except Exception as e:
-        logger.warning(f"_prepare_ai: {e}")
-        room.ai_status = "error"
-        room.ai_words = None
-    await _send_room(room)
-
-
-def _ai_inputs(s):
-    """Поля настроек, ОПРЕДЕЛЯЮЩИЕ содержимое AI-набора: смена любого требует перегенерации.
-    Язык хоста тоже влияет, но он не меняется через настройки комнаты (фиксируется в _kick_ai)."""
-    return (s.get("source"), s.get("level"), s.get("topic"), s.get("count"))
-
-
-def _ai_needs_regen(old, new):
-    """Перегенерировать AI-набор при апдейте настроек ТОЛЬКО если новый источник — ai и изменился
-    вход подбора (источник/уровень/тема/кол-во). Имя/лимит игроков/время/приватность/тип игры набор
-    не трогают — иначе каждое сохранение настроек зря гоняло LLM (квота!) и сбрасывало готовность."""
-    return new.get("source") == "ai" and _ai_inputs(old) != _ai_inputs(new)
-
-
-def _kick_ai(room):
-    """(Пере)запустить подготовку AI-набора. Сбрасывает готовность игроков (набор сменился)."""
-    if room.ai_task and not room.ai_task.done():
-        room.ai_task.cancel()
-    room.ai_words = None
-    room.ai_status = "generating"
-    room.ai_lang = room.host.lang   # #7: фиксируем язык набора — на нём и играет вся AI-комната
-    for p in room.players:
-        p.ready = False
-    room.ai_task = asyncio.create_task(_prepare_ai(room))
 
 
 # ----------------------------- Подключения -----------------------------
@@ -789,9 +728,8 @@ async def _leave(me):
     if me in room.players:
         room.players.remove(me)
     if not room.players:
-        # #4: гасим ВСЕ фоновые таски комнаты (не только game task) — иначе AI-генерация/окно
-        # добивания продолжают жечь Gemini-квоту после исчезновения комнаты.
-        for tsk in (room.task, getattr(room, "ai_task", None), getattr(room, "race_grace_task", None)):
+        # #4: гасим ВСЕ фоновые таски комнаты, включая окно добивания гонки.
+        for tsk in (room.task, getattr(room, "race_grace_task", None)):
             if tsk:
                 tsk.cancel()
         _rooms.pop(room.id, None)
@@ -855,20 +793,22 @@ async def ws_online(ws: WebSocket):
                     _watchers.discard(ws)
 
                 elif t == "create":
-                    try:   # #5: кап частоты create (спам-создание/уничтожение комнат жжёт AI-квоту)
+                    try:   # #5: кап частоты create против спама комнатами
                         _hit(("online_create", uid), _CREATE_MAX, _CREATE_WINDOW)
                     except HTTPException:
                         await _send(ws, {"type": "error", "msg": "rate_limited"})
                         continue
+                    settings = _norm_settings(msg.get("settings"))
+                    if settings["source"] == "selected" and len(await get_online_words_by_ids(settings["poolIds"], uid)) < COUNT_MIN:
+                        await _send(ws, {"type": "error", "msg": "not_enough_words"})
+                        continue
                     async with _lock:
                         if me.room:
                             await _leave(me)
-                        room = Room(me, msg.get("name"), _norm_settings(msg.get("settings")))
+                        room = Room(me, msg.get("name"), settings)
                         me.room = room
                         me.animal = _assign_animal(room, me)
                         _rooms[room.id] = room
-                        if room.settings["source"] == "ai":
-                            _kick_ai(room)   # начать подготовку набора сразу в лобби
                     await _send_room(room)
                     await _broadcast_rooms()
 
@@ -899,20 +839,18 @@ async def ws_online(ws: WebSocket):
                     # менять настройки может только хост и только в лобби; хост при выходе
                     # владельца переназначается оставшемуся (см. _leave).
                     if room and room.host is me and room.state == "lobby":
+                        new = _norm_settings(msg.get("settings"))
+                        if new["source"] == "selected" and len(await get_online_words_by_ids(new["poolIds"], uid)) < COUNT_MIN:
+                            await _send(ws, {"type": "error", "msg": "not_enough_words"})
+                            continue
                         old = room.settings
-                        room.settings = _norm_settings(msg.get("settings"))
+                        room.settings = new
                         nm = (msg.get("name") or "").strip()[:40]
                         if nm:
                             room.name = nm
-                        if room.settings["source"] == "ai":
-                            # перегенерируем ТОЛЬКО при смене входа подбора (не на каждое сохранение)
-                            if _ai_needs_regen(old, room.settings):
-                                _kick_ai(room)
-                        else:
-                            if room.ai_task and not room.ai_task.done():
-                                room.ai_task.cancel()
-                            room.ai_status = None
-                            room.ai_words = None
+                        if _word_inputs(old) != _word_inputs(new):
+                            for p in room.players:
+                                p.ready = False
                         await _send_room(room)
                         await _broadcast_rooms()
 
@@ -923,25 +861,15 @@ async def ws_online(ws: WebSocket):
                         await _send_room(me.room)
 
                 elif t == "ready":
-                    # для AI-комнаты нельзя готовиться, пока набор не готов
-                    if me.room and me.room.state == "lobby" and not (me.room.settings["source"] == "ai" and me.room.ai_status != "ready"):
+                    if me.room and me.room.state == "lobby":
                         me.ready = bool(msg.get("ready"))
                         await _send_room(me.room)
                         await _maybe_start(me.room)
 
-                elif t == "retry_ai":
-                    # повторить генерацию AI-набора после ошибки (хост, в лобби)
-                    room = me.room
-                    if room and room.host is me and room.state == "lobby" and room.settings["source"] == "ai":
-                        _kick_ai(room)
-                        await _send_room(room)
-                        await _broadcast_rooms()
-
                 elif t == "force_start":
                     # хост может стартовать вручную (для теста) — без требования «все готовы»/≥2
                     room = me.room
-                    if room and room.host is me and room.state == "lobby" and room.players \
-                            and not (room.settings["source"] == "ai" and room.ai_status != "ready"):
+                    if room and room.host is me and room.state == "lobby" and room.players:
                         room.state = "countdown"
                         await _send_room(room)
                         await _broadcast_rooms()
