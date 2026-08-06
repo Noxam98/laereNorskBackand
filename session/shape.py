@@ -21,6 +21,7 @@ BASE_KEYS = ("pool_id", "no", "translate", "part_of_speech", "forms",
 EXTRA_KEYS = frozenset((
     "gloss", "example",              # карточка слова (дневная сессия / next-cards)
     "listen",                        # слуховая партия: проигрывать аудио, текст скрыт
+    "audit",                         # малая контрольная порция внутри обычной сессии
     "cloze",                         # cloze-предложение служебного слова
     "options", "distractors",        # варианты выбора (свои у грамм-тира, патч у контентных)
     "form_track", "stage",           # трек форм: маршрутизация ответа + ступень рампы клетки

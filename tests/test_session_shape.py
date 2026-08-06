@@ -30,7 +30,7 @@ def test_base_keys_always_present_and_frozen():
     assert BASE_KEYS == ("pool_id", "no", "translate", "part_of_speech", "forms",
                          "mode", "direction", "step", "repeat", "grammar", "own_options")
     assert EXTRA_KEYS == frozenset((
-        "gloss", "example", "listen", "cloze", "options", "distractors",
+        "gloss", "example", "listen", "audit", "cloze", "options", "distractors",
         "form_track", "stage", "prompt", "target", "reveal", "scoring", "compound"))
 
 

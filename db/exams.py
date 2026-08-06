@@ -7,7 +7,7 @@ import json
 import math
 from .core import _conn, _release, _now
 from .learning import (
-    ALL_CELLS, AUDIT_CAP, FIRST_AUDIT_DAYS, PACK, PACK_FIRST, PASS, REQUIRED_CELLS, SAMPLE,
+    ALL_CELLS, AUDIT_CAP, AUDIT_PER_SESSION, FIRST_AUDIT_DAYS, PACK, PACK_FIRST, PASS, REQUIRED_CELLS, SAMPLE,
     THROTTLE, THROTTLE_DAYS, _AUDIT_GROWTH, _blank_example, _due_str,
     _fetch_user_words, is_function_word, required_cells, status_of, fuzzy,
 )
@@ -476,3 +476,48 @@ async def grade_audit(user_id, answers, lang="ru"):
             await _release(db)
 
 
+async def grade_session_audit(user_id, results):
+    """Оценить малую audit-порцию из обычной сессии: [{pool_id, correct}].
+    Разрешены только первые AUDIT_PER_SESSION реально просроченных слов — тот же детерминированный
+    набор, который build_session подмешивает в очередь. Пакет сохраняет расчёт доли забытых."""
+    checked = refreshed = forgot = 0
+    seen = set()
+    from .learning import _user_lock
+    async with _user_lock(user_id):
+        db = await _conn()
+        try:
+            # Читаем допустимый top-2 уже ПОД тем же локом, что и запись: два параллельных финиша
+            # сессии не смогут дважды продлить/демоутнуть один и тот же устаревший набор.
+            rows = await _fetch_user_words(db, user_id)
+            by_pid = {r["pool_id"]: r for r in _audit_rows(rows)[:AUDIT_PER_SESSION]}
+            for item in (results or []):
+                if not isinstance(item, dict):
+                    continue
+                pid = item.get("pool_id")
+                row = by_pid.get(pid)
+                if not row or pid in seen or not isinstance(item.get("correct"), bool):
+                    continue
+                seen.add(pid)
+                checked += 1
+                if item["correct"]:
+                    prev_interval = row.get("audit_interval") or FIRST_AUDIT_DAYS
+                    next_days = round(prev_interval * _AUDIT_GROWTH)
+                    await db.execute(
+                        "UPDATE user_words SET audit_due = ?, audit_interval = ? WHERE user_id = ? AND pool_id = ?",
+                        (_due_str(next_days), float(next_days), user_id, pid))
+                    refreshed += 1
+                else:
+                    await _demote(db, user_id, row)
+                    await db.execute(
+                        "UPDATE user_words SET audit_due = NULL, audit_interval = 0 WHERE user_id = ? AND pool_id = ?",
+                        (user_id, pid))
+                    forgot += 1
+            throttle = bool(checked) and (forgot / checked) > THROTTLE
+            if throttle:
+                await db.execute(
+                    "UPDATE users SET audit_throttle_until = ? WHERE id = ?",
+                    (_due_str(THROTTLE_DAYS), user_id))
+            await db.commit()
+            return {"checked": checked, "refreshed": refreshed, "forgot": forgot, "throttle": throttle}
+        finally:
+            await _release(db)

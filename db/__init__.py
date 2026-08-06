@@ -57,6 +57,7 @@ from .learning import (
     gate_status as learning_gate_status, new_words_blocked as learning_new_blocked,
     build_gate_exam as learning_gate_exam, grade_gate_exam as learning_gate_grade,
     build_audit as learning_audit, grade_audit as learning_audit_grade,
+    grade_session_audit as learning_session_audit_grade,
     audit_throttled as learning_audit_throttled,
     learning_leaderboard,
 )

@@ -11,14 +11,14 @@ from db import (
     learning_session, learning_next_cards, learning_listen_session, learning_listen_status,
     learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
-    learning_audit, learning_audit_grade,
+    learning_audit, learning_audit_grade, learning_session_audit_grade,
     learning_leaderboard,
     report_word, skip_word, pending_count, reported_count,
 )
 import asyncio
 from ratelimit import _hit
 from db.learning import LEVELS
-from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody
+from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody, SessionAuditBody
 
 router = APIRouter()
 
@@ -234,6 +234,13 @@ async def learning_audit_grade_route(body: AuditBody, user=Depends(get_current_u
     """Оценить аудит: верно → срок дальше; забыл → де-сертификация и слово назад в учёбу."""
     mark_activity()
     return await learning_audit_grade(user["id"], body.answers, lang=body.lang)
+
+
+@router.post("/learning/audit/session")
+async def learning_session_audit_grade_route(body: SessionAuditBody, user=Depends(get_current_user)):
+    """Записать до двух контрольных ответов, подмешанных в обычную учебную сессию."""
+    mark_activity()
+    return await learning_session_audit_grade(user["id"], body.results)
 
 
 @router.post("/learning/{pool_id}/status")

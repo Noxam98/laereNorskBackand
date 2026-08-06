@@ -5,10 +5,10 @@ import json
 import pytest
 from datetime import datetime, timedelta
 from db.learning import (
-    apply_result, grade_gate_exam, build_audit, grade_audit, build_session, status_of,
+    apply_result, grade_gate_exam, build_audit, grade_audit, grade_session_audit, build_session, status_of,
     new_words_blocked, audit_throttled, suggest_words, learning_stats, gate_status, _pack_rows,
     _fetch_user_words,
-    PACK_FIRST, SAMPLE, FIRST_AUDIT_DAYS, AUDIT_CAP, THROTTLE,
+    PACK_FIRST, SAMPLE, FIRST_AUDIT_DAYS, AUDIT_CAP, AUDIT_PER_SESSION, THROTTLE,
 )
 from db.core import _conn, _release, _now
 from tests.conftest import seed_user, seed_word
@@ -92,6 +92,42 @@ async def test_build_audit_picks_overdue_capped_and_ordered(fresh_db):
         assert {"type", "pool_id"} <= set(q.keys())
         if "options" in q:
             assert len(q["options"]) == 4
+
+
+async def test_regular_session_mixes_two_oldest_audit_words(fresh_db):
+    """Контроль забывания приходит по два слова внутри обычной сессии, не раздувая её size."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    base = datetime.utcnow()
+    for k, (pid, _no, _ru) in enumerate(pack[:AUDIT_PER_SESSION + 1]):
+        await _set_audit_due(uid, pid, (base - timedelta(days=10 - k)).isoformat())
+
+    session = await build_session(uid, size=5, lang="ru")
+    audit = [w for w in session["words"] if w.get("audit")]
+    assert len(session["words"]) <= 5
+    assert [w["pool_id"] for w in audit] == [pid for pid, _no, _ru in pack[:AUDIT_PER_SESSION]]
+    assert all(w["mode"] == "input" and w["direction"] == "int2no" for w in audit)
+    assert session["composition"]["review"] >= AUDIT_PER_SESSION
+
+
+async def test_session_audit_grades_boolean_batch(fresh_db):
+    """Пакет из обычной сессии сохраняет рост срока/демоут и считает долю забытых вместе."""
+    uid, did = await seed_user()
+    pack = await _seed_certified_pack(uid, did, PACK_FIRST)
+    first, second = pack[:2]
+    due = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    await _set_audit_due(uid, first[0], due)
+    await _set_audit_due(uid, second[0], due)
+
+    res = await grade_session_audit(uid, [
+        {"pool_id": first[0], "correct": True},
+        {"pool_id": second[0], "correct": False},
+    ])
+    assert res == {"checked": 2, "refreshed": 1, "forgot": 1, "throttle": True}
+    refreshed = await _row(uid, first[0])
+    forgotten = await _row(uid, second[0])
+    assert refreshed["certified"] == 1 and refreshed["audit_due"] > _now()
+    assert forgotten["certified"] == 0 and forgotten["audit_due"] is None
 
 
 async def test_build_audit_ignores_non_certified(fresh_db):

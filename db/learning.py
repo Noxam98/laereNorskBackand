@@ -210,6 +210,7 @@ PASS = 27         # сколько нужно верных, чтобы сдат�
 # --- Аудит-экзамен забывания (§2.4-B): ловит забывание сертифицированных слов ---
 FIRST_AUDIT_DAYS = 30   # первый аудит слова — через 30 дней после сертификации
 AUDIT_CAP = 20          # потолок аудит-сессии (берём не более стольких самых просроченных)
+AUDIT_PER_SESSION = 2   # контрольные слова подмешиваем малыми порциями в обычную сессию
 THROTTLE = 0.4          # доля забытых выше которой — мягкий тормоз притока новых
 _AUDIT_GROWTH = 2.0     # во сколько раз растёт срок до следующего аудита при успехе
 THROTTLE_DAYS = 3       # на сколько дней притормаживаем приток новых при срабатывании тормоза
@@ -1084,15 +1085,35 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     cycle_phase, cycle_left, cycle_cells = fplan["phase"], fplan["cycle_left"], fplan["cycle_cells"]
     cap_new = fplan["cap_new"]   # фаза forms новых слов не вводит: 0 приходит ПОЛЕМ плана, не мутацией
 
+    # Контроль забывания больше не идёт отдельной длинной сессией: резервируем до двух мест под
+    # самые просроченные сертифицированные слова. Обычная рампа их не выбирает (у certified свой
+    # audit_due), поэтому дедуп с ordered здесь защитный. Грейдятся они отдельным пакетным путём.
+    ordered_pids = {e["row"]["pool_id"] for e, _ in ordered}
+    audit_picks = []
+    if not scoped:
+        audit_due = sorted(
+            [e for e in enriched
+             if _is_certified(e["row"]) and e["row"].get("audit_due")
+             and e["row"]["audit_due"] <= _now() and e["row"]["pool_id"] not in ordered_pids],
+            key=lambda e: e["row"].get("audit_due") or "")
+        for e in audit_due:
+            # Единый сильный вопрос: перевод → ввод норвежского. В отличие от _review_step он не
+            # зависит от аудио/типа рампы, поэтому build и grade выбирают один и тот же top-2.
+            audit_picks.append((e, ("input_int2no", "input", "int2no")))
+            if len(audit_picks) >= min(AUDIT_PER_SESSION, max(0, size - len(grammar_picks))):
+                break
+
     # ФАЗА СЛОВ: грамматики НЕТ ВООБЩЕ (решение юзера — «сессия слов = только слова +
     # карточки новых в конце»); формы и местоим-overlay живут в фазе форм — цикл короткий,
     # интервалы почти не едут. Отбор заданий фазы форм — session/forms_phase.plan_forms_phase.
-    base_budget = max(0, size - len(grammar_picks))   # под контент — остаток после грамм-квоты
+    base_budget = max(0, size - len(grammar_picks) - len(audit_picks))
 
     session = []
     new_added = 0                                            # сколько новых карточек уже взяли в эту сессию
     comp = {"fresh": 0, "review": 0, "weak": 0, "progress": 0, "phrases": 0, "grammar": 0}   # состав (для честной кнопки старта); phrases — выражения, grammar — грамм-overlay
     for e, step in ordered:
+        if len(session) >= base_budget:
+            break
         # Фаза ФОРМ: хвост сессии — ТОЛЬКО повторы выученных (приходят вводом). Слабые/начатые
         # слова середины рампы ждут фазы слов — иначе в «сессию форм» вклинивается выбор перевода
         # недоученного слова и ломает ощущение режима. Повторы не морозим (интервалы святы).
@@ -1168,6 +1189,21 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
             comp["progress"] += 1  # начатое, ещё не выученное
         if len(session) >= base_budget:   # base-бюджет = size − грамм-квота (overlay добьём ниже)
             break
+
+    # Контрольные слова считаются обычным повторением в составе/прогресс-баре, но несут audit=true:
+    # фронт не пишет их в base-SRS, а сдаёт два результата одним пакетом в audit-SRS.
+    for e, step in audit_picks:
+        cell, mode, direction = step
+        data = e["data"] or {}
+        session.append(_make_element(
+            pool_id=e["row"]["pool_id"], no=e["row"]["norwegian"],
+            translate=data.get("translate", {}),
+            part_of_speech=data.get("part_of_speech", ""),
+            gloss=data.get("gloss"), example=data.get("example"),
+            forms=e["row"].get("forms"), mode=mode, direction=direction, step=cell,
+            repeat=True, audit=True,
+        ))
+        comp["review"] += 1
     # prereq-лексика: невыученные дистракторы пропущенных фраз → в скрытый авто-словарь, чтобы фразы
     # разблокировались (дистракторы станут узнаваемыми). Капим и дедупим; уважаем ворота/дрилл.
     if prereq and not scoped and not gate_open:
@@ -1219,6 +1255,9 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     # карточки-знакомства (новые слова, step == "card") — в КОНЕЦ сессии: сначала упражнения по уже
     # начатым словам, потом интро новых. sort стабилен → относительный порядок внутри групп сохранён.
     session.sort(key=lambda el: el.get("step") == "card")
+    # Контрольные два слова — самый хвост обычной сессии: сразу после них итог запишет пакет,
+    # поэтому ответы не висят в памяти, пока пользователь проходит оставшиеся карточки.
+    session.sort(key=lambda el: bool(el.get("audit")))
     _ta = time.monotonic()
     await _attach_choice_options(session, lang)
     _tm["choice"] = time.monotonic() - _ta
@@ -1362,7 +1401,7 @@ from .placement import (  # noqa: E402,F401
 )
 from .exams import (  # noqa: E402,F401
     gate_status, new_words_blocked, build_gate_exam, grade_gate_exam,
-    build_audit, grade_audit, audit_throttled, _pack_rows,
+    build_audit, grade_audit, grade_session_audit, audit_throttled, _pack_rows,
     _is_certified, _audit_throttled,   # нужны ядру (build_session/get_due/learning_stats) — резолвятся в рантайме
 )
 # ПОСЛЕДНИМ — зависит от exams/placement (импортит из них на верхнем уровне):
