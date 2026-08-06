@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 users.db
+# -shm/-wal тоже: локальный WAL, приехавший rsync'ом рядом с прод-базой, SQLite попытается
+# накатить на ЧУЖОЙ users.db при старте (привязки WAL к файлу БД нет) → порча прода.
+users.db-shm
+users.db-wal
 app.log
 .env
 

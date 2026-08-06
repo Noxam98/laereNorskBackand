@@ -36,7 +36,7 @@ jobs:
         run: >
           rsync -az --delete
           --exclude .git --exclude .venv --exclude __pycache__
-          --exclude '*.pyc' --exclude app.log
+          --exclude '*.pyc' --exclude app.log --exclude 'users.db*'
           -e "ssh -p 2222" ./ root@204.168.163.44:/opt/norsk/app/
       - name: Бэкап БД перед рестартом
         run: ssh -p 2222 root@204.168.163.44 '/opt/norsk/backup.sh'
