@@ -33,6 +33,17 @@ async def fresh_db():
         _USER_LOCKS.clear()
     except Exception:
         pass
+    # резидентные кеши пула живут на модуле и переживают смену БД: fuzzy-индекс инвалидируется по
+    # COUNT(*) пула + TTL 600с, кандидаты-дистракторы — по TTL 30с. У каждого теста своя пустая БД,
+    # поэтому счётчик легко совпадает с прошлым тестом → отдаётся индекс ЧУЖОЙ базы (плюс фоновая
+    # пересборка в _ensure_fuzzy_index делает это гонкой = плавающие падения). В проде БД одна и
+    # живёт вечно, проблемы нет — чистим только в тестах.
+    try:
+        from db.pool import _FUZZY_IDX, _invalidate_candidates
+        _FUZZY_IDX.update(count=-1, built=0.0, flat=None)
+        _invalidate_candidates()
+    except Exception:
+        pass
     core._reset_pool()   # свежий семафор пула под event loop этого теста (см. _reset_pool)
     await init_db()
     yield path
