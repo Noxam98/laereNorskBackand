@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
 
 # Лимиты полей — defense-in-depth: не пускаем гигантский фритекст в LLM-промпты и огромные списки
@@ -8,6 +8,16 @@ from typing import Optional, List
 class UserAuth(BaseModel):
     username: str = Field(max_length=64)
     password: str = Field(max_length=200)
+
+    # Обрезаем пробелы по краям имени — и на регистрации, и на входе (модель одна на оба).
+    # Причина не косметическая: мобильные клавиатуры дописывают пробел после автоподстановки,
+    # и пользователь, введя всё верно, получал «Invalid credentials» (поймано на Android).
+    # Заодно имена не расходятся на «maks» / «maks » — иначе CI-проверка уникальности
+    # (username_taken_ci) обходится одним пробелом. Пароль НЕ трогаем: пробелы в нём значимы.
+    @field_validator("username")
+    @classmethod
+    def _trim_username(cls, v: str) -> str:
+        return v.strip()
 
 
 class Token(BaseModel):
@@ -182,6 +192,10 @@ class GateExamBody(BaseModel):
 class AuditBody(BaseModel):
     lang: str = Field("ru", max_length=8)
     answers: list = Field(default=[], max_length=200)        # [{pool_id, answer}] — выбранный перевод для каждого аудит-вопроса
+
+
+class SessionAuditBody(BaseModel):
+    results: list = Field(default=[], max_length=10)         # [{pool_id, correct}] из обычной сессии
 
 
 class RediffBody(BaseModel):

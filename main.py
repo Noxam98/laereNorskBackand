@@ -58,6 +58,13 @@ try:
     app.include_router(push_router)
 except Exception as _e:
     logger.warning(f"web push router not loaded: {_e}")
+# FCM-пуши Android-приложения (+дедуп с веб-каналом). Тоже защищённо; воркер стартует сам —
+# роутер вешает свой startup-хендлер, так что отсюда нужен только include.
+try:
+    from fcm import router as fcm_router
+    app.include_router(fcm_router)
+except Exception as _e:
+    logger.warning(f"fcm push router not loaded: {_e}")
 
 
 @app.on_event("startup")

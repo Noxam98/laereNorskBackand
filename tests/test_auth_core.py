@@ -57,3 +57,19 @@ async def test_garbage_and_unknown_user_401(fresh_db):
     with pytest.raises(HTTPException) as e2:
         await get_current_user(token=tok)
     assert e2.value.status_code == 401
+
+
+# ---------------- имя пользователя: обрезка пробелов ----------------
+# Мобильные клавиатуры дописывают пробел после автоподстановки: юзер вводит логин верно, а
+# получает 401 (поймано вживую на Android). Плюс пробел по краям обходил бы CI-проверку
+# уникальности имён (username_taken_ci) — «maks» и «maks » стали бы разными аккаунтами.
+def test_username_trimmed_in_model():
+    from models import UserAuth
+    assert UserAuth(username="  maks  ", password="hunter2").username == "maks"
+    assert UserAuth(username="maks\t", password="hunter2").username == "maks"
+
+
+def test_password_spaces_preserved():
+    from models import UserAuth
+    # пробелы в пароле значимы — их не трогаем
+    assert UserAuth(username="maks", password="  hunter 2 ").password == "  hunter 2 "

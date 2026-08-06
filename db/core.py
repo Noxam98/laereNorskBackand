@@ -505,6 +505,21 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """)
+        # FCM-подписки Android-приложения (Web Push в Capacitor WebView не работает — нет SW Push).
+        # Параллельный каналу web-push слой; логика и дедуп «одно напоминание на юзера» — в fcm.py.
+        # token уникален глобально: устройство может перепривязаться к другому аккаунту.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS fcm_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            platform TEXT NOT NULL DEFAULT 'android',
+            last_reminded_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_fcm_subs_user ON fcm_subscriptions(user_id)")
         try:
             await db.execute("ALTER TABLE user_words ADD COLUMN certified INTEGER DEFAULT 0")  # слово сдало зачётный экзамен-ворота
         except Exception:
