@@ -50,6 +50,7 @@ from .learning import (
     get_learning as learning_get, learning_stats, get_due as learning_due,
     apply_result as learning_answer, set_status as learning_set_status, suggest_words as learning_suggest,
     build_placement as learning_placement, grade_placement as learning_grade, get_activity as learning_activity,
+    note_activity as learning_note_activity,
     set_start_level as learning_set_level, seed_starter as learning_seed_starter,
     build_session as learning_session, next_new_cards as learning_next_cards,
     build_listen_session as learning_listen_session, listen_status as learning_listen_status,

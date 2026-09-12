@@ -7,7 +7,8 @@ from auth import get_current_user
 from activity import mark_activity
 from db import (
     learning_get, learning_stats, learning_due, learning_answer, learning_set_status,
-    learning_placement, learning_grade, learning_activity, learning_set_level, learning_seed_starter,
+    learning_placement, learning_grade, learning_activity, learning_note_activity,
+    learning_set_level, learning_seed_starter,
     learning_session, learning_next_cards, learning_listen_session, learning_listen_status,
     learning_add, learning_remove, get_pool_id,
     learning_gate_status, learning_gate_exam, learning_gate_grade,
@@ -18,7 +19,8 @@ from db import (
 import asyncio
 from ratelimit import _hit
 from db.learning import LEVELS
-from models import LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody, AuditBody, SessionAuditBody
+from models import (LearningAnswer, LearningStatusBody, PlacementBody, LevelBody, GateExamBody,
+                    AuditBody, SessionAuditBody, ActivityBody)
 
 router = APIRouter()
 
@@ -79,6 +81,14 @@ async def learning_next_cards_route(body: dict, user=Depends(get_current_user)):
 @router.get("/learning/activity")
 async def learning_activity_route(days: int = 119, user=Depends(get_current_user)):
     return await learning_activity(user["id"], days=max(7, min(370, days)))
+
+
+@router.post("/learning/activity")
+async def learning_note_activity_route(body: ActivityBody, user=Depends(get_current_user)):
+    """Режим ЗАУЧИВАНИЯ: итог сессии-дрилла в дневной журнал (цель/стрик/точность), БЕЗ SRS.
+    Клетки рампы и расписание зубрёжка не двигает — на то есть /learning/answer."""
+    mark_activity()
+    return await learning_note_activity(user["id"], body.answers, body.correct)
 
 
 @router.get("/learning/leaderboard")

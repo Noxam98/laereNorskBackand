@@ -199,6 +199,12 @@ class SessionAuditBody(BaseModel):
     results: list = Field(default=[], max_length=10)         # [{pool_id, correct}] из обычной сессии
 
 
+class ActivityBody(BaseModel):
+    """Итог сессии ЗАУЧИВАНИЯ: ответы идут только в дневной журнал, SRS не трогаем."""
+    answers: int = Field(0, ge=0, le=500)
+    correct: int = Field(0, ge=0, le=500)
+
+
 class RediffBody(BaseModel):
     a: str = Field(max_length=80)
     b: str = Field(max_length=80)

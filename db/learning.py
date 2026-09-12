@@ -1436,7 +1436,7 @@ async def build_listen_session(user_id, size=20, lang="ru"):
 # --- Реэкспорт вынесенных модулей (чтобы `from db.learning import …` и db/__init__ не менялись) ---
 from .learning_grammar import _grammar_cells, _grammar_element  # noqa: E402,F401  (ядро зовёт в рантайме)
 from .learning_cloze import get_cloze_map, _blank_example  # noqa: E402,F401  (_blank_example нужен exams)
-from .leaderboard import get_activity, learning_leaderboard  # noqa: E402,F401
+from .leaderboard import get_activity, note_activity, learning_leaderboard  # noqa: E402,F401
 from .placement import (  # noqa: E402,F401
     get_start_level, set_start_level, build_placement, grade_placement, seed_starter,
     PLACEMENT_PASS, PLACEMENT_MIN, STARTER_GOAL,

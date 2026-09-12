@@ -2,7 +2,34 @@
 Самостоятельные SQL-запросы поверх соединения — без зависимостей от движка «Учёбы»
 (вынесено из learning.py, чтобы тот не разрастался). Реэкспортируется через db и learning.
 """
-from .core import _conn, _release
+from .core import _conn, _release, _now
+
+ACTIVITY_CAP = 500   # потолок на один вызов note_activity (сессия заучивания столько не даёт)
+
+
+async def note_activity(user_id, answers, correct):
+    """Дописать ответы в дневной журнал БЕЗ SRS — режим ЗАУЧИВАНИЯ (дрилл набора по кругу до
+    чистого прогона). Клетки рампы/расписание/«выучено» он не трогает осознанно: зубрёжка не
+    должна двигать интервальные повторения. Но заниматься человек реально занимался, поэтому
+    дневная цель/стрик/точность эти ответы считают.
+
+    День — по UTC (_now), как и остальные записи журнала: на не-UTC сервере date.today() уехал бы
+    на сутки относительно чтения в _activity_metrics. Числа клампим (ACTIVITY_CAP) — журнал кормит
+    стрик и рейтинг, накрутка одним запросом тут не нужна."""
+    answers = max(0, min(int(answers or 0), ACTIVITY_CAP))
+    correct = max(0, min(int(correct or 0), answers))
+    if not answers:
+        return {"ok": True, "answers": 0, "correct": 0}
+    db = await _conn()
+    try:
+        await db.execute("""
+            INSERT INTO user_activity (user_id, day, answers, correct) VALUES (?,?,?,?)
+            ON CONFLICT(user_id, day) DO UPDATE SET answers = answers + ?, correct = correct + ?
+        """, (user_id, _now()[:10], answers, correct, answers, correct))
+        await db.commit()
+    finally:
+        await _release(db)
+    return {"ok": True, "answers": answers, "correct": correct}
 
 
 async def get_activity(user_id, days=119):
