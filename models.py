@@ -127,6 +127,7 @@ class GamePrefsBody(BaseModel):
     grammar: bool | None = None   # грамм-overlay (★): род/формы поверх выученных слов — вкл/выкл (мастер)
     grammarPos: dict | None = None   # пер-POS тумблеры грамматики: {noun,verb,adjective,pronoun: bool}
     audio: bool | None = None   # аудиозадания: ВКЛ → choice_no2int в отдельную слуховую сессию; ВЫКЛ → текстом в рампе
+    choiceStage: bool | None = None   # ступень «выбор из вариантов» в рампе: ВЫКЛ → слово сразу на продукцию
     listenPack: int | None = Field(None, ge=5, le=20)   # порог слуховой партии (сколько «ждёт слух» собрать)
     studyOnboarded: bool | None = None   # приветственное окно Учёбы пройдено (показывать однократно)
 

@@ -187,7 +187,8 @@ def ramp_kind_of(row):
 
 
 def required_cells(row):
-    """Клетки рампы для слова (кортеж-константа из srs.cells)."""
+    """ПОЛНАЯ рампа слова (кортеж-константа из srs.cells) — по ней считается «выучено» и прогресс.
+    Тумблер «выбор из вариантов» её НЕ меняет (он решает, что выдавать: см. srs.cells.ramp_cells)."""
     return _srs_cells.cells_of(ramp_kind_of(row))
 
 
@@ -259,11 +260,13 @@ def _due_str(days):
     return (datetime.utcnow() + timedelta(days=days)).isoformat()
 
 
-def _next_step(row, modes, audio_on=False):
+def _next_step(row, modes, audio_on=False, choice_on=True):
     """Следующая ступень рампы (делегат srs.steps.next_step): карточка для нового,
-    первая несданная клетка, пропуск аудио у контентных при audio ВКЛ, mastered → None."""
+    первая несданная клетка, пропуск аудио у контентных при audio ВКЛ, mastered → None.
+    choice_on=False (тумблер профиля) → клетки выбора не выдаются: слово идёт сразу на продукцию."""
     attempts = (row.get("correct") or 0) + (row.get("incorrect") or 0)
-    return _srs_steps.next_step(ramp_kind_of(row), modes, attempts=attempts, audio_on=audio_on)
+    return _srs_steps.next_step(ramp_kind_of(row), modes, attempts=attempts,
+                                audio_on=audio_on, choice_on=choice_on)
 
 
 def _review_step(row, modes=None, audio_on=False):
@@ -335,18 +338,22 @@ def _user_lock(user_id: int) -> asyncio.Lock:
 
 
 async def apply_result(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
-                       mode: str = None, direction: str = None, audio_on: bool = None):
+                       mode: str = None, direction: str = None, audio_on: bool = None,
+                       choice_on: bool = None):
     """Обёртка под пер-юзер локом: иначе два почти-одновременных ответа читают одну старую строку
     и второй commit затирает первый (lost update reps/клетки рампы). Один процесс → asyncio.Lock.
     audio_on — эффективная настройка аудио (для КОРРЕКТНОГО отката ступени у контентных слов);
-    None → берём из профиля лениво (только когда реально нужен откат). Опционален, чтобы не менять
+    choice_on — тумблер ступени выбора (зачёт выключенных клеток + откат по эффективной рампе);
+    None → берём из профиля лениво (только когда реально нужны). Опциональны, чтобы не менять
     сигнатуру у вызывающих вне этой полосы (routers/learning, dictionaries)."""
     async with _user_lock(user_id):
-        return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction, audio_on)
+        return await _apply_result_inner(user_id, pool_id, correct, elapsed, mode, direction,
+                                         audio_on, choice_on)
 
 
 async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed: float = None,
-                              mode: str = None, direction: str = None, audio_on: bool = None):
+                              mode: str = None, direction: str = None, audio_on: bool = None,
+                              choice_on: bool = None):
     """Обновить состояние слова после ответа (создаёт строку при первом ответе).
     mode — тип игры (choice/build/input/study/…), direction — направление ('no2int'|'int2no').
     Клетка рампы = f'{mode}_{direction}': верный ответ → '1', ошибка → '' (сброс этой клетки).
@@ -416,10 +423,37 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
         bit = "1" if correct else "0"
         ease = st["ease"]; interval = st["interval_days"]
         modes["hist"] = _push(modes.get("hist", ""), bit, CAPACITY)   # общее окно для силы
+
+        async def _ramp_prefs():
+            """Ленивая дочитка тумблеров рампы (аудио + ступень выбора) ОДНИМ запросом и только
+            там, где они реально решают: зачёт пропущенного выбора и откат ступени. Вызывающий
+            может передать их сверху (build_session знает) — тогда чтения не будет вовсе."""
+            nonlocal audio_on, choice_on
+            if audio_on is None or choice_on is None:
+                from .users import get_user_ramp
+                a_on, c_on = await get_user_ramp(user_id)
+                audio_on = a_on if audio_on is None else audio_on
+                choice_on = c_on if choice_on is None else choice_on
+            return audio_on, choice_on
+
         if cell:
             if cell in cells:
                 if correct:
                     modes[cell] = "1"              # верно → ступень пройдена
+                    # Ступень выбора выключена тумблером → засчитываем её клетки сдачей БОЛЕЕ СЛОЖНОЙ
+                    # ступени (сборка/ввод/порядок слов): продукция сильнее узнавания. Так «выучено»,
+                    # CEFR и пачка экзамена продолжают считаться по ПОЛНОЙ рампе, а возврат тумблера
+                    # не «разучивает» слово пачкой (грандфатеринг в обе стороны). Условие-сторож ловит
+                    # только реальный случай (клетка выбора пуста, а сдана более поздняя) — у юзера с
+                    # включённым выбором ступени идут по порядку, и дочитки профиля тут не будет.
+                    if (cell not in _srs_cells.CHOICE_CELLS
+                            and any(modes.get(c, "") != "1" for c in _srs_cells.CHOICE_CELLS if c in cells)):
+                        a_on, c_on = await _ramp_prefs()
+                        # аудио-клетку контентных при audio ВКЛ не засчитываем: её сдают слуховой партией
+                        for c in (() if c_on else _srs_cells.skipped_choice(
+                                kind, choice_on=False, audio_on=bool(a_on))):
+                            if cells.index(c) < cells.index(cell):
+                                modes[c] = "1"
                 else:
                     modes[cell] = ""               # ошибка → текущая ступень сброшена
                     # Откат — по ЭФФЕКТИВНОЙ рампе. У контентных при audio ВКЛ аудио-клетка
@@ -428,12 +462,18 @@ async def _apply_result_inner(user_id: int, pool_id: int, correct: bool, elapsed
                     # ошибка на слух текст не трогает (её клетки нет в seq). При audio ВЫКЛ и у
                     # служебных/фраз (kind != CONTENT) choice_no2int — обычная клетка, откат штатный.
                     if audio_on is None and kind == _srs_cells.CONTENT:
-                        from .users import get_user_audio
-                        audio_on, _ = await get_user_audio(user_id)   # лениво, только когда нужен откат
+                        await _ramp_prefs()        # лениво, только когда нужен откат
                     seq = ([c for c in cells if c != _AUDIO_CELL]
                            if (audio_on and kind == _srs_cells.CONTENT) else list(cells))
                     if cell in seq:
                         i = seq.index(cell)
+                        # Выключенная тумблером ступень выбора из отката тоже выпадает: откатывать на
+                        # клетку, которую юзеру не выдают, значило бы жечь ступень впустую (её всё равно
+                        # засчитает следующая сдача продукции). Профиль дочитываем, только если цель
+                        # отката вообще может оказаться клеткой выбора.
+                        if i > 0 and seq[i - 1] in _srs_cells.CHOICE_CELLS and not (await _ramp_prefs())[1]:
+                            seq = [c for c in seq if c not in _srs_cells.CHOICE_CELLS] or seq
+                            i = seq.index(cell) if cell in seq else 0
                         if i > 0:                  # ОТКАТ на одну ступень назад (карточку-интро не трогаем)
                             modes[seq[i - 1]] = ""
         strength = _strength_from(modes["hist"])
@@ -825,9 +865,11 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
     Возвращает [{pool_id, no, translate, mode, direction, step}], не больше size."""
     scoped = set_id is not None
     _t0 = time.monotonic(); _tm = {}   # [perf] тайминг фаз сборки сессии
-    from .users import get_user_new_per_session, get_user_grammar, get_user_grammar_pos, get_user_audio  # ленивый импорт
+    from .users import (get_user_new_per_session, get_user_grammar, get_user_grammar_pos,  # ленивый импорт
+                        get_user_audio, get_user_choice)
     cap_new = await get_user_new_per_session(user_id, NEW_PER_SESSION)   # порция новых за сессию (настройка профиля)
     audio_on, _listen_pack = await get_user_audio(user_id)   # аудио ВКЛ → choice_no2int откладываем в слуховую сессию
+    choice_on = await get_user_choice(user_id)   # ступень выбора ВЫКЛ → слово идёт сразу на продукцию
     async def _load():
         """Прочитать слова пользователя + флаг тормоза, разложить по статусам."""
         db = await _conn()
@@ -964,7 +1006,7 @@ async def build_session(user_id, size=20, lang="ru", set_id=None):
                                is_function_word=is_function_word)
     cand = _pools.select_candidates(
         pools,
-        next_step=lambda e: _next_step(e["row"], e["modes"], audio_on),
+        next_step=lambda e: _next_step(e["row"], e["modes"], audio_on, choice_on),
         review_step=lambda e: _review_step(e["row"], e["modes"], audio_on=audio_on),
         func_locked=_func_locked)
     cooldown_cut = (datetime.utcnow() - timedelta(minutes=COOLDOWN_MIN)).isoformat()

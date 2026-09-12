@@ -129,31 +129,64 @@ async def get_user_grammar_pos(user_id: int):
     return out
 
 
+def _prefs_of(row):
+    """Разбор колонки game_prefs строки users (пусто/битое → {}) — один дом парсинга тумблеров."""
+    raw = row["game_prefs"] if row else None
+    try:
+        gp = json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+    return gp if isinstance(gp, dict) else {}
+
+
+def _audio_of(gp):
+    """Аудиозадания из gamePrefs: audio (дефолт ВКЛ) + бэк-совместимость старого listenOff=true."""
+    v = gp.get("audio")
+    if isinstance(v, bool):
+        return v
+    return gp.get("listenOff") is not True
+
+
+def _choice_of(gp):
+    """Ступень «выбор из вариантов» из gamePrefs (choiceStage, дефолт ВКЛ)."""
+    v = gp.get("choiceStage")
+    return v if isinstance(v, bool) else True
+
+
+async def _game_prefs_row(user_id: int):
+    db = await _conn()
+    try:
+        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
+            return _prefs_of(await cur.fetchone())
+    finally:
+        await _release(db)
+
+
 async def get_user_audio(user_id: int):
     """Аудиозадания (слуховые сессии): (включены?, порог партии 5..20). gamePrefs.audio (дефолт — вкл;
     бэк-совместимость: старый listenOff=true → выкл) + gamePrefs.listenPack (клампим 5..20, дефолт 10).
     audio ВКЛ → choice_no2int откладывается в слуховую сессию; ВЫКЛ → идёт в дневной рампе текстом."""
-    db = await _conn()
-    try:
-        async with db.execute("SELECT game_prefs FROM users WHERE id = ?", (user_id,)) as cur:
-            row = await cur.fetchone()
-    finally:
-        await _release(db)
-    audio_on, pack = True, 10
-    if row and row["game_prefs"]:
-        try:
-            gp = json.loads(row["game_prefs"])
-            v = gp.get("audio")
-            if isinstance(v, bool):
-                audio_on = v
-            elif gp.get("listenOff") is True:   # старый тумблер «на слух выключен» → аудио выкл
-                audio_on = False
-            p = gp.get("listenPack")
-            if isinstance(p, (int, float)):
-                pack = max(5, min(20, int(p)))
-        except Exception:
-            pass
-    return audio_on, pack
+    gp = await _game_prefs_row(user_id)
+    pack = 10
+    p = gp.get("listenPack")
+    if isinstance(p, (int, float)):
+        pack = max(5, min(20, int(p)))
+    return _audio_of(gp), pack
+
+
+async def get_user_choice(user_id: int):
+    """Включена ли ступень «выбор из вариантов» в рампе (gamePrefs.choiceStage). Дефолт — вкл.
+    ВЫКЛ → next_step не выдаёт клетки выбора (слово идёт сразу на продукцию: сборка/ввод, у фраз —
+    порядок слов), а сдача более сложной ступени засчитывает их (srs.cells.skipped_choice).
+    «Выучено»/CEFR/пачка экзамена по-прежнему считаются по ПОЛНОЙ рампе — тумблер их не двигает."""
+    return _choice_of(await _game_prefs_row(user_id))
+
+
+async def get_user_ramp(user_id: int):
+    """Оба тумблера рампы ОДНИМ чтением: (аудиозадания, ступень выбора). Для горячего пути
+    apply_result — там нужны оба, а ходить в users дважды за один ответ незачем."""
+    gp = await _game_prefs_row(user_id)
+    return _audio_of(gp), _choice_of(gp)
 
 
 async def set_user_game_prefs(user_id: int, prefs_json: str):

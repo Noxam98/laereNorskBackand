@@ -322,6 +322,8 @@ async def set_game_prefs(body: GamePrefsBody, user=Depends(get_current_user)):
                                if k in ("noun", "verb", "adjective", "pronoun") and isinstance(v, bool)}
     if body.audio is not None:
         prefs["audio"] = bool(body.audio)
+    if body.choiceStage is not None:
+        prefs["choiceStage"] = bool(body.choiceStage)
     if body.listenPack is not None:
         prefs["listenPack"] = max(5, min(20, int(body.listenPack)))
     if body.studyOnboarded is not None:

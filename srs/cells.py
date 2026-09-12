@@ -24,6 +24,12 @@ PHRASE_CELLS = ("choice_no2int", "order_int2no", "build_int2no", "input_int2no")
 # новая ступень его не «разучивает» (ввод по памяти тяжелее сборки из букв). См. srs/status.is_mastered.
 PHRASE_CELLS_LEGACY = ("choice_no2int", "order_int2no", "input_int2no")
 ALL_CELLS = REQUIRED_CELLS + FUNC_CELLS + ("order_int2no",)   # order — клетка фраз (демоут её тоже чистит)
+# Ступень «выбор из вариантов» (узнавание) — её юзер может выключить (gamePrefs.choiceStage,
+# db.users.get_user_choice). Выключенные клетки НЕ выдаются (ramp_cells), но засчитываются при
+# сдаче более сложной ступени (skipped_choice + db.learning._apply_result_inner): продукция
+# сильнее узнавания. Поэтому «выучено»/CEFR/пачка экзамена считаются по ПОЛНОЙ рампе (cells_of)
+# и не прыгают при возврате тумблера — грандфатеринг в обе стороны, без массовых перезаписей.
+CHOICE_CELLS = ("choice_int2no", "choice_no2int")
 
 _CELLS_OF = {
     CONTENT: REQUIRED_CELLS,
@@ -44,5 +50,26 @@ def ramp_kind(*, phrase_playable: bool, function_word: bool, cloze_enabled: bool
 
 
 def cells_of(kind: str) -> tuple:
-    """Клетки рампы данного вида (неизменяемый кортеж)."""
+    """ПОЛНАЯ рампа данного вида (неизменяемый кортеж) — канон, по которому считается «выучено».
+    От пользовательских тумблеров НЕ зависит: что выдавать — решает ramp_cells."""
     return _CELLS_OF[kind]
+
+
+def ramp_cells(kind: str, *, choice_on: bool = True, audio_on: bool = False) -> tuple:
+    """Клетки, которые реально ВЫДАЮТСЯ юзеру: полная рампа минус ступень выбора, если она
+    выключена тумблером. Аудио-клетку контентных при audio ВКЛ тумблер выбора не трогает —
+    это не «выбор вариантов», а слуховая партия со своим тумблером (её пропускает next_step).
+    Рампа не может опустеть: у служебных без cloze (FUNC_CHOICE) выбор — единственная проверка,
+    их тумблер не касается, иначе слово нечем сдать."""
+    cells = _CELLS_OF[kind]
+    if choice_on:
+        return cells
+    drop = {c for c in CHOICE_CELLS if not (audio_on and kind == CONTENT and c == AUDIO_CELL)}
+    return tuple(c for c in cells if c not in drop) or cells
+
+
+def skipped_choice(kind: str, *, choice_on: bool = True, audio_on: bool = False) -> tuple:
+    """Клетки выбора, ВЫКЛЮЧЕННЫЕ тумблером у этого вида рампы (пусто, если тумблер включён
+    или рампа состоит из них одних). Их засчитывает сдача более сложной ступени."""
+    eff = ramp_cells(kind, choice_on=choice_on, audio_on=audio_on)
+    return tuple(c for c in _CELLS_OF[kind] if c not in eff)
