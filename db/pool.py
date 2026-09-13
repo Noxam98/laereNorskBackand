@@ -34,6 +34,21 @@ def _vis_cond(user_id):
     return "COALESCE(approved,1) = 1", []
 
 
+def _set_cond(set_id, in_set, user_id):
+    """Фильтр Базы «слово (не) в МОЁМ наборе» — для экрана добора слов в набор.
+    in_set=True → только слова набора, False → только отсутствующие в нём, None → фильтра нет.
+
+    Владение набором зашито в сам подзапрос (JOIN dictionaries по user_id), а не проверяется
+    отдельным запросом: чужой dict_id тогда физически не может ничего показать/скрыть, и
+    подобрать по нему чужую подборку нельзя (IDOR закрыт самим SQL)."""
+    if not set_id or in_set is None or not user_id:
+        return None, []
+    op = "IN" if in_set else "NOT IN"
+    sql = (f"id {op} (SELECT dw.pool_id FROM dict_words dw "
+           f"JOIN dictionaries d ON d.id = dw.dict_id AND d.user_id = ? WHERE dw.dict_id = ?)")
+    return sql, [user_id, set_id]
+
+
 def _key_cond_with_forms(key, lang):
     """_key_cond + сведение словоформы к леммам банка (gikk → gå): грид Базы находит
     слово по любой его форме."""
@@ -922,7 +937,8 @@ async def get_pool_meta(word: str, user_id: int = None, pool_id: int = None, lan
         await _release(db)
 
 
-async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: str = None, user_id: int = None):
+async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: str = None, user_id: int = None,
+                          set_id: int = None, in_set: bool = None):
     """Динамические счётчики фильтров под текущий выбор (дизъюнктивный facet — каждая группа
     считается БЕЗ учёта собственного выбора, т.к. мультивыбор внутри группы = ИЛИ).
     Темы: число слов по каждой теме под (поиск + уровень), без учёта выбранных тем —
@@ -948,6 +964,12 @@ async def get_pool_facets(q: str = None, topics=None, level: str = None, lang: s
             marks = ",".join("?" for _ in topics)
             conds.append(f"id IN (SELECT pool_id FROM word_topics WHERE topic IN ({marks}))")
             params += list(topics)
+        # фильтр «(не) в моём наборе» — не группа фасетов, а общий срез: учитываем ВСЕГДА,
+        # иначе счётчики тем/уровней считали бы слова, которых в списке уже нет
+        s_sql, s_params = _set_cond(set_id, in_set, user_id)
+        if s_sql:
+            conds.append(s_sql)
+            params += s_params
         return conds, params
 
     db = await _conn()
@@ -1370,9 +1392,11 @@ _MISSING_SQL["forms"] = f"forms IS NULL AND {_FORMABLE_SQL}"
 async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                         topics=None, level: str = None, sort: str = "alpha", order: str = "asc",
                         missing: str = None, pos: str = None, user_id: int = None, lang: str = None,
-                        embed_fn=None):
+                        embed_fn=None, set_id: int = None, in_set: bool = None):
     """Список слов общего пула: поиск по норвежскому + языку интерфейса, фильтры тема/уровень/
-    часть речи, фильтр missing, сортировка и пагинация."""
+    часть речи, фильтр missing, сортировка и пагинация.
+    set_id + in_set — фильтр «(не) в моём наборе» (экран добора слов в набор, см. _set_cond);
+    при заданном set_id каждое слово страницы несёт флаг inSet."""
     conds, params = [], []
     # видимость модерации: общая база (approved=1) + личное расширение автора (его pending/rejected)
     if user_id:
@@ -1400,6 +1424,10 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
     if pos_sql:
         conds.append(pos_sql)
         params += pos_params
+    set_sql, set_params = _set_cond(set_id, in_set, user_id)
+    if set_sql:
+        conds.append(set_sql)
+        params += set_params
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
     primary, tie = _POOL_SORTS.get(sort, _POOL_SORTS["alpha"])
@@ -1437,7 +1465,9 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         # fuzzy-fallback: подстрока ничего не нашла (опечатка) → ищем по неточному совпадению
         # норвежского И переводов (любой язык), чтобы «молоок» находил melk. Только для чистого
         # текстового запроса (без фильтров тема/уровень/missing/pos) — иначе результат сбивает с толку.
-        if total == 0 and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql:
+        # (set_sql в условии: срез «(не) в моём наборе» фолбэки не учитывают, и без этого гарда
+        #  уже добавленное слово возвращалось бы в выдачу «чего нет в наборе»)
+        if total == 0 and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql and not set_sql:
             fids = await fuzzy_pool_ids(db, q, limit)
             if fids:
                 marks = ",".join("?" for _ in fids)
@@ -1456,7 +1486,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
         # семантический fallback: ни подстрока, ни fuzzy ничего не дали → ищем по смыслу
         # (эмбеддинг запроса → ближайшие по косинусу через vec_words). embed_fn инжектится из
         # роутера (квота-aware embed_text). Только для чистого текстового запроса.
-        if (not rows) and embed_fn and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql:
+        if (not rows) and embed_fn and key and len(key) >= 3 and not topics and not level and missing not in _MISSING_SQL and not pos_sql and not set_sql:
             qvec = None
             try:
                 qvec = await embed_fn(q)
@@ -1502,6 +1532,17 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 (*ids, user_id),
             ) as cur:
                 in_learning = {tr["pool_id"] for tr in await cur.fetchall()}
+        # какие слова страницы уже лежат в ЭТОМ наборе (экран добора: карточка красится «добавлено»
+        # даже когда фильтр «не в наборе» выключен). Набор сверяем с владением — как в _set_cond.
+        in_set_ids = set()
+        if set_id and user_id and ids:
+            marks = ",".join("?" for _ in ids)
+            async with db.execute(
+                f"SELECT dw.pool_id FROM dict_words dw JOIN dictionaries d ON d.id = dw.dict_id "
+                f"WHERE dw.pool_id IN ({marks}) AND dw.dict_id = ? AND d.user_id = ?",
+                (*ids, set_id, user_id),
+            ) as cur:
+                in_set_ids = {tr["pool_id"] for tr in await cur.fetchall()}
         words = []
         for r in rows:
             d = json.loads(r["data"]) if r["data"] else {}
@@ -1513,6 +1554,7 @@ async def get_pool_list(limit: int = 60, offset: int = 0, q: str = None,
                 "hasEmbedding": bool(r["has_emb"]), "hasDescription": bool(r["has_desc"]),
                 "forms": json.loads(r["forms"]) if r["forms"] else None,
                 "inLearning": r["id"] in in_learning,
+                **({"inSet": r["id"] in in_set_ids} if set_id else {}),
             })
         return {"total": total, "words": words}
     finally:

@@ -125,13 +125,19 @@ async def pool_revoice(word: str, user=Depends(llm_rate_limit)):
 async def pool(q: str = None, limit: int = 60, offset: int = 0,
               topics: str = None, level: str = None,
               sort: str = "alpha", order: str = "asc", missing: str = None, pos: str = None,
-              lang: str = None, user=Depends(get_current_user)):
+              lang: str = None, set_id: int = None, in_set: int = None,
+              user=Depends(get_current_user)):
+    """set_id + in_set (1 — только слова набора, 0 — только те, которых в нём нет) — срез для
+    экрана добора слов в набор. Владение набором зашито в SQL (db.pool._set_cond)."""
     topic_list = [t for t in (topics.split(",") if topics else []) if t in TOPIC_KEYS]
     lvl = level if level in CEFR_LEVELS else None
     srt = sort if sort in ("alpha", "level", "added", "freq", "relevance") else "alpha"
     limit = max(1, min(200, limit)); offset = max(0, offset)   # без клампа limit=100000/-1 выгружал весь пул (память)
-    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang, embed_fn=embed_text)
-    res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang, user_id=user["id"])  # счётчики под текущий фильтр
+    only = None if in_set is None else bool(in_set)
+    res = await get_pool_list(limit, offset, q, topic_list, lvl, srt, order, missing, pos, user_id=user["id"], lang=lang,
+                              embed_fn=embed_text, set_id=set_id, in_set=only)
+    res["facets"] = await get_pool_facets(q, topic_list, lvl, lang=lang, user_id=user["id"],
+                                          set_id=set_id, in_set=only)  # счётчики под текущий фильтр
     return res
 
 
