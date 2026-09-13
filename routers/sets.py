@@ -5,6 +5,7 @@
 и несёт флаг studying: вкл → слова набора питают ежедневную умную сессию «Сегодня»;
 выкл → слова учатся только явно, кнопкой «Учить набор» (GET /sets/{id}/session).
 CRUD — тонкие обёртки над db.dictionaries (логика жива с Фазы 1, в Фазе 2 убрали лишь роуты)."""
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from auth import get_current_user
@@ -15,6 +16,7 @@ from db import (
     set_dictionary_studying, add_words_to_set, remove_word_from_set, get_set_words,
     sets_for_words, reset_set_ramp, learning_session, get_pool_id,
 )
+from db.notifications import share_set
 
 router = APIRouter()
 
@@ -92,6 +94,35 @@ async def sets_delete(set_id: int, user=Depends(get_current_user)):
 async def sets_studying(set_id: int, body: dict, user=Depends(get_current_user)):
     """Тоггл «питать ежедневную учёбу» для набора."""
     return _bad(await set_dictionary_studying(user["id"], set_id, bool((body or {}).get("studying"))))
+
+
+@router.post("/sets/{set_id}/share")
+async def sets_share(set_id: int, body: dict, user=Depends(get_current_user)):
+    """Предложить набор другому пользователю: у него появится уведомление, по «Принять» —
+    СВОЯ копия набора. Ошибки говорим явно (self/empty/no user/too many) — фронт их показывает."""
+    mark_activity()
+    try:
+        target = int((body or {}).get("user_id") or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if not target:
+        raise HTTPException(status_code=422, detail="user_id required")
+    res = await share_set(user["id"], set_id, target)
+    if res.get("error"):
+        code = 404 if res["error"] in ("Not found", "no user") else 409
+        raise HTTPException(status_code=code, detail=res["error"])
+    # адресный пуш — в оба канала (web-push и FCM для Android-приложения); доставка не критична,
+    # уведомление в приложении уже создано
+    try:
+        from webpush import notify_user as _web_notify
+        from fcm import notify_user as _fcm_notify
+        from db.notifications import share_push_text
+        title, text = share_push_text(user, res.get("count", 0))
+        asyncio.create_task(_web_notify(target, title, text, "/#/learning"))
+        asyncio.create_task(_fcm_notify(target, title, text, "/#/learning"))
+    except Exception:
+        pass
+    return {"ok": True, "count": res.get("count", 0)}
 
 
 @router.get("/sets/{set_id}/words")

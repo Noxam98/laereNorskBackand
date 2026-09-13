@@ -520,6 +520,23 @@ async def init_db():
         )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_fcm_subs_user ON fcm_subscriptions(user_id)")
+        # Центр уведомлений (внутриприложенческий, не пуш). Сделан ОБЩИМ на вырост: тип + JSON-payload,
+        # первый и пока единственный тип — 'set_share' (предложение забрать набор другого юзера).
+        # state: new (ждёт решения) | accepted | declined | seen (для типов без действий);
+        # read_at — когда панель открыли (бейдж непрочитанных), не путать с решением по уведомлению.
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT,
+            state TEXT NOT NULL DEFAULT 'new',
+            read_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, id DESC)")
         try:
             await db.execute("ALTER TABLE user_words ADD COLUMN certified INTEGER DEFAULT 0")  # слово сдало зачётный экзамен-ворота
         except Exception:

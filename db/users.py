@@ -182,6 +182,50 @@ async def get_user_choice(user_id: int):
     return _choice_of(await _game_prefs_row(user_id))
 
 
+USER_SEARCH_MIN = 2    # короче — не ищем (перебор по одной букве = выгрузка справочника)
+USER_SEARCH_LIMIT = 10
+
+
+USER_SEARCH_SCAN = 2000   # потолок кандидатов, которые тащим в питон для юникод-сравнения
+
+
+async def search_users(q: str, exclude_id: int = None, limit: int = USER_SEARCH_LIMIT):
+    """Поиск людей для передачи набора: подстрока по отображаемому имени И логину.
+    Отдаём только id + видимое имя (display_name, иначе логин) — ни почты, ни прогресса.
+    Себя из выдачи убираем. Короткие запросы игнорируем, выдача капается — чтобы это был
+    поиск знакомого, а не выгрузка списка аккаунтов (дополнительно прикрыто rate-limit'ом
+    на роутере).
+
+    Сравнение делаем В ПИТОНЕ: sqlite-шный lower() знает только ASCII, и «Максим» по запросу
+    «макс» не находился бы — для русских/украинских имён поиск был бы мёртвым. Кандидатов
+    ограничиваем USER_SEARCH_SCAN; когда база юзеров вырастет настолько, что это станет
+    заметно, правильный шаг — колонка display_name_lc с индексом, а не возврат к lower()."""
+    term = (q or "").strip().lower()
+    if len(term) < USER_SEARCH_MIN:
+        return []
+    limit = max(1, min(USER_SEARCH_LIMIT, int(limit or USER_SEARCH_LIMIT)))
+    db = await _conn()
+    try:
+        async with db.execute(
+            "SELECT id, display_name, username FROM users WHERE id != ? LIMIT ?",
+            (exclude_id or -1, USER_SEARCH_SCAN)) as cur:
+            rows = await cur.fetchall()
+    finally:
+        await _release(db)
+    hits = []
+    for r in rows:
+        login = (r["username"] or "").lower()
+        name = (r["display_name"] or "").lower()
+        if term not in login and term not in name:
+            continue
+        exact = (term == login or term == name)
+        starts = login.startswith(term) or name.startswith(term)
+        # точное совпадение выше «начинается с», оно выше «где-то внутри»; дальше — короткие имена
+        hits.append(((0 if exact else 1 if starts else 2), len(r["username"] or ""), r))
+    hits.sort(key=lambda x: (x[0], x[1], (x[2]["username"] or "")))
+    return [{"id": r["id"], "name": (r["display_name"] or r["username"])} for _p, _l, r in hits[:limit]]
+
+
 async def get_user_ramp(user_id: int):
     """Оба тумблера рампы ОДНИМ чтением: (аудиозадания, ступень выбора). Для горячего пути
     apply_result — там нужны оба, а ходить в users дважды за один ответ незачем."""

@@ -305,6 +305,28 @@ async def unsubscribe(body: dict, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+async def notify_user(user_id, title, body, url="/"):
+    """Адресный пуш одному юзеру по всем его FCM-токенам (Android-приложение). Пара к
+    webpush.notify_user: в WebView Capacitor web-push не работает, поэтому адресное событие
+    («вам предложили набор») шлём в ОБА канала — какой у человека подключён, тот и сработает.
+    Тихие часы не применяем: это не напоминалка по расписанию. Ошибки не всплывают наружу."""
+    try:
+        if not configured() or not user_id:
+            return False
+        rows = await _exec("SELECT token FROM fcm_subscriptions WHERE user_id = ?", (user_id,))
+        sent = False
+        for r in rows or []:
+            ok, gone = await _send(r["token"], {"title": title, "body": body, "url": url})
+            if gone:
+                await delete_token_any(r["token"])
+            elif ok:
+                sent = True
+        return sent
+    except Exception as e:
+        logger.warning(f"fcm notify_user: {str(e)[:160]}")
+        return False
+
+
 _WORKER = None
 
 

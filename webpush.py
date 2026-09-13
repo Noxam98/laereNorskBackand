@@ -166,6 +166,30 @@ def _quiet_now():
     return hour >= QUIET_FROM or hour < QUIET_TO
 
 
+# ---------- адресный пуш одному пользователю ----------
+async def notify_user(user_id, title, body, url="/"):
+    """Пуш КОНКРЕТНОМУ юзеру по всем его подпискам (событие от другого человека — напр.
+    «вам предложили набор»). Тихие часы НЕ соблюдаем осознанно: это не напоминалка по
+    расписанию, а адресное сообщение, которое ждут. Fail-safe: любая ошибка — молча мимо,
+    уведомление в приложении уже создано и без пуша."""
+    try:
+        if not configured() or not user_id:
+            return False
+        rows = await _exec("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?", (user_id,))
+        sent = False
+        for r in rows or []:
+            ok, gone = await _send(r["endpoint"], r["p256dh"], r["auth"],
+                                   {"title": title, "body": body, "url": url})
+            if gone:
+                await delete_subscription_by_endpoint(r["endpoint"])
+            elif ok:
+                sent = True
+        return sent
+    except Exception as e:
+        logger.warning(f"notify_user: {str(e)[:160]}")
+        return False
+
+
 # ---------- пуш админам: новые слова на модерации ----------
 async def notify_moderators(pending_count):
     """Уведомить админов (web-push), что появились слова на модерации. Троттлинг (не чаще раза
